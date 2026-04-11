@@ -1,163 +1,289 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowDownRight, ArrowUpRight, BarChart3, DollarSign, Percent, TrendingUp } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { usePortal } from "@/contexts/PortalContext";
+import {
+  AreaChart, Area, BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
+import { TrendingUp, TrendingDown, DollarSign, Percent } from "lucide-react";
+import { format } from "date-fns";
 import { useState } from "react";
-import { trpc } from "../../lib/trpc";
-import { usePortal } from "../../contexts/PortalContext";
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function fmtDollar(n: number) {
+  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `$${(n / 1000).toFixed(0)}k`;
+  return `$${n.toLocaleString()}`;
+}
 
 function MetricCard({
-  title,
-  value,
-  subtitle,
-  icon,
-  trend,
-  loading,
+  label, value, budget, budgetPct, icon, status, target,
 }: {
-  title: string;
-  value: string;
-  subtitle?: string;
-  icon: React.ReactNode;
-  trend?: "up" | "down" | "neutral";
-  loading?: boolean;
+  label: string; value: string; budget?: string; budgetPct?: number;
+  icon: React.ReactNode; status?: "good" | "bad" | "neutral"; target?: string;
 }) {
+  const badgeText =
+    status === "good" && budgetPct != null ? `↑ ${budgetPct.toFixed(0)}% of budget` :
+    status === "bad" ? "Below Target" : null;
+  const badgeCls =
+    status === "good" ? "bg-green-500/15 text-green-400" :
+    status === "bad" ? "bg-red-500/15 text-red-400" : "";
+
   return (
-    <Card className="bg-card border-border metric-card">
-      <CardContent className="p-5">
-        {loading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-24 bg-muted" />
-            <Skeleton className="h-8 w-32 bg-muted" />
-          </div>
-        ) : (
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">{title}</p>
-              <p className="text-2xl font-bold text-foreground">{value}</p>
-              {subtitle && (
-                <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                  {trend === "up" && <ArrowUpRight size={12} className="text-emerald-400" />}
-                  {trend === "down" && <ArrowDownRight size={12} className="text-red-400" />}
-                  {subtitle}
-                </p>
-              )}
-            </div>
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
-              {icon}
-            </div>
-          </div>
+    <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-2">
+      <div className="flex items-start justify-between">
+        <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">
+          {icon}
+        </div>
+        {badgeText && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badgeCls}`}>{badgeText}</span>
         )}
-      </CardContent>
-    </Card>
+      </div>
+      <div>
+        <p className="text-2xl font-bold text-foreground">{value}</p>
+        <p className="text-sm text-muted-foreground">{label}</p>
+        {budget && <p className="text-xs text-muted-foreground mt-0.5">Budget: {budget}</p>}
+        {target && <p className="text-xs text-muted-foreground mt-0.5">Target: {target}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ThinBar({ value, max, red = false }: { value: number; max: number; red?: boolean }) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+  return (
+    <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+      <div
+        className={`h-full rounded-full ${red ? "bg-red-500" : "bg-primary"}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
   );
 }
 
 export default function Overview() {
-  const { user } = useAuth();
   const { impersonatingTenantId } = usePortal();
   const now = new Date();
   const [year] = useState(now.getFullYear());
-  const [month] = useState(now.getMonth() + 1);
 
-  const { data: tenant } = trpc.tenant.me.useQuery();
-  const { data: financialData, isLoading } = trpc.financials.get.useQuery(
-    { year, month, tenantId: impersonatingTenantId ?? undefined },
-    { enabled: true }
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !impersonatingTenantId });
+  const tenantId = impersonatingTenantId ?? tenant?.id ?? 0;
+
+  const { data: financials } = trpc.financials.get.useQuery(
+    { year, tenantId: tenantId || undefined },
+    { enabled: !!tenantId }
+  );
+  const { data: salesData } = trpc.sales.get.useQuery(
+    { year, month: now.getMonth() + 1, tenantId: tenantId || undefined },
+    { enabled: !!tenantId }
+  );
+  const currentQ = Math.ceil((now.getMonth() + 1) / 3);
+  const quarterKey = `${year}-Q${currentQ}`;
+  const { data: coachingItems } = trpc.coaching.list.useQuery(
+    { quarter: quarterKey, tenantId: tenantId || undefined },
+    { enabled: !!tenantId }
   );
 
-  const current = financialData?.[0];
+  const latestPeriod = financials?.[0];
+  const { data: lineItemsData } = trpc.financials.lineItems.useQuery(
+    { year, month: latestPeriod?.month ?? now.getMonth() + 1, tenantId: tenantId || undefined },
+    { enabled: !!tenantId && !!latestPeriod }
+  );
+  const revenue = parseFloat(latestPeriod?.revenue ?? "0");
+  const expenses = parseFloat(latestPeriod?.expenses ?? "0");
+  const profit = parseFloat(latestPeriod?.netProfit ?? "0");
+  const margin = parseFloat(latestPeriod?.margin ?? "0");
+  const budgetRevenue = parseFloat(latestPeriod?.budgetRevenue ?? String(revenue));
+  const budgetExpenses = parseFloat(latestPeriod?.budgetExpenses ?? String(expenses));
+  const revPct = budgetRevenue > 0 ? (revenue / budgetRevenue) * 100 : 0;
+  const expPct = budgetExpenses > 0 ? (expenses / budgetExpenses) * 100 : 0;
 
-  const fmt = (val: string | null | undefined) =>
-    val ? `$${parseFloat(val).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—";
+  const chartData = MONTHS.map((month, i) => {
+    const rec = financials?.find((f) => f.month === i + 1 && f.year === year);
+    return {
+      month,
+      revenue: parseFloat(rec?.revenue ?? "0"),
+      profit: parseFloat(rec?.netProfit ?? "0"),
+      budget: parseFloat(rec?.budgetRevenue ?? "0"),
+    };
+  });
+
+  const salesGoal = salesData?.goalClients ?? 48;
+  const salesActual = salesData?.signedClients ?? 0;
+  const salesPct = salesGoal > 0 ? Math.round((salesActual / salesGoal) * 100) : 0;
+  const referrals = salesData?.referralCount ?? 0;
+  const outbound = salesData?.outboundCount ?? 0;
+
+  const quarterGoals = coachingItems ?? [];
+
+  const topIncome = (lineItemsData ?? []).filter((l) => l.type === "income").slice(0, 5);
+  const topExpenses = (lineItemsData ?? []).filter((l) => l.type === "expense").slice(0, 5);
+  const totalIncome = topIncome.reduce((s, i) => s + parseFloat(i.amount ?? "0"), 0) || 1;
+  const totalExp = topExpenses.reduce((s, i) => s + parseFloat(i.amount ?? "0"), 0) || 1;
+
+  const periodLabel = latestPeriod
+    ? `${MONTHS[(latestPeriod.month - 1)]} ${latestPeriod.year}`
+    : format(now, "MMM yyyy");
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Welcome header */}
+    <div className="p-6 space-y-5">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-foreground">
-          Welcome back, {user?.name?.split(" ")[0] ?? "there"} 👋
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Here's your financial overview for {new Date(year, month - 1).toLocaleString("en-US", { month: "long", year: "numeric" })}
-        </p>
+        <h1 className="text-2xl font-bold text-foreground">Strategic Overview</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">Latest period: {periodLabel}</p>
       </div>
 
-      {/* Key metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <MetricCard
-          title="Revenue"
-          value={fmt(current?.revenue)}
-          subtitle={current?.budgetRevenue ? `Budget: ${fmt(current.budgetRevenue)}` : undefined}
-          icon={<DollarSign size={18} />}
-          trend="up"
-          loading={isLoading}
-        />
-        <MetricCard
-          title="Expenses"
-          value={fmt(current?.expenses)}
-          subtitle={current?.budgetExpenses ? `Budget: ${fmt(current.budgetExpenses)}` : undefined}
-          icon={<BarChart3 size={18} />}
-          trend="neutral"
-          loading={isLoading}
-        />
-        <MetricCard
-          title="Net Profit"
-          value={fmt(current?.netProfit)}
-          icon={<TrendingUp size={18} />}
-          trend={current?.netProfit && parseFloat(current.netProfit) > 0 ? "up" : "down"}
-          loading={isLoading}
-        />
-        <MetricCard
-          title="Margin"
-          value={current?.margin ? `${parseFloat(current.margin).toFixed(1)}%` : "—"}
-          icon={<Percent size={18} />}
-          trend={current?.margin && parseFloat(current.margin) > 20 ? "up" : "neutral"}
-          loading={isLoading}
-        />
+      {/* 4 metric cards */}
+      <div className="grid grid-cols-4 gap-4">
+        <MetricCard label="Total Revenue" value={fmtDollar(revenue)} budget={fmtDollar(budgetRevenue)} budgetPct={revPct} icon={<DollarSign size={16} />} status={revPct >= 90 ? "good" : "neutral"} />
+        <MetricCard label="Total Expenses" value={fmtDollar(expenses)} budget={fmtDollar(budgetExpenses)} budgetPct={expPct} icon={<TrendingDown size={16} />} status={expPct <= 100 ? "good" : "bad"} />
+        <MetricCard label="Net Profit" value={fmtDollar(profit)} icon={<TrendingUp size={16} />} status={profit >= 0 ? "neutral" : "bad"} />
+        <MetricCard label="Net Profit Margin" value={`${margin.toFixed(1)}%`} target="35%+" icon={<Percent size={16} />} status={margin >= 35 ? "good" : "bad"} />
       </div>
 
-      {/* Quick nav cards */}
-      <div>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Quick Access</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-          {[
-            { label: "Financials", href: "/portal/financials", desc: "Revenue, expenses & margins" },
-            { label: "Reports", href: "/portal/reports", desc: "Historical data viewer" },
-            { label: "Document Vault", href: "/portal/documents", desc: "Secure file storage" },
-            { label: "AI Summaries", href: "/portal/ai-summaries", desc: "Monthly insights" },
-            { label: "Coaching", href: "/portal/coaching", desc: "Goals & accountability" },
-            { label: "KPI Dashboard", href: "/portal/kpi", desc: "CAC, Churn, LTV" },
-            { label: "Time Intelligence", href: "/portal/time", desc: "Hours & delegation" },
-            { label: "Sales Tracker", href: "/portal/sales", desc: "Pipeline & targets" },
-          ].map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              className="block p-4 rounded-lg bg-card border border-border hover:border-primary/40 hover:bg-primary/5 transition-all group"
-            >
-              <p className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors">{item.label}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{item.desc}</p>
-            </a>
-          ))}
-        </div>
-      </div>
-
-      {/* Tenant info */}
-      {tenant && (
-        <div className="p-4 rounded-lg bg-card border border-border">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-foreground">{tenant.companyName ?? "Your Company"}</p>
-              <p className="text-xs text-muted-foreground capitalize mt-0.5">
-                {tenant.packageTier?.replace("_", " ")} Plan · Active since {new Date(tenant.signedAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
-              </p>
-            </div>
-            <div className="text-xs text-primary font-medium bg-primary/10 px-3 py-1 rounded-full capitalize">
-              {tenant.packageTier?.replace("_", " ")}
-            </div>
+      {/* Sales Target */}
+      <div className="bg-card border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-foreground">Sales Target — {year} YTD</h2>
+          <div className="flex items-center gap-4 text-sm">
+            <span className="text-muted-foreground">Goal: <span className="text-foreground font-medium">{salesGoal}</span></span>
+            <span className="text-muted-foreground">Actual: <span className="text-foreground font-medium">{salesActual}</span></span>
+            <span className="text-red-400 font-bold">{salesPct}%</span>
           </div>
         </div>
-      )}
+        <ThinBar value={salesActual} max={salesGoal} />
+        <div className="flex gap-6 mt-2 text-xs text-muted-foreground">
+          <span>Referrals: <span className="text-foreground">{referrals}</span></span>
+          <span>Outbound: <span className="text-foreground">{outbound}</span></span>
+          <span>Referral Rate: <span className="text-foreground">{referrals + outbound > 0 ? Math.round((referrals / (referrals + outbound)) * 100) : 0}%</span></span>
+        </div>
+      </div>
+
+      {/* Top 5 Income + Top 5 Expenses */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Income Sources</h2>
+          <div className="space-y-3">
+            {topIncome.length === 0 && <p className="text-xs text-muted-foreground">No data for this period.</p>}
+            {topIncome.map((item: any) => {
+              const amt = parseFloat(item.amount ?? "0");
+              const p = ((amt / totalIncome) * 100).toFixed(1);
+              const budgetAmt = item.budgetAmount ? parseFloat(item.budgetAmount) : null;
+              const bp = budgetAmt && budgetAmt > 0 ? Math.round((amt / budgetAmt) * 100) : null;
+              return (
+                <div key={item.id}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
+                    <span className="text-foreground font-medium">{fmtDollar(amt)} <span className="text-muted-foreground">{p}%</span></span>
+                  </div>
+                  <ThinBar value={amt} max={totalIncome} />
+                  {bp !== null && budgetAmt && <p className="text-xs text-muted-foreground mt-0.5">Budget: {fmtDollar(budgetAmt)} · {bp}% of budget used</p>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Expenses</h2>
+          <div className="space-y-3">
+            {topExpenses.length === 0 && <p className="text-xs text-muted-foreground">No data for this period.</p>}
+            {topExpenses.map((item: any) => {
+              const amt = parseFloat(item.amount ?? "0");
+              const p = ((amt / totalExp) * 100).toFixed(1);
+              const budgetAmt = item.budgetAmount ? parseFloat(item.budgetAmount) : null;
+              const bp = budgetAmt && budgetAmt > 0 ? Math.round((amt / budgetAmt) * 100) : null;
+              const over = bp !== null && bp > 100;
+              return (
+                <div key={item.id}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
+                    <span className="text-foreground font-medium">{fmtDollar(amt)} <span className="text-muted-foreground">{p}%</span></span>
+                  </div>
+                  <ThinBar value={amt} max={totalExp} red={over} />
+                  {bp !== null && budgetAmt && <p className={`text-xs mt-0.5 ${over ? "text-red-400" : "text-muted-foreground"}`}>Budget: {fmtDollar(budgetAmt)} · {bp}% of budget used</p>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Revenue vs Budget Chart */}
+      <div className="bg-card border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-foreground">{year} Revenue: Actuals vs Budget</h2>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm bg-red-500 inline-block" />Actual Revenue</span>
+            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-yellow-400 inline-block" />Budget Target</span>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">Solid bars = actuals locked in · Dashed line = full-year budget target</p>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.20 0.005 240)" vertical={false} />
+            <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px" }}
+              labelStyle={{ color: "oklch(0.95 0.005 240)", fontSize: 12 }}
+              formatter={(v: number) => [fmtDollar(v)]}
+            />
+            <Bar dataKey="revenue" fill="oklch(0.62 0.22 25)" radius={[2, 2, 0, 0]} name="Actual Revenue" />
+            <Line type="monotone" dataKey="budget" stroke="oklch(0.78 0.16 60)" strokeDasharray="5 5" strokeWidth={2} dot={{ fill: "oklch(0.78 0.16 60)", r: 3 }} name="Budget Target" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Revenue & Profit Trend + Coaching Goals */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">Revenue & Profit Trend</h2>
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+              <defs>
+                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="oklch(0.75 0.15 192)" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="oklch(0.75 0.15 192)" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="oklch(0.68 0.18 145)" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="oklch(0.68 0.18 145)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.20 0.005 240)" vertical={false} />
+              <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+              <Tooltip
+                contentStyle={{ backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px" }}
+                formatter={(v: number) => [fmtDollar(v)]}
+              />
+              <Area type="monotone" dataKey="revenue" stroke="oklch(0.75 0.15 192)" fill="url(#revGrad)" strokeWidth={2} dot={false} name="Revenue" />
+              <Area type="monotone" dataKey="profit" stroke="oklch(0.68 0.18 145)" fill="url(#profitGrad)" strokeWidth={2} dot={false} name="Profit" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">
+            {quarterKey} — Coaching Goals
+          </h2>
+          {quarterGoals.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No coaching goals set for this quarter.</p>
+          ) : (
+            <ul className="space-y-2">
+              {quarterGoals.map((goal) => (
+                <li key={goal.id} className="flex items-start gap-2 text-sm">
+                  <span className={`mt-0.5 w-3 h-3 rounded-sm border shrink-0 ${goal.isCompleted ? "bg-primary border-primary" : "border-border"}`} />
+                  <span className={goal.isCompleted ? "line-through text-muted-foreground" : "text-foreground"}>
+                    {goal.title}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -51,8 +51,8 @@
 - [x] Vitest tests passing
 
 ## Phase 9: Delivery
-- [ ] Checkpoint saved
-- [ ] Live URL delivered to user
+- [x] Checkpoint saved
+- [x] Live URL delivered to user
 
 ## Pending / Future
 - [ ] 2FA setup for client login
