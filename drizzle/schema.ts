@@ -93,6 +93,8 @@ export const documents = mysqlTable("documents", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  docType: varchar("docType", { length: 64 }).default("other"), // financials | tax_returns | w2_1099 | other
   fileKey: varchar("fileKey", { length: 512 }).notNull(),
   fileUrl: text("fileUrl").notNull(),
   mimeType: varchar("mimeType", { length: 128 }),

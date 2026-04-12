@@ -175,14 +175,18 @@ export const appRouter = router({
         z.object({
           tenantId: z.number(),
           name: z.string(),
+          description: z.string().optional(),
+          docType: z.string().optional(),
           year: z.number(),
           fileBase64: z.string(),
+          fileName: z.string().optional(),
           mimeType: z.string(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         const buffer = Buffer.from(input.fileBase64, "base64");
-        const fileKey = `tenants/${input.tenantId}/docs/${input.year}/${Date.now()}-${input.name}`;
+        const safeFileName = input.fileName ?? input.name;
+        const fileKey = `tenants/${input.tenantId}/docs/${input.year}/${Date.now()}-${safeFileName}`;
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
         await insertDocument({
           tenantId: input.tenantId,

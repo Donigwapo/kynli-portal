@@ -1,7 +1,4 @@
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Users } from "lucide-react";
+import { BarChart2, Users, TrendingUp, Award } from "lucide-react";
 import { useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { trpc } from "../../lib/trpc";
@@ -17,11 +14,7 @@ export default function SalesTracker() {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  const { data: sales, isLoading } = trpc.sales.get.useQuery({
-    year,
-    month,
-    tenantId: undefined,
-  });
+  const { data: sales, isLoading } = trpc.sales.get.useQuery({ year, month, tenantId: undefined });
 
   const pct = sales && sales.goalClients > 0
     ? Math.min(100, Math.round((sales.signedClients / sales.goalClients) * 100))
@@ -34,135 +27,160 @@ export default function SalesTracker() {
       ]
     : [];
 
+  const remaining = sales ? Math.max(0, sales.goalClients - sales.signedClients) : 0;
+  const goalReached = pct >= 100;
+
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-            <FileText size={20} />
-          </div>
-          <div>
+    <div className="p-6 space-y-5">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-0.5">
+            <BarChart2 size={20} className="text-primary" />
             <h1 className="text-2xl font-bold text-foreground">Sales Tracker</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Monthly sales targets, signed clients, and pipeline breakdown</p>
           </div>
+          <p className="text-sm text-muted-foreground">Monthly sales targets, signed clients, and pipeline breakdown</p>
         </div>
-        <div className="flex gap-2">
-          <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
-            <SelectTrigger className="w-36 bg-card border-border text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-card border-border">
-              {MONTHS.map((m, i) => (
-                <SelectItem key={i + 1} value={String(i + 1)} className="text-sm">{m}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
-            <SelectTrigger className="w-24 bg-card border-border text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-card border-border">
-              {years.map((y) => (
-                <SelectItem key={y} value={String(y)} className="text-sm">{y}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex items-center gap-2 shrink-0">
+          <select
+            value={month}
+            onChange={(e) => setMonth(Number(e.target.value))}
+            className="bg-card border border-border rounded-md text-xs text-foreground px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {MONTHS.map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
+          </select>
+          <select
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            className="bg-card border border-border rounded-md text-xs text-foreground px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
         </div>
       </div>
 
       {isLoading ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
+        <div className="flex items-center justify-center h-48">
+          <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        </div>
       ) : !sales ? (
-        <Card className="bg-card border-border">
-          <CardContent className="py-16 text-center">
-            <FileText size={40} className="text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm font-medium text-foreground">No sales data for this period</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Your accountant will enter sales data for {MONTHS[month - 1]} {year}.
-            </p>
-          </CardContent>
-        </Card>
+        <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+          <BarChart2 size={40} className="text-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">No sales data for {MONTHS[month - 1]} {year}</p>
+          <p className="text-xs text-muted-foreground/60">Your advisor will enter sales data here.</p>
+        </div>
       ) : (
         <>
-          {/* Goal progress */}
-          <Card className="bg-card border-border">
-            <CardHeader className="pb-3 border-b border-border">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Goal Progress</CardTitle>
-                <Badge
-                  variant="outline"
-                  className={`text-xs ${pct >= 100 ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-primary/30 text-primary bg-primary/10"}`}
-                >
-                  {pct >= 100 ? "Goal Achieved!" : `${pct}% of goal`}
-                </Badge>
+          {/* Goal Progress Card */}
+          <div className="bg-card border border-border rounded-xl p-5">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Monthly Goal Progress</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">{MONTHS[month - 1]} {year}</p>
               </div>
-            </CardHeader>
-            <CardContent className="pt-5">
-              <div className="flex items-end justify-between mb-3">
-                <div>
-                  <p className="text-5xl font-bold text-foreground">{sales.signedClients}</p>
-                  <p className="text-sm text-muted-foreground mt-1">clients signed</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-2xl font-bold text-muted-foreground">{sales.goalClients}</p>
-                  <p className="text-sm text-muted-foreground">goal</p>
-                </div>
+              <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
+                goalReached
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                  : "bg-primary/10 text-primary border-primary/20"
+              }`}>
+                {goalReached ? "🎉 Goal Achieved!" : `${pct}% of goal`}
+              </span>
+            </div>
+
+            {/* Big numbers */}
+            <div className="flex items-end justify-between mb-4">
+              <div>
+                <p className="text-5xl font-bold text-foreground leading-none">{sales.signedClients}</p>
+                <p className="text-xs text-muted-foreground mt-1.5">clients signed</p>
               </div>
-              <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
-                <div
-                  className={`h-3 rounded-full transition-all duration-700 ${pct >= 100 ? "bg-emerald-400" : "bg-primary"}`}
-                  style={{ width: `${pct}%` }}
-                />
+              <div className="text-right">
+                <p className="text-2xl font-bold text-muted-foreground leading-none">{sales.goalClients}</p>
+                <p className="text-xs text-muted-foreground mt-1.5">monthly goal</p>
               </div>
-              <p className="text-xs text-muted-foreground mt-2">
-                {sales.goalClients - sales.signedClients > 0
-                  ? `${sales.goalClients - sales.signedClients} more to reach goal`
-                  : "Goal reached! 🎉"}
+            </div>
+
+            {/* Progress bar */}
+            <div className="w-full bg-muted/30 rounded-full h-3 overflow-hidden mb-2">
+              <div
+                className={`h-3 rounded-full transition-all duration-700 ${goalReached ? "bg-emerald-400" : "bg-primary"}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {remaining > 0
+                ? `${remaining} more client${remaining !== 1 ? "s" : ""} to reach goal`
+                : "Goal reached — great work!"}
+            </p>
+          </div>
+
+          {/* Summary metric cards */}
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-card border border-border rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Award size={14} className="text-primary" />
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total Signed</p>
+              </div>
+              <p className="text-2xl font-bold text-foreground">{sales.signedClients}</p>
+            </div>
+            <div className="bg-card border border-border rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp size={14} className="text-teal-400" />
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Referral</p>
+              </div>
+              <p className="text-2xl font-bold text-foreground">{sales.referralCount}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {sales.signedClients > 0 ? `${Math.round((sales.referralCount / sales.signedClients) * 100)}% of signed` : "—"}
               </p>
-            </CardContent>
-          </Card>
+            </div>
+            <div className="bg-card border border-border rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Users size={14} className="text-violet-400" />
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Outbound</p>
+              </div>
+              <p className="text-2xl font-bold text-foreground">{sales.outboundCount}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {sales.signedClients > 0 ? `${Math.round((sales.outboundCount / sales.signedClients) * 100)}% of signed` : "—"}
+              </p>
+            </div>
+          </div>
 
-          {/* Referral vs Outbound */}
+          {/* Pipeline source breakdown */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Card className="bg-card border-border">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-foreground">Pipeline Source Breakdown</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {sales.referralCount === 0 && sales.outboundCount === 0 ? (
-                  <div className="h-40 flex items-center justify-center text-muted-foreground text-sm">No pipeline data</div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={180}>
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={45}
-                        outerRadius={75}
-                        paddingAngle={4}
-                        dataKey="value"
-                      >
-                        <Cell fill="oklch(0.72 0.14 195)" />
-                        <Cell fill="oklch(0.65 0.20 310)" />
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{ background: "oklch(0.16 0.01 220)", border: "1px solid oklch(0.25 0.01 220)", borderRadius: "8px", fontSize: 12 }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                )}
-              </CardContent>
-            </Card>
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-foreground mb-4">Pipeline Source</h3>
+              {sales.referralCount === 0 && sales.outboundCount === 0 ? (
+                <div className="h-40 flex items-center justify-center text-muted-foreground text-sm">No pipeline data</div>
+              ) : (
+                <ResponsiveContainer width="100%" height={180}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={50}
+                      outerRadius={80}
+                      paddingAngle={4}
+                      dataKey="value"
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      labelLine={false}
+                    >
+                      <Cell fill="oklch(0.72 0.14 195)" />
+                      <Cell fill="oklch(0.65 0.20 310)" />
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{ background: "oklch(0.14 0.01 220)", border: "1px solid oklch(0.22 0.01 220)", borderRadius: "8px", fontSize: 12 }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
 
-            <Card className="bg-card border-border">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-foreground">Source Details</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4 pt-2">
-                <div className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/20">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full bg-primary" />
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-foreground mb-4">Source Details</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/15">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
                     <span className="text-sm font-medium text-foreground">Referral</span>
                   </div>
                   <div className="text-right">
@@ -172,9 +190,9 @@ export default function SalesTracker() {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center justify-between p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full bg-violet-400" />
+                <div className="flex items-center justify-between p-3 rounded-lg bg-violet-500/5 border border-violet-500/15">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-violet-400" />
                     <span className="text-sm font-medium text-foreground">Outbound</span>
                   </div>
                   <div className="text-right">
@@ -184,15 +202,15 @@ export default function SalesTracker() {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border">
-                  <div className="flex items-center gap-2">
-                    <Users size={14} className="text-muted-foreground" />
+                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/20 border border-border">
+                  <div className="flex items-center gap-2.5">
+                    <Users size={13} className="text-muted-foreground" />
                     <span className="text-sm font-medium text-foreground">Total Signed</span>
                   </div>
                   <p className="text-xl font-bold text-foreground">{sales.signedClients}</p>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </div>
         </>
       )}
