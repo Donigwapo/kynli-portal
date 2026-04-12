@@ -12,7 +12,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -28,12 +27,11 @@ function TrendIcon({ current, previous, lowerIsBetter = false }: { current: numb
 export default function KpiDashboard() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
-  const { impersonatingTenantId } = usePortal();
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   const { data: kpiData, isLoading } = trpc.kpi.get.useQuery({
     year,
-    tenantId: impersonatingTenantId ?? undefined,
+    tenantId: undefined,
   });
 
   const sorted = [...(kpiData ?? [])].sort((a, b) => a.month - b.month);

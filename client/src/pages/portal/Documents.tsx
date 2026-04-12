@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Download, ExternalLink, File, FileText, Image } from "lucide-react";
 import { useState } from "react";
-import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
 const MIME_ICON: Record<string, React.ReactNode> = {
@@ -28,12 +27,11 @@ function formatBytes(bytes?: number) {
 export default function Documents() {
   const now = new Date();
   const [year, setYear] = useState<string>("all");
-  const { impersonatingTenantId } = usePortal();
   const years = Array.from({ length: 5 }, (_, i) => String(now.getFullYear() - i));
 
   const { data: docs, isLoading } = trpc.documents.list.useQuery({
     year: year !== "all" ? Number(year) : undefined,
-    tenantId: impersonatingTenantId ?? undefined,
+    tenantId: undefined,
   });
 
   // Group by year

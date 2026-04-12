@@ -10,7 +10,6 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from "recharts";
-import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
 const MONTHS = [
@@ -31,13 +30,12 @@ export default function TimeIntelligence() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const { impersonatingTenantId } = usePortal();
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   const { data: logs, isLoading } = trpc.time.get.useQuery({
     year,
     month,
-    tenantId: impersonatingTenantId ?? undefined,
+    tenantId: undefined,
   });
 
   const totalHours = (logs ?? []).reduce((s, l) => s + parseFloat(l.hours), 0);

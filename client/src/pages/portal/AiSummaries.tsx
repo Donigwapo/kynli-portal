@@ -3,7 +3,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Brain, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { Streamdown } from "streamdown";
-import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
 const MONTHS = [
@@ -15,13 +14,12 @@ export default function AiSummaries() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const { impersonatingTenantId } = usePortal();
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   const { data: summary, isLoading } = trpc.aiSummary.get.useQuery({
     year,
     month,
-    tenantId: impersonatingTenantId ?? undefined,
+    tenantId: undefined,
   });
 
   return (

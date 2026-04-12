@@ -37,9 +37,7 @@ function PortalRoute({ component: Component }: { component: React.ComponentType 
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
   return (
     <RouteGuard requireAdmin>
-      <PortalLayout isAdmin>
-        <Component />
-      </PortalLayout>
+      <Component />
     </RouteGuard>
   );
 }

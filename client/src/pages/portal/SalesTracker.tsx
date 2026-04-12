@@ -4,7 +4,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FileText, Users } from "lucide-react";
 import { useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
 const MONTHS = [
@@ -16,13 +15,12 @@ export default function SalesTracker() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const { impersonatingTenantId } = usePortal();
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   const { data: sales, isLoading } = trpc.sales.get.useQuery({
     year,
     month,
-    tenantId: impersonatingTenantId ?? undefined,
+    tenantId: undefined,
   });
 
   const pct = sales && sales.goalClients > 0

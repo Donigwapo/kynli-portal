@@ -16,6 +16,7 @@ import {
   getFinancials,
   getKpiMetrics,
   getLineItems,
+  getLineItemsByYear,
   getSalesTracker,
   getTenantById,
   getTenantByUserId,
@@ -119,6 +120,12 @@ export const appRouter = router({
       .query(async ({ ctx, input }) => {
         const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
         return getLineItems(tenant.id, input.year, input.month);
+      }),
+    lineItemsByYear: protectedProcedure
+      .input(z.object({ year: z.number(), tenantId: z.number().optional() }))
+      .query(async ({ ctx, input }) => {
+        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
+        return getLineItemsByYear(tenant.id, input.year);
       }),
     upsert: adminProcedure
       .input(

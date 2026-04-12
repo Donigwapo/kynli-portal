@@ -67,3 +67,17 @@
 - [x] Fix admin sidebar 404 — remove broken nav links (overview, sales, financials, time, coaching, reports) that have no registered routes
 - [x] Create Grit Media Group LLC test tenant (Growth 1 tier)
 - [x] Seed Jan/Feb/Mar 2026 financials + line items for Grit Media Group LLC
+- [ ] Remove admin redirect on login — all users go directly to /portal (client view)
+- [ ] Auto-associate logged-in user with Grit Media Group LLC tenant data for demo
+- [ ] Verify Overview, Financials, Reports, Coaching tabs display real Grit Media data
+
+## UI Rebuild — Match Mockup Exactly
+- [x] Overview tab — exact mockup match (header, 4 metric cards, sales target bar, top 5 income/expenses with budget sub-lines, combo revenue chart, trend + donut charts, coaching goals)
+- [x] Financials tab — exact mockup match
+- [x] Reports tab — exact mockup match
+- [x] Coaching tab — exact mockup match
+- [ ] Document Vault (Portal) tab — exact mockup match
+- [ ] AI Summaries tab — exact mockup match
+- [ ] KPI Dashboard tab — exact mockup match
+- [ ] Time Intelligence tab — exact mockup match
+- [ ] Sales Tracker tab — exact mockup match

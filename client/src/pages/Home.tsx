@@ -11,11 +11,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!loading && isAuthenticated) {
-      if (user?.role === "admin") {
-        navigate("/admin");
-      } else {
-        navigate("/portal");
-      }
+      navigate("/portal");
     }
   }, [loading, isAuthenticated, user]);
 

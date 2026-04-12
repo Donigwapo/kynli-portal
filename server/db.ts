@@ -137,6 +137,21 @@ export async function getLineItems(tenantId: number, year: number, month: number
     .orderBy(desc(lineItems.amount));
 }
 
+export async function getLineItemsByYear(tenantId: number, year: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(lineItems)
+    .where(
+      and(
+        eq(lineItems.tenantId, tenantId),
+        eq(lineItems.year, year)
+      )
+    )
+    .orderBy(desc(lineItems.amount));
+}
+
 export async function insertLineItem(data: typeof lineItems.$inferInsert) {
   const db = await getDb();
   if (!db) return;
