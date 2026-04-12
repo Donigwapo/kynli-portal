@@ -83,6 +83,7 @@
 - [x] Sales Tracker tab — exact mockup match
 
 ## Sidebar Fix
+- [x] Remove KPI Dashboard and AI Summaries from sidebar nav and routes (user request)
 - [ ] Remove tier gating from sidebar — CFO build shows all tabs always
 - [ ] Match exact nav order from mockup: Overview → Clients (TBD) → Sales Tracker → Financials → Time Intelligence → Coaching → Portal → Reports
 - [ ] Match sidebar visual style from mockup screenshot (larger spacing, rounded active state with teal bg, arrow indicator on active)

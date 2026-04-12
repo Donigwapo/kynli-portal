@@ -1,9 +1,8 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import {
-  BarChart3,
   BookOpen,
-  Brain,
+  BarChart3,
   Clock,
   DollarSign,
   FileBarChart,
@@ -33,8 +32,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "coaching",          label: "Coaching",          icon: <BookOpen size={16} />,       href: "/portal/coaching" },
   { id: "documents",         label: "Portal",            icon: <FolderOpen size={16} />,     href: "/portal/documents" },
   { id: "reports",           label: "Reports",           icon: <FileBarChart size={16} />,   href: "/portal/reports" },
-  { id: "ai_summaries",      label: "AI Summaries",      icon: <Brain size={16} />,          href: "/portal/ai-summaries" },
-  { id: "kpi_dashboard",     label: "KPI Dashboard",     icon: <BarChart3 size={16} />,      href: "/portal/kpi" },
+
 ];
 
 interface PortalLayoutProps {
