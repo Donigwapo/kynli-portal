@@ -61,3 +61,9 @@
 - [ ] Admin: drag-and-drop document upload UI improvement
 - [ ] Admin: edit/delete coaching items from UI
 - [ ] Admin: edit/delete line items from UI
+
+## Bug Fixes
+- [x] Fix 404 on sidebar tab navigation — route mismatch between PortalLayout hrefs and App.tsx routes
+- [x] Fix admin sidebar 404 — remove broken nav links (overview, sales, financials, time, coaching, reports) that have no registered routes
+- [x] Create Grit Media Group LLC test tenant (Growth 1 tier)
+- [x] Seed Jan/Feb/Mar 2026 financials + line items for Grit Media Group LLC
