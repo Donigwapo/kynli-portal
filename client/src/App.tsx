@@ -19,6 +19,7 @@ import Coaching from "./pages/portal/Coaching";
 import KpiDashboard from "./pages/portal/KpiDashboard";
 import TimeIntelligence from "./pages/portal/TimeIntelligence";
 import SalesTracker from "./pages/portal/SalesTracker";
+import Clients from "./pages/portal/Clients";
 
 // Admin pages
 import AdminClients from "./pages/admin/AdminClients";
@@ -58,6 +59,7 @@ function Router() {
       <Route path="/portal/kpi" component={() => <PortalRoute component={KpiDashboard} />} />
       <Route path="/portal/time" component={() => <PortalRoute component={TimeIntelligence} />} />
       <Route path="/portal/sales" component={() => <PortalRoute component={SalesTracker} />} />
+      <Route path="/portal/clients" component={() => <PortalRoute component={Clients} />} />
 
       {/* Admin Portal — protected + admin-only */}
       <Route path="/admin" component={() => <AdminRoute component={AdminClients} />} />

@@ -11,6 +11,7 @@ import {
   deleteDocument,
   getAllTenants,
   getAiSummary,
+  getClientRoster,
   getCoachingItems,
   getDocuments,
   getFinancials,
@@ -21,6 +22,7 @@ import {
   getTenantById,
   getTenantByUserId,
   getTimeLogs,
+  insertClientRosterEntry,
   insertCoachingItem,
   insertDocument,
   insertLineItem,
@@ -317,8 +319,33 @@ export const appRouter = router({
         return { success: true };
       }),
   }),
+  // ─── Client Roster ────────────────────────────────────────────────────────────
+  clientRoster: router({
+    list: protectedProcedure
+      .input(z.object({ tenantId: z.number().optional() }))
+      .query(async ({ ctx, input }) => {
+        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
+        return getClientRoster(tenant.id);
+      }),
+    add: protectedProcedure
+      .input(
+        z.object({
+          clientName: z.string(),
+          packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
+          monthlyFee: z.string(),
+          signedAt: z.date(),
+          status: z.enum(["active", "churned"]).optional(),
+          totalIncome: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const tenant = await resolveTenant(ctx.user.id, ctx.user.role);
+        await insertClientRosterEntry({ ...input, tenantId: tenant.id });
+        return { success: true };
+      }),
+  }),
 
-  // ─── AI Summaries ─────────────────────────────────────────────────────────
+  // ─── AI Summaries ────────────────────────────────────────────────────────────
   aiSummary: router({
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantId: z.number().optional() }))

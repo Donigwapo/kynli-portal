@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   aiSummaries,
+  clientRoster,
   coachingItems,
   documents,
   financials,
@@ -280,4 +281,21 @@ export async function upsertAiSummary(data: typeof aiSummaries.$inferInsert) {
   const db = await getDb();
   if (!db) return;
   await db.insert(aiSummaries).values(data).onDuplicateKeyUpdate({ set: data });
+}
+
+// ─── Client Roster ────────────────────────────────────────────────────────────
+export async function getClientRoster(tenantId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(clientRoster)
+    .where(eq(clientRoster.tenantId, tenantId))
+    .orderBy(clientRoster.clientName);
+}
+
+export async function insertClientRosterEntry(data: typeof clientRoster.$inferInsert) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(clientRoster).values(data);
 }
