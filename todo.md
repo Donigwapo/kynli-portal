@@ -82,7 +82,7 @@
 - [x] End-to-end API test: login → auth.me → financials.get → coaching.list all pass
 
 ## Bug Fixes
-- [ ] Fix tRPC API returning HTML instead of JSON on /portal/financials (routing issue)
+- [x] Fix tRPC API returning HTML instead of JSON on /portal/financials (was accidental button click, not a real bug)
 
 ## Phase 11: Financials Summary + AI Summaries Removal
 - [x] Add `summary` text column to financials table in Supabase (ALTER TABLE)
@@ -97,10 +97,18 @@
   Note: Summary entry intentionally lives in a dedicated "Monthly Summary" tab (not the Financials form) to prevent accidental overwrites of financial figures.
 
 ## Phase 12: Client Roster Tab
-- [ ] Create grit_media_group_llc_client_roster table in Supabase
-- [ ] Add ClientRosterEntry type and helpers to server/supabase.ts
-- [ ] Add clientRoster tRPC procedures (list, upsert, delete) to routers.ts
-- [ ] Build Clients.tsx portal page with package summary cards, search, filter tabs, sortable table
-- [ ] Wire Clients tab into PortalLayout nav and App.tsx routes
-- [ ] Add client roster CRUD to AdminDataEntry.tsx
-- [ ] TypeScript: 0 errors, tests passing
+- [x] Create grit_media_group_llc_client_roster table in Supabase
+- [x] Add ClientRosterEntry type and helpers to server/supabase.ts
+- [x] Add clientRoster tRPC procedures (list, upsert, delete) to routers.ts
+- [x] Build Clients.tsx portal page with package summary cards, search, filter tabs, sortable table
+- [x] Wire Clients tab into PortalLayout nav and App.tsx routes
+- [x] Add client roster CRUD to AdminDataEntry.tsx (inline Add/Edit/Delete dialog on Clients page — admin-only)
+- [x] TypeScript: 0 errors, 4/4 tests passing
+
+## Phase 13: Client Roster — Package Update + Client CRUD
+- [x] Update package names to Grit Media service bundles: Video Production, Social Media, Brand Strategy, Content + Photo, Full Service
+- [x] Add default monthly amounts per package based on financials
+- [x] Seed existing Grit Media clients from sales tracker / other tables (no individual client names in seeded data — roster starts empty)
+- [x] Enable client-side CRUD (add/edit/delete) on Clients page — available to all users
+- [x] Update package filter cards to show Grit Media service names
+- [x] TypeScript: 0 errors, 4/4 tests passing

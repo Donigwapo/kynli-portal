@@ -24,14 +24,23 @@ import { toast } from "sonner";
 type SortField = "client_name" | "package" | "monthly_amount" | "signed_date" | "status" | "tenure_months" | "ltv";
 type SortDir = "asc" | "desc";
 
-const PACKAGES = ["Momentum", "Growth 1", "Growth 2", "Accelerate/CFO", "Legacy"];
+// Grit Media Group LLC service packages with default monthly amounts
+const PACKAGES: { name: string; defaultAmount: number }[] = [
+  { name: "Video Production", defaultAmount: 14400 },
+  { name: "Social Media", defaultAmount: 8833 },
+  { name: "Brand Strategy", defaultAmount: 5233 },
+  { name: "Content + Photo", defaultAmount: 3000 },
+  { name: "Full Service", defaultAmount: 31466 },
+];
+
+const PACKAGE_NAMES = PACKAGES.map(p => p.name);
 
 const PACKAGE_COLORS: Record<string, string> = {
-  "Momentum": "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
-  "Growth 1": "text-blue-400 border-blue-400/40 bg-blue-400/10",
-  "Growth 2": "text-cyan-400 border-cyan-400/40 bg-cyan-400/10",
-  "Accelerate/CFO": "text-amber-400 border-amber-400/40 bg-amber-400/10",
-  "Legacy": "text-purple-400 border-purple-400/40 bg-purple-400/10",
+  "Video Production":  "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
+  "Social Media":      "text-blue-400 border-blue-400/40 bg-blue-400/10",
+  "Brand Strategy":    "text-cyan-400 border-cyan-400/40 bg-cyan-400/10",
+  "Content + Photo":   "text-amber-400 border-amber-400/40 bg-amber-400/10",
+  "Full Service":      "text-purple-400 border-purple-400/40 bg-purple-400/10",
 };
 
 const fmtDollar = (v: number) =>
@@ -94,11 +103,11 @@ export default function Clients() {
 
   // ── Package summary cards ───────────────────────────────────────────────────
   const packageStats = useMemo(() => {
-    return PACKAGES.map(pkg => {
+    return PACKAGES.map(({ name: pkg, defaultAmount }) => {
       const pkgClients = clients.filter(c => c.package === pkg && c.status === "active");
       const avgMo = pkgClients.length > 0
         ? pkgClients.reduce((s, c) => s + c.monthly_amount, 0) / pkgClients.length
-        : 0;
+        : defaultAmount;
       const avgTenure = pkgClients.length > 0
         ? pkgClients.reduce((s, c) => s + c.tenure_months, 0) / pkgClients.length
         : 0;
@@ -112,14 +121,31 @@ export default function Clients() {
   const activeCount = clients.filter(c => c.status === "active").length;
   const totalMrr = clients.filter(c => c.status === "active").reduce((s, c) => s + c.monthly_amount, 0);
 
-  // ── Add/Edit dialog ─────────────────────────────────────────────────────────
+  // ── Add/Edit dialog — available to ALL users (client + admin) ───────────────
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({
-    clientName: "", package: "Momentum", monthlyAmount: "",
-    signedDate: "", status: "active" as "active" | "churned",
-    tenureMonths: "", ltv: "", totalIncome: "", notes: "",
+    clientName: "",
+    package: "Video Production",
+    monthlyAmount: String(PACKAGES[0].defaultAmount),
+    signedDate: "",
+    status: "active" as "active" | "churned",
+    tenureMonths: "",
+    ltv: "",
+    totalIncome: "",
+    notes: "",
   });
+
+  // Auto-fill monthly amount when package changes
+  const handlePackageChange = (pkg: string) => {
+    const found = PACKAGES.find(p => p.name === pkg);
+    setForm(f => ({
+      ...f,
+      package: pkg,
+      // Only auto-fill if the user hasn't manually changed the amount
+      monthlyAmount: found ? String(found.defaultAmount) : f.monthlyAmount,
+    }));
+  };
 
   const addMutation = trpc.roster.add.useMutation({
     onSuccess: () => { toast.success("Client added"); setDialogOpen(false); refetch(); },
@@ -136,7 +162,17 @@ export default function Clients() {
 
   const openAdd = () => {
     setEditingId(null);
-    setForm({ clientName: "", package: "Momentum", monthlyAmount: "", signedDate: "", status: "active", tenureMonths: "", ltv: "", totalIncome: "", notes: "" });
+    setForm({
+      clientName: "",
+      package: "Video Production",
+      monthlyAmount: String(PACKAGES[0].defaultAmount),
+      signedDate: "",
+      status: "active",
+      tenureMonths: "",
+      ltv: "",
+      totalIncome: "",
+      notes: "",
+    });
     setDialogOpen(true);
   };
 
@@ -190,57 +226,54 @@ export default function Clients() {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Client Roster</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {activeCount} active client{activeCount !== 1 ? "s" : ""} · {fmtDollar(totalMrr)}/mo MRR
+            {activeCount} active client{activeCount !== 1 ? "s" : ""}
+            {totalMrr > 0 && ` · ${fmtDollar(totalMrr)}/mo MRR`}
           </p>
         </div>
-        {isAdmin && (
-          <Button onClick={openAdd} className="bg-primary text-primary-foreground gap-2 text-sm">
-            <Plus className="w-4 h-4" /> Add Client
-          </Button>
-        )}
+        <Button onClick={openAdd} className="bg-primary text-primary-foreground gap-2 text-sm">
+          <Plus className="w-4 h-4" /> Add Client
+        </Button>
       </div>
 
-      {/* Package summary cards */}
-      {packageStats.some(p => p.count > 0) && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-          {packageStats.map(({ pkg, count, avgMo, avgTenure, avgLtv }) => (
-            <Card
-              key={pkg}
-              className={`bg-card border cursor-pointer transition-colors hover:border-primary/40 ${packageFilter === pkg ? "border-primary/60" : "border-border"}`}
-              onClick={() => setPackageFilter(packageFilter === pkg ? "all" : pkg)}
-            >
-              <CardContent className="p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${PACKAGE_COLORS[pkg] ?? "text-muted-foreground border-border"}`}>
-                    {pkg}
-                  </span>
-                  <span className="text-xs text-muted-foreground">{count} active</span>
+      {/* Package summary cards — always shown, uses default amounts when empty */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+        {packageStats.map(({ pkg, count, avgMo, avgTenure, avgLtv }) => (
+          <Card
+            key={pkg}
+            className={`bg-card border cursor-pointer transition-colors hover:border-primary/40 ${packageFilter === pkg ? "border-primary/60" : "border-border"}`}
+            onClick={() => setPackageFilter(packageFilter === pkg ? "all" : pkg)}
+          >
+            <CardContent className="p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${PACKAGE_COLORS[pkg] ?? "text-muted-foreground border-border"}`}>
+                  {pkg}
+                </span>
+                <span className="text-xs text-muted-foreground">{count} active</span>
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">$ Avg/mo</span>
+                  <span className="font-semibold text-foreground">{fmtDollar(Math.round(avgMo))}</span>
                 </div>
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">$ Avg/mo</span>
-                    <span className="font-semibold text-foreground">{fmtDollar(Math.round(avgMo))}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">⏱ Tenure</span>
-                    <span className="font-semibold text-foreground">{avgTenure.toFixed(1)} mo</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">↗ LTV</span>
-                    <span className="font-semibold text-primary">{fmtDollar(Math.round(avgLtv))}</span>
-                  </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">⏱ Tenure</span>
+                  <span className="font-semibold text-foreground">{avgTenure.toFixed(1)} mo</span>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">↗ LTV</span>
+                  <span className="font-semibold text-primary">{fmtDollar(Math.round(avgLtv))}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
       {/* Search */}
       <div className="relative">
@@ -248,7 +281,7 @@ export default function Clients() {
         <Input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, package, or status..."
+          placeholder="Search by name, service, or status..."
           className="pl-9 bg-card border-border"
         />
       </div>
@@ -268,15 +301,15 @@ export default function Clients() {
           ))}
         </div>
 
-        {/* Package filters */}
-        <div className="flex rounded-lg border border-border overflow-hidden">
+        {/* Package/service filters */}
+        <div className="flex flex-wrap rounded-lg border border-border overflow-hidden">
           <button
             onClick={() => setPackageFilter("all")}
             className={`px-3 py-1.5 text-xs font-medium transition-colors ${packageFilter === "all" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted/40"}`}
           >
-            All Packages
+            All Services
           </button>
-          {PACKAGES.map(pkg => (
+          {PACKAGE_NAMES.map(pkg => (
             <button
               key={pkg}
               onClick={() => setPackageFilter(packageFilter === pkg ? "all" : pkg)}
@@ -297,22 +330,22 @@ export default function Clients() {
             <thead>
               <tr className="border-b border-border bg-muted/20">
                 <th className="text-left px-4 py-3"><ColHeader field="client_name" label="Client" /></th>
-                <th className="text-left px-4 py-3"><ColHeader field="package" label="Package" /></th>
+                <th className="text-left px-4 py-3"><ColHeader field="package" label="Service" /></th>
                 <th className="text-right px-4 py-3"><ColHeader field="monthly_amount" label="Monthly" /></th>
                 <th className="text-left px-4 py-3"><ColHeader field="signed_date" label="Signed" /></th>
                 <th className="text-left px-4 py-3"><ColHeader field="status" label="Status" /></th>
                 <th className="text-right px-4 py-3"><ColHeader field="tenure_months" label="Tenure" /></th>
                 <th className="text-right px-4 py-3"><ColHeader field="ltv" label="LTV" /></th>
-                {isAdmin && <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>}
+                <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={isAdmin ? 8 : 7} className="text-center py-12 text-muted-foreground">
+                  <td colSpan={8} className="text-center py-12 text-muted-foreground">
                     <Users className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                    <p className="text-sm">No clients found</p>
-                    {isAdmin && <p className="text-xs mt-1">Click "+ Add Client" to get started</p>}
+                    <p className="text-sm">No clients yet</p>
+                    <p className="text-xs mt-1">Click "+ Add Client" to start tracking your roster</p>
                   </td>
                 </tr>
               ) : filtered.map((c, i) => (
@@ -342,22 +375,20 @@ export default function Clients() {
                   </td>
                   <td className="px-4 py-3 text-right text-muted-foreground">{c.tenure_months} mo</td>
                   <td className="px-4 py-3 text-right font-semibold text-primary">{fmtDollar(c.ltv)}</td>
-                  {isAdmin && (
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => openEdit(c)}>
-                          <Pencil className="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost" size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug, id: c.id }); }}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
-                    </td>
-                  )}
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => openEdit(c)}>
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug, id: c.id }); }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -365,77 +396,114 @@ export default function Clients() {
         </div>
       </Card>
 
-      {/* Add/Edit Dialog */}
-      {isAdmin && (
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogContent className="bg-card border-border max-w-lg">
-            <DialogHeader>
-              <DialogTitle>{editingId !== null ? "Edit Client" : "Add Client"}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3 py-2">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="col-span-2">
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Client Name *</Label>
-                  <Input value={form.clientName} onChange={e => setForm(f => ({ ...f, clientName: e.target.value }))} placeholder="e.g. AdGenius LLC" className="bg-background border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Package</Label>
-                  <Select value={form.package} onValueChange={v => setForm(f => ({ ...f, package: v }))}>
-                    <SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {PACKAGES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Status</Label>
-                  <Select value={form.status} onValueChange={v => setForm(f => ({ ...f, status: v as "active" | "churned" }))}>
-                    <SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="active">Active</SelectItem>
-                      <SelectItem value="churned">Churned</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Monthly Amount ($)</Label>
-                  <Input value={form.monthlyAmount} onChange={e => setForm(f => ({ ...f, monthlyAmount: e.target.value }))} placeholder="875" className="bg-background border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Signed Date</Label>
-                  <Input type="date" value={form.signedDate} onChange={e => setForm(f => ({ ...f, signedDate: e.target.value }))} className="bg-background border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Tenure (months)</Label>
-                  <Input value={form.tenureMonths} onChange={e => setForm(f => ({ ...f, tenureMonths: e.target.value }))} placeholder="12" className="bg-background border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">LTV ($)</Label>
-                  <Input value={form.ltv} onChange={e => setForm(f => ({ ...f, ltv: e.target.value }))} placeholder="10500" className="bg-background border-border" />
-                </div>
-                <div className="col-span-2">
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Total Income ($)</Label>
-                  <Input value={form.totalIncome} onChange={e => setForm(f => ({ ...f, totalIncome: e.target.value }))} placeholder="23041.67" className="bg-background border-border" />
-                </div>
-                <div className="col-span-2">
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Notes (optional)</Label>
-                  <Textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes about this client..." className="bg-background border-border min-h-[60px]" />
-                </div>
+      {/* Add/Edit Dialog — available to all users */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="bg-card border-border max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingId !== null ? "Edit Client" : "Add Client"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Client Name *</Label>
+                <Input
+                  value={form.clientName}
+                  onChange={e => setForm(f => ({ ...f, clientName: e.target.value }))}
+                  placeholder="e.g. Acme Media Co."
+                  className="bg-background border-border"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Service Package</Label>
+                <Select value={form.package} onValueChange={handlePackageChange}>
+                  <SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PACKAGES.map(p => (
+                      <SelectItem key={p.name} value={p.name}>
+                        {p.name} <span className="text-muted-foreground ml-1">({fmtDollar(p.defaultAmount)}/mo)</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Status</Label>
+                <Select value={form.status} onValueChange={v => setForm(f => ({ ...f, status: v as "active" | "churned" }))}>
+                  <SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="churned">Churned</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Monthly Amount ($)</Label>
+                <Input
+                  value={form.monthlyAmount}
+                  onChange={e => setForm(f => ({ ...f, monthlyAmount: e.target.value }))}
+                  placeholder="14400"
+                  className="bg-background border-border"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Signed Date</Label>
+                <Input
+                  type="date"
+                  value={form.signedDate}
+                  onChange={e => setForm(f => ({ ...f, signedDate: e.target.value }))}
+                  className="bg-background border-border"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Tenure (months)</Label>
+                <Input
+                  value={form.tenureMonths}
+                  onChange={e => setForm(f => ({ ...f, tenureMonths: e.target.value }))}
+                  placeholder="12"
+                  className="bg-background border-border"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">LTV ($)</Label>
+                <Input
+                  value={form.ltv}
+                  onChange={e => setForm(f => ({ ...f, ltv: e.target.value }))}
+                  placeholder="172800"
+                  className="bg-background border-border"
+                />
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Total Income ($)</Label>
+                <Input
+                  value={form.totalIncome}
+                  onChange={e => setForm(f => ({ ...f, totalIncome: e.target.value }))}
+                  placeholder="43200"
+                  className="bg-background border-border"
+                />
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Notes (optional)</Label>
+                <Textarea
+                  value={form.notes}
+                  onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Any notes about this client..."
+                  className="bg-background border-border min-h-[60px]"
+                />
               </div>
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button
-                className="bg-primary text-primary-foreground"
-                disabled={!form.clientName.trim() || addMutation.isPending || updateMutation.isPending}
-                onClick={handleSave}
-              >
-                {(addMutation.isPending || updateMutation.isPending) ? "Saving…" : "Save"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button
+              className="bg-primary text-primary-foreground"
+              disabled={!form.clientName.trim() || addMutation.isPending || updateMutation.isPending}
+              onClick={handleSave}
+            >
+              {(addMutation.isPending || updateMutation.isPending) ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
