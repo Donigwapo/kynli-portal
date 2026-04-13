@@ -80,3 +80,18 @@
 - [x] Fix PortalContext.tsx, PortalLayout.tsx, AdminClients.tsx, AdminDataEntry.tsx
 - [x] All 4 vitest tests passing (supabase.test.ts + auth.logout.test.ts)
 - [x] End-to-end API test: login → auth.me → financials.get → coaching.list all pass
+
+## Bug Fixes
+- [ ] Fix tRPC API returning HTML instead of JSON on /portal/financials (routing issue)
+
+## Phase 11: Financials Summary + AI Summaries Removal
+- [x] Add `summary` text column to financials table in Supabase (ALTER TABLE)
+- [x] Update server/supabase.ts financials query to include summary field
+- [x] Update server/routers.ts financials.upsert to accept summary field
+- [x] Remove AI Summaries tab from PortalLayout nav
+- [x] Remove /portal/ai-summaries route from App.tsx
+- [x] Add collapsible monthly summary dropdown to Financials.tsx
+- [x] Update AdminDataEntry.tsx financials form to include summary textarea
+- [x] Add financials.updateSummary tRPC procedure (PATCH-only, no financial figure overwrite)
+- [x] Add dedicated Monthly Summary tab in AdminDataEntry.tsx
+  Note: Summary entry intentionally lives in a dedicated "Monthly Summary" tab (not the Financials form) to prevent accidental overwrites of financial figures.

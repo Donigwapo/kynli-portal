@@ -15,7 +15,6 @@ import Overview from "./pages/portal/Overview";
 import Financials from "./pages/portal/Financials";
 import Reports from "./pages/portal/Reports";
 import Documents from "./pages/portal/Documents";
-import AiSummaries from "./pages/portal/AiSummaries";
 import Coaching from "./pages/portal/Coaching";
 import KpiDashboard from "./pages/portal/KpiDashboard";
 import TimeIntelligence from "./pages/portal/TimeIntelligence";
@@ -57,7 +56,6 @@ function Router() {
       <Route path="/portal/financials" component={() => <PortalRoute component={Financials} />} />
       <Route path="/portal/reports" component={() => <PortalRoute component={Reports} />} />
       <Route path="/portal/documents" component={() => <PortalRoute component={Documents} />} />
-      <Route path="/portal/ai-summaries" component={() => <PortalRoute component={AiSummaries} />} />
       <Route path="/portal/coaching" component={() => <PortalRoute component={Coaching} />} />
       <Route path="/portal/kpi" component={() => <PortalRoute component={KpiDashboard} />} />
       <Route path="/portal/time" component={() => <PortalRoute component={TimeIntelligence} />} />

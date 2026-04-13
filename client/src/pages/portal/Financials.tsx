@@ -1,7 +1,8 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { useState } from "react";
 import {
-  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, ComposedChart,
+  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
@@ -23,6 +24,46 @@ function ThinBar({ value, max, red = false }: { value: number; max: number; red?
   return (
     <div className="w-full h-1 bg-muted rounded-full overflow-hidden mt-1">
       <div className={`h-full rounded-full ${red ? "bg-red-500" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function MonthlySummaryPanel({ summary, month, year }: { summary?: string | null; month: number; year: number }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm hover:bg-muted/30 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-foreground font-medium">
+          <FileText className="w-4 h-4 text-primary" />
+          {MONTHS_LONG[month - 1]} {year} — Monthly Summary
+        </div>
+        <div className="flex items-center gap-2">
+          {!summary && (
+            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">No summary yet</span>
+          )}
+          {open ? (
+            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 pt-1 border-t border-border">
+          {summary ? (
+            <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">{summary}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground italic py-2">
+              Your KynLi advisor hasn't added a summary for this month yet. Check back after your next review session.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -102,6 +143,9 @@ export default function Financials() {
           </Select>
         </div>
       </div>
+
+      {/* Monthly Summary Dropdown */}
+      <MonthlySummaryPanel summary={current?.summary} month={month} year={year} />
 
       {/* 4 metric cards */}
       <div className="grid grid-cols-4 gap-4">
@@ -191,17 +235,15 @@ export default function Financials() {
               {topExpenses.map((item, i) => {
                 const amt = fmtN(item.amount);
                 const pct = ((amt / totalExp) * 100).toFixed(1);
-                const over = false; // budgetAmount not tracked at line-item level
                 return (
                   <div key={item.id}>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground w-4 shrink-0">{i + 1}.</span>
                       <span className="text-foreground flex-1 truncate mx-2">{item.label}</span>
-                      <span className={`font-medium ${over ? "text-red-400" : "text-foreground"}`}>{fmtD(item.amount)}</span>
+                      <span className="font-medium text-foreground">{fmtD(item.amount)}</span>
                       <span className="text-muted-foreground ml-2 w-10 text-right">{pct}%</span>
                     </div>
-                    <ThinBar value={amt} max={totalExp} red={over} />
-                    {over && null}
+                    <ThinBar value={amt} max={totalExp} />
                   </div>
                 );
               })}

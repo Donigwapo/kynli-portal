@@ -28,6 +28,7 @@ import {
   deleteCoachingItem,
   deleteDocument,
   upsertFinancial,
+  updateFinancialSummary,
   upsertKpiMetric,
   upsertPortalTenant,
   upsertSalesTracker,
@@ -145,6 +146,7 @@ export const appRouter = router({
         revenue: z.number(), budgetRevenue: z.number(),
         expenses: z.number(), budgetExpenses: z.number(),
         netProfit: z.number(), netProfitMargin: z.number(),
+        summary: z.string().optional().nullable(),
       }))
       .mutation(async ({ input }) => {
         await upsertFinancial(input.tenantSlug, {
@@ -152,7 +154,19 @@ export const appRouter = router({
           revenue: input.revenue, budget_revenue: input.budgetRevenue,
           expenses: input.expenses, budget_expenses: input.budgetExpenses,
           net_profit: input.netProfit, net_profit_margin: input.netProfitMargin,
+          summary: input.summary ?? null,
         });
+        return { success: true };
+      }),
+    updateSummary: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string(),
+        year: z.number(),
+        month: z.number(),
+        summary: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        await updateFinancialSummary(input.tenantSlug, input.year, input.month, input.summary);
         return { success: true };
       }),
     addLineItem: adminProcedure

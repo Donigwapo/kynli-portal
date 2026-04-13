@@ -55,6 +55,7 @@ export type Financial = {
   budget_expenses: number;
   net_profit: number;
   net_profit_margin: number;
+  summary?: string | null;
 };
 
 export type LineItem = {
@@ -237,6 +238,15 @@ export async function upsertFinancial(slug: string, data: Omit<Financial, "id">)
   const { error } = await supabase
     .from(`${slug}_financials`)
     .upsert(data, { onConflict: "year,month" });
+  if (error) throw new Error(error.message);
+}
+
+export async function updateFinancialSummary(slug: string, year: number, month: number, summary: string): Promise<void> {
+  const { error } = await supabase
+    .from(`${slug}_financials`)
+    .update({ summary })
+    .eq("year", year)
+    .eq("month", month);
   if (error) throw new Error(error.message);
 }
 

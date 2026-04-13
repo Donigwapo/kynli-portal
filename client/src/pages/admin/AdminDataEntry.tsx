@@ -30,7 +30,7 @@ export default function AdminDataEntry() {
   const { data: tenants } = trpc.tenant.list.useQuery();
 
   // ── Financials ──────────────────────────────────────────────────────────────
-  const [fin, setFin] = useState({ revenue: "", expenses: "", netProfit: "", netProfitMargin: "", budgetRevenue: "", budgetExpenses: "" });
+  const [fin, setFin] = useState({ revenue: "", expenses: "", netProfit: "", netProfitMargin: "", budgetRevenue: "", budgetExpenses: "", summary: "" });
   const upsertFin = trpc.financials.upsert.useMutation({ onSuccess: () => toast.success("Financials saved") });
 
   // ── Line Items ──────────────────────────────────────────────────────────────
@@ -56,8 +56,9 @@ export default function AdminDataEntry() {
   const [sales, setSales] = useState({ goalClients: "", signedClients: "", referralCount: "", outboundCount: "" });
   const upsertSales = trpc.sales.upsert.useMutation({ onSuccess: () => toast.success("Sales data saved") });
 
-  // ── AI Summary ──────────────────────────────────────────────────────────────
-  const generateSummary = trpc.aiSummary.generate.useMutation({ onSuccess: () => toast.success("AI summary generated") });
+  // ── Monthly Summary ─────────────────────────────────────────────────────────
+  const [summaryText, setSummaryText] = useState("");
+  const saveSummary = trpc.financials.updateSummary.useMutation({ onSuccess: () => { toast.success("Monthly summary saved"); setSummaryText(""); } });
 
   // ── Document Upload ─────────────────────────────────────────────────────────
   const [docName, setDocName] = useState("");
@@ -127,9 +128,9 @@ export default function AdminDataEntry() {
 
       <Tabs defaultValue="financials" className="space-y-4">
         <TabsList className="bg-card border border-border">
-          {["financials", "coaching", "documents", "kpi", "time", "sales", "ai"].map((t) => (
+          {["financials", "coaching", "documents", "kpi", "time", "sales", "summary"].map((t) => (
             <TabsTrigger key={t} value={t} className="text-xs capitalize data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-              {t === "ai" ? "AI Summary" : t}
+              {t === "summary" ? "Monthly Summary" : t}
             </TabsTrigger>
           ))}
         </TabsList>
@@ -152,6 +153,7 @@ export default function AdminDataEntry() {
                 revenue: Number(fin.revenue), expenses: Number(fin.expenses),
                 netProfit: Number(fin.netProfit), netProfitMargin: Number(fin.netProfitMargin),
                 budgetRevenue: Number(fin.budgetRevenue), budgetExpenses: Number(fin.budgetExpenses),
+                summary: fin.summary || null,
               })}>
                 {upsertFin.isPending ? "Saving…" : "Save Financials"}
               </Button>
@@ -321,17 +323,34 @@ export default function AdminDataEntry() {
           </Card>
         </TabsContent>
 
-        {/* AI Summary */}
-        <TabsContent value="ai">
+        {/* Monthly Summary */}
+        <TabsContent value="summary">
           <Card className="bg-card border-border">
-            <CardHeader className="pb-3"><CardTitle className="text-sm">Generate AI Financial Summary</CardTitle></CardHeader>
+            <CardHeader className="pb-3"><CardTitle className="text-sm">Monthly Financial Summary</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                This will use the existing financial data for the selected client, month, and year to generate an AI-powered summary. Make sure financial data is entered first.
+                Write a summary for the selected client's monthly financial report. This will be visible to the client as a collapsible section in their Financials tab.
               </p>
-              <Button size="sm" className="bg-primary text-primary-foreground gap-2" disabled={!tenantSlug || generateSummary.isPending} onClick={() => generateSummary.mutate({ tenantSlug, year: yr, month: mo })}>
-                {generateSummary.isPending ? "Generating…" : "Generate Summary"}
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Summary Text</Label>
+                <Textarea
+                  value={summaryText}
+                  onChange={(e) => setSummaryText(e.target.value)}
+                  placeholder="e.g. January was a strong month — revenue exceeded budget by 12%. Key drivers were the new retainer signed with ABC Corp and a reduction in software expenses. Net profit margin improved to 38%, above the 35% target. Recommended focus for February: continue outbound outreach and review subscription costs."
+                  className="bg-background border-border text-sm min-h-[160px]"
+                />
+              </div>
+              <Button
+                size="sm"
+                className="bg-primary text-primary-foreground"
+                disabled={!tenantSlug || !summaryText.trim() || saveSummary.isPending}
+                onClick={() => saveSummary.mutate({ tenantSlug, year: yr, month: mo, summary: summaryText })}
+              >
+                {saveSummary.isPending ? "Saving…" : "Save Summary"}
               </Button>
+              <p className="text-xs text-muted-foreground">
+                Note: Saving here will only update the summary field. Financial figures are not overwritten if already set — use the Financials tab to update numbers.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>

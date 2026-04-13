@@ -3,7 +3,6 @@ import { cn } from "@/lib/utils";
 import {
   BarChart3,
   BookOpen,
-  Brain,
   Clock,
   FileText,
   FolderOpen,
@@ -31,7 +30,6 @@ const CLIENT_NAV: NavItem[] = [
   { id: "financials", label: "Financials", icon: <BarChart3 size={16} />, href: "/portal/financials" },
   { id: "reports", label: "Reports", icon: <TrendingUp size={16} />, href: "/portal/reports" },
   { id: "documents", label: "Portal", icon: <FolderOpen size={16} />, href: "/portal/documents" },
-  { id: "ai_summaries", label: "AI Summaries", icon: <Brain size={16} />, href: "/portal/ai-summaries" },
   { id: "coaching", label: "Coaching", icon: <BookOpen size={16} />, href: "/portal/coaching" },
   { id: "kpi_dashboard", label: "KPI Dashboard", icon: <Target size={16} />, href: "/portal/kpi" },
   { id: "time_intelligence", label: "Time Intelligence", icon: <Clock size={16} />, href: "/portal/time" },
