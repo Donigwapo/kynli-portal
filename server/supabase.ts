@@ -65,6 +65,7 @@ export type LineItem = {
   type: "income" | "expense";
   label: string;
   amount: number;
+  budget_amount?: number | null;
 };
 
 export type CoachingItem = {

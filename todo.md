@@ -112,3 +112,12 @@
 - [x] Enable client-side CRUD (add/edit/delete) on Clients page — available to all users
 - [x] Update package filter cards to show Grit Media service names
 - [x] TypeScript: 0 errors, 4/4 tests passing
+
+## Phase 14: Full UI Redesign — Reference Dashboard Match
+- [x] Rebuild Overview.tsx — 4 KPI cards, sales target progress, client roster snapshot, top income/expenses, bar chart, area chart, coaching goals
+- [x] Rebuild SalesTracker.tsx — 4 KPI cards, annual goal progress bar, monthly bar chart, monthly breakdown table with totals
+- [x] Rebuild TimeIntelligence.tsx — 4 KPI cards, strategic vs operational split, radar chart, hours breakdown table, delegation suggestions
+- [x] Rebuild Coaching.tsx — quarter progress bar, goal checklist with toggle/delete, stats summary, add goal dialog
+- [x] Rebuild Reports.tsx — 4 KPI cards, revenue/budget/expenses line chart, net profit bar chart, monthly breakdown table with totals
+- [x] Remove double-wrapping PortalLayout from all rebuilt pages (PortalRoute already wraps)
+- [x] TypeScript: 0 errors after all rebuilds

@@ -19,7 +19,6 @@ import {
   getTenantBySlug,
   getTimeLogs,
   upsertClientRosterEntry,
-  updateClientRosterEntry,
   deleteClientRosterEntry,
   insertCoachingItem,
   insertDocument,
@@ -377,15 +376,22 @@ export const appRouter = router({
         notes: z.string().nullable().optional(),
       }))
       .mutation(async ({ input }) => {
-        const { tenantSlug, id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, ...rest } = input;
-        await updateClientRosterEntry(tenantSlug, id, {
-          ...(clientName !== undefined && { client_name: clientName }),
-          ...(monthlyAmount !== undefined && { monthly_amount: monthlyAmount }),
-          ...(signedDate !== undefined && { signed_date: signedDate }),
-          ...(tenureMonths !== undefined && { tenure_months: tenureMonths }),
-          ...(totalIncome !== undefined && { total_income: totalIncome }),
-          ...rest,
-        });
+        const { tenantSlug, id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, notes, package: pkg, status } = input;
+        // Use upsert with id to update existing record
+        await supabase
+          .from(`${tenantSlug}_client_roster`)
+          .update({
+            ...(clientName !== undefined && { client_name: clientName }),
+            ...(pkg !== undefined && { package: pkg }),
+            ...(monthlyAmount !== undefined && { monthly_amount: monthlyAmount }),
+            ...(signedDate !== undefined && { signed_date: signedDate }),
+            ...(status !== undefined && { status }),
+            ...(tenureMonths !== undefined && { tenure_months: tenureMonths }),
+            ...(totalIncome !== undefined && { total_income: totalIncome }),
+            ...(notes !== undefined && { notes }),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id);
         return { success: true };
       }),
     delete: adminProcedure

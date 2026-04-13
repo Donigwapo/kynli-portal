@@ -1,62 +1,58 @@
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  AreaChart, Area, BarChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Percent } from "lucide-react";
-import { format } from "date-fns";
-import { useState } from "react";
+import {
+  TrendingUp, TrendingDown, DollarSign, Percent, Users,
+  ArrowUpRight, ArrowDownRight, CheckCircle2, Circle,
+} from "lucide-react";
+import { useState, useMemo } from "react";
+import { Link } from "wouter";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const TEAL = "oklch(0.75 0.15 192)";
+const GREEN = "oklch(0.68 0.18 145)";
+const RED = "oklch(0.62 0.22 25)";
+const AMBER = "oklch(0.78 0.16 60)";
+const MUTED_FG = "oklch(0.50 0.008 240)";
 
-function fmtDollar(n: number) {
-  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `$${(n / 1000).toFixed(0)}k`;
+function fmtD(n: number) {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
   return `$${n.toLocaleString()}`;
 }
+function fmtPct(n: number) { return `${n.toFixed(1)}%`; }
 
-function MetricCard({
-  label, value, budget, budgetPct, icon, status, target,
+function KpiCard({
+  label, value, budget, variance, variancePct, icon, invertGood = false,
 }: {
-  label: string; value: string; budget?: string; budgetPct?: number;
-  icon: React.ReactNode; status?: "good" | "bad" | "neutral"; target?: string;
+  label: string; value: string; budget?: string; variance?: number;
+  variancePct?: number; icon: React.ReactNode; invertGood?: boolean;
 }) {
-  const badgeText =
-    status === "good" && budgetPct != null ? `↑ ${budgetPct.toFixed(0)}% of budget` :
-    status === "bad" ? "Below Target" : null;
-  const badgeCls =
-    status === "good" ? "bg-green-500/15 text-green-400" :
-    status === "bad" ? "bg-red-500/15 text-red-400" : "";
-
+  const isGood = invertGood ? (variance ?? 0) <= 0 : (variance ?? 0) >= 0;
+  const color = variance == null ? MUTED_FG : isGood ? GREEN : RED;
+  const Arrow = isGood ? ArrowUpRight : ArrowDownRight;
+  const sign = (variancePct ?? variance ?? 0) >= 0 ? "+" : "";
   return (
-    <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-2">
-      <div className="flex items-start justify-between">
-        <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">
-          {icon}
+    <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+        <span className="text-muted-foreground">{icon}</span>
+      </div>
+      <div className="text-2xl font-bold text-foreground">{value}</div>
+      {budget && <div className="text-xs text-muted-foreground">Budget: {budget}</div>}
+      {variance != null && (
+        <div className="flex items-center gap-1 text-xs font-medium" style={{ color }}>
+          <Arrow size={12} />
+          <span>
+            {variancePct != null
+              ? `${sign}${variancePct.toFixed(1)}% vs budget`
+              : `${sign}${fmtD(Math.abs(variance))} vs budget`}
+          </span>
         </div>
-        {badgeText && (
-          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badgeCls}`}>{badgeText}</span>
-        )}
-      </div>
-      <div>
-        <p className="text-2xl font-bold text-foreground">{value}</p>
-        <p className="text-sm text-muted-foreground">{label}</p>
-        {budget && <p className="text-xs text-muted-foreground mt-0.5">Budget: {budget}</p>}
-        {target && <p className="text-xs text-muted-foreground mt-0.5">Target: {target}</p>}
-      </div>
-    </div>
-  );
-}
-
-function ThinBar({ value, max, red = false }: { value: number; max: number; red?: boolean }) {
-  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
-  return (
-    <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
-      <div
-        className={`h-full rounded-full ${red ? "bg-red-500" : "bg-primary"}`}
-        style={{ width: `${pct}%` }}
-      />
+      )}
     </div>
   );
 }
@@ -65,224 +61,357 @@ export default function Overview() {
   const { impersonatingTenantSlug } = usePortal();
   const now = new Date();
   const [year] = useState(now.getFullYear());
-
   const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !impersonatingTenantSlug });
   const tslug = impersonatingTenantSlug ?? tenant?.slug ?? null;
 
-  const { data: financials } = trpc.financials.get.useQuery(
+  const { data: financials = [] } = trpc.financials.get.useQuery(
     { year, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug }
+    { enabled: !!tslug, staleTime: 30_000 }
   );
-  const { data: salesData } = trpc.sales.get.useQuery(
-    { year, month: now.getMonth() + 1, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug }
+  const { data: salesList = [] } = trpc.sales.getByYear.useQuery(
+    { year, tenantSlug: tslug ?? undefined },
+    { enabled: !!tslug, staleTime: 30_000 }
   );
   const currentQ = Math.ceil((now.getMonth() + 1) / 3);
-  const { data: coachingItems } = trpc.coaching.list.useQuery(
+  const { data: coachingItems = [] } = trpc.coaching.list.useQuery(
     { year, quarter: currentQ, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug }
+    { enabled: !!tslug, staleTime: 30_000 }
+  );
+  const { data: rosterData = [] } = trpc.roster.list.useQuery(
+    { tenantSlug: tslug ?? undefined },
+    { enabled: !!tslug, staleTime: 30_000 }
   );
 
-  const latestPeriod = financials?.[0];
-  const { data: lineItemsData } = trpc.financials.lineItems.useQuery(
+  const latestPeriod = useMemo(() => {
+    const withData = financials.filter(f => (f.revenue ?? 0) > 0 || (f.expenses ?? 0) > 0);
+    return withData[withData.length - 1] ?? financials[financials.length - 1] ?? null;
+  }, [financials]);
+
+  const { data: lineItemsData = [] } = trpc.financials.lineItems.useQuery(
     { year, month: latestPeriod?.month ?? now.getMonth() + 1, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug && !!latestPeriod }
+    { enabled: !!tslug && !!latestPeriod, staleTime: 30_000 }
   );
-  const revenue = latestPeriod?.revenue ?? 0;
-  const expenses = latestPeriod?.expenses ?? 0;
-  const profit = latestPeriod?.net_profit ?? 0;
-  const margin = (latestPeriod?.net_profit_margin ?? 0) * 100;
-  const budgetRevenue = latestPeriod?.budget_revenue ?? revenue;
-  const budgetExpenses = latestPeriod?.budget_expenses ?? expenses;
-  const revPct = budgetRevenue > 0 ? (revenue / budgetRevenue) * 100 : 0;
-  const expPct = budgetExpenses > 0 ? (expenses / budgetExpenses) * 100 : 0;
+
+  const ytdRevenue = useMemo(() => financials.reduce((s, f) => s + (f.revenue ?? 0), 0), [financials]);
+  const ytdExpenses = useMemo(() => financials.reduce((s, f) => s + (f.expenses ?? 0), 0), [financials]);
+  const ytdProfit = ytdRevenue - ytdExpenses;
+  const ytdMargin = ytdRevenue > 0 ? (ytdProfit / ytdRevenue) * 100 : 0;
+  const ytdBudgetRevenue = useMemo(() => financials.reduce((s, f) => s + (f.budget_revenue ?? 0), 0), [financials]);
+  const ytdBudgetExpenses = useMemo(() => financials.reduce((s, f) => s + (f.budget_expenses ?? 0), 0), [financials]);
+  const ytdBudgetProfit = ytdBudgetRevenue - ytdBudgetExpenses;
+
+  const ytdGoal = salesList.reduce((s, m) => s + (m.goal_clients ?? 0), 0);
+  const ytdActual = salesList.reduce((s, m) => s + (m.signed_clients ?? 0), 0);
+  const ytdReferrals = salesList.reduce((s, m) => s + (m.referral_count ?? 0), 0);
+  const ytdOutbound = salesList.reduce((s, m) => s + (m.outbound_count ?? 0), 0);
+  const salesAchievement = ytdGoal > 0 ? Math.min((ytdActual / ytdGoal) * 100, 100) : 0;
+  const referralRate = ytdActual > 0 ? (ytdReferrals / ytdActual) * 100 : 0;
+
+  const activeClients = rosterData.filter(c => c.status === "active").length;
+  const churnedClients = rosterData.filter(c => c.status === "churned").length;
+
+  const incomeItems = lineItemsData.filter(li => li.type === "income");
+  const expenseItems = lineItemsData.filter(li => li.type === "expense");
+  const totalIncome = incomeItems.reduce((s, li) => s + (li.amount ?? 0), 0) || 1;
+  const totalExp = expenseItems.reduce((s, li) => s + (li.amount ?? 0), 0) || 1;
+  const topIncome = [...incomeItems].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0)).slice(0, 5);
+  const topExpenses = [...expenseItems].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0)).slice(0, 5);
 
   const chartData = MONTHS.map((month, i) => {
-    const rec = financials?.find((f) => f.month === i + 1 && f.year === year);
+    const rec = financials.find(f => f.month === i + 1);
     return {
       month,
-      revenue: rec?.revenue ?? 0,
-      profit: rec?.net_profit ?? 0,
-      budget: rec?.budget_revenue ?? 0,
+      Revenue: rec?.revenue ?? 0,
+      Profit: rec?.net_profit ?? 0,
+      Budget: rec?.budget_revenue ?? 0,
+      Expenses: rec?.expenses ?? 0,
     };
   });
 
-  const salesGoal = salesData?.goal_clients ?? 48;
-  const salesActual = salesData?.signed_clients ?? 0;
-  const salesPct = salesGoal > 0 ? Math.round((salesActual / salesGoal) * 100) : 0;
-  const referrals = salesData?.referral_count ?? 0;
-  const outbound = salesData?.outbound_count ?? 0;
-
-  const quarterGoals = coachingItems ?? [];
-
-  const topIncome = (lineItemsData ?? []).filter((l) => l.type === "income").slice(0, 5);
-  const topExpenses = (lineItemsData ?? []).filter((l) => l.type === "expense").slice(0, 5);
-  const totalIncome = topIncome.reduce((s, i) => s + (i.amount ?? 0), 0) || 1;
-  const totalExp = topExpenses.reduce((s, i) => s + (i.amount ?? 0), 0) || 1;
-
   const periodLabel = latestPeriod
     ? `${MONTHS[(latestPeriod.month - 1)]} ${latestPeriod.year}`
-    : format(now, "MMM yyyy");
+    : `${MONTHS[now.getMonth()]} ${year}`;
+
+  const revVariancePct = ytdBudgetRevenue > 0 ? ((ytdRevenue / ytdBudgetRevenue) * 100 - 100) : 0;
+  const expVariancePct = ytdBudgetExpenses > 0 ? ((ytdExpenses / ytdBudgetExpenses) * 100 - 100) : 0;
+  const profitVariancePct = ytdBudgetProfit > 0 ? ((ytdProfit / ytdBudgetProfit) * 100 - 100) : 0;
+
+  const completedGoals = coachingItems.filter(g => g.completed).length;
+  const totalGoals = coachingItems.length;
+  const goalPct = totalGoals > 0 ? (completedGoals / totalGoals) * 100 : 0;
 
   return (
-    <div className="p-6 space-y-5">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Strategic Overview</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">Latest period: {periodLabel}</p>
-      </div>
-
-      {/* 4 metric cards */}
-      <div className="grid grid-cols-4 gap-4">
-        <MetricCard label="Total Revenue" value={fmtDollar(revenue)} budget={fmtDollar(budgetRevenue)} budgetPct={revPct} icon={<DollarSign size={16} />} status={revPct >= 90 ? "good" : "neutral"} />
-        <MetricCard label="Total Expenses" value={fmtDollar(expenses)} budget={fmtDollar(budgetExpenses)} budgetPct={expPct} icon={<TrendingDown size={16} />} status={expPct <= 100 ? "good" : "bad"} />
-        <MetricCard label="Net Profit" value={fmtDollar(profit)} icon={<TrendingUp size={16} />} status={profit >= 0 ? "neutral" : "bad"} />
-        <MetricCard label="Net Profit Margin" value={`${margin.toFixed(1)}%`} target="35%+" icon={<Percent size={16} />} status={margin >= 35 ? "good" : "bad"} />
-      </div>
-
-      {/* Sales Target */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold text-foreground">Sales Target — {year} YTD</h2>
-          <div className="flex items-center gap-4 text-sm">
-            <span className="text-muted-foreground">Goal: <span className="text-foreground font-medium">{salesGoal}</span></span>
-            <span className="text-muted-foreground">Actual: <span className="text-foreground font-medium">{salesActual}</span></span>
-            <span className="text-red-400 font-bold">{salesPct}%</span>
+    <>
+      <div className="p-6 space-y-5">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Strategic Overview</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Latest period: {periodLabel} · {year} YTD</p>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium bg-primary/10 text-primary border border-primary/20">
+            <Users size={14} />
+            <span>{activeClients} Active Clients</span>
           </div>
         </div>
-        <ThinBar value={salesActual} max={salesGoal} />
-        <div className="flex gap-6 mt-2 text-xs text-muted-foreground">
-          <span>Referrals: <span className="text-foreground">{referrals}</span></span>
-          <span>Outbound: <span className="text-foreground">{outbound}</span></span>
-          <span>Referral Rate: <span className="text-foreground">{referrals + outbound > 0 ? Math.round((referrals / (referrals + outbound)) * 100) : 0}%</span></span>
-        </div>
-      </div>
 
-      {/* Top 5 Income + Top 5 Expenses */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-card border border-border rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Income Sources</h2>
-          <div className="space-y-3">
-            {topIncome.length === 0 && <p className="text-xs text-muted-foreground">No data for this period.</p>}
-            {topIncome.map((item: any) => {
-              const amt = item.amount ?? 0;
-              const p = ((amt / totalIncome) * 100).toFixed(1);
-              const budgetAmt = item.budget_amount ?? null;
-              const bp = budgetAmt && budgetAmt > 0 ? Math.round((amt / budgetAmt) * 100) : null;
-              return (
-                <div key={item.id}>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
-                    <span className="text-foreground font-medium">{fmtDollar(amt)} <span className="text-muted-foreground">{p}%</span></span>
-                  </div>
-                  <ThinBar value={amt} max={totalIncome} />
-                  {bp !== null && budgetAmt && <p className="text-xs text-muted-foreground mt-0.5">Budget: {fmtDollar(budgetAmt)} · {bp}% of budget used</p>}
+        {/* 4 KPI Cards */}
+        <div className="grid grid-cols-4 gap-4">
+          <KpiCard label="Revenue YTD" value={fmtD(ytdRevenue)} budget={fmtD(ytdBudgetRevenue)}
+            variance={ytdRevenue - ytdBudgetRevenue} variancePct={revVariancePct} icon={<DollarSign size={16} />} />
+          <KpiCard label="Expenses YTD" value={fmtD(ytdExpenses)} budget={fmtD(ytdBudgetExpenses)}
+            variance={ytdExpenses - ytdBudgetExpenses} variancePct={expVariancePct} icon={<TrendingDown size={16} />} invertGood />
+          <KpiCard label="Net Profit YTD" value={fmtD(ytdProfit)} budget={fmtD(ytdBudgetProfit)}
+            variance={ytdProfit - ytdBudgetProfit} variancePct={profitVariancePct} icon={<TrendingUp size={16} />} />
+          <KpiCard label="Net Margin" value={fmtPct(ytdMargin)} budget="35% target"
+            variance={ytdMargin - 35} variancePct={ytdMargin - 35} icon={<Percent size={16} />} />
+        </div>
+
+        {/* Sales Target + Client Snapshot */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="col-span-2 bg-card border border-border rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Sales Target — {year} YTD</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {ytdActual} of {ytdGoal} clients signed · {fmtPct(salesAchievement)} achieved
+                </p>
+              </div>
+              <Link href="/portal/sales" className="text-xs text-primary hover:underline">View Sales →</Link>
+            </div>
+            <div className="mb-4">
+              <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
+                <span>Progress</span>
+                <span className="font-medium" style={{ color: salesAchievement >= 100 ? GREEN : TEAL }}>{fmtPct(salesAchievement)}</span>
+              </div>
+              <div className="h-3 bg-muted rounded-full overflow-hidden">
+                <div className="h-3 rounded-full transition-all duration-500"
+                  style={{ width: `${salesAchievement}%`, backgroundColor: salesAchievement >= 100 ? GREEN : TEAL }} />
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-3">
+              {[
+                { label: "Signed", value: ytdActual, color: TEAL },
+                { label: "Goal", value: ytdGoal, color: MUTED_FG },
+                { label: "Referrals", value: ytdReferrals, color: GREEN },
+                { label: "Outbound", value: ytdOutbound, color: AMBER },
+              ].map(item => (
+                <div key={item.label} className="bg-background border border-border rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold" style={{ color: item.color }}>{item.value}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{item.label}</div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-foreground">Client Roster</h2>
+              <Link href="/portal/clients" className="text-xs text-primary hover:underline">View All →</Link>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Active</span>
+                <span className="text-sm font-bold" style={{ color: GREEN }}>{activeClients}</span>
+              </div>
+              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                <div className="h-1.5 rounded-full" style={{
+                  width: rosterData.length > 0 ? `${(activeClients / rosterData.length) * 100}%` : "0%",
+                  backgroundColor: GREEN,
+                }} />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Churned</span>
+                <span className="text-sm font-bold" style={{ color: RED }}>{churnedClients}</span>
+              </div>
+              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                <div className="h-1.5 rounded-full" style={{
+                  width: rosterData.length > 0 ? `${(churnedClients / rosterData.length) * 100}%` : "0%",
+                  backgroundColor: RED,
+                }} />
+              </div>
+              <div className="pt-2 border-t border-border flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Total</span>
+                <span className="text-sm font-bold text-foreground">{rosterData.length}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Referral Rate</span>
+                <span className="text-sm font-bold" style={{ color: TEAL }}>{fmtPct(referralRate)}</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="bg-card border border-border rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Expenses</h2>
-          <div className="space-y-3">
-            {topExpenses.length === 0 && <p className="text-xs text-muted-foreground">No data for this period.</p>}
-            {topExpenses.map((item: any) => {
-              const amt = item.amount ?? 0;
-              const p = ((amt / totalExp) * 100).toFixed(1);
-              const budgetAmt = item.budget_amount ?? null;
-              const bp = budgetAmt && budgetAmt > 0 ? Math.round((amt / budgetAmt) * 100) : null;
-              const over = bp !== null && bp > 100;
-              return (
-                <div key={item.id}>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
-                    <span className="text-foreground font-medium">{fmtDollar(amt)} <span className="text-muted-foreground">{p}%</span></span>
-                  </div>
-                  <ThinBar value={amt} max={totalExp} red={over} />
-                  {bp !== null && budgetAmt && <p className={`text-xs mt-0.5 ${over ? "text-red-400" : "text-muted-foreground"}`}>Budget: {fmtDollar(budgetAmt)} · {bp}% of budget used</p>}
-                </div>
-              );
-            })}
+        {/* Top Income + Top Expenses */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-foreground mb-4">
+              Top Income Sources <span className="text-xs font-normal text-muted-foreground">({periodLabel})</span>
+            </h2>
+            {topIncome.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No income data for this period.</p>
+            ) : (
+              <div className="space-y-3">
+                {topIncome.map((item) => {
+                  const amt = item.amount ?? 0;
+                  const pct = (amt / totalIncome) * 100;
+                  return (
+                    <div key={item.id}>
+                      <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
+                        <span>
+                          <span className="font-semibold" style={{ color: TEAL }}>{fmtD(amt)}</span>
+                          <span className="text-muted-foreground ml-1.5">{fmtPct(pct)}</span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, backgroundColor: TEAL }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-foreground mb-4">
+              Top Expenses <span className="text-xs font-normal text-muted-foreground">({periodLabel})</span>
+            </h2>
+            {topExpenses.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No expense data for this period.</p>
+            ) : (
+              <div className="space-y-3">
+                {topExpenses.map((item) => {
+                  const amt = item.amount ?? 0;
+                  const pct = (amt / totalExp) * 100;
+                  return (
+                    <div key={item.id}>
+                      <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
+                        <span>
+                          <span className="font-semibold" style={{ color: RED }}>{fmtD(amt)}</span>
+                          <span className="text-muted-foreground ml-1.5">{fmtPct(pct)}</span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, backgroundColor: RED }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
-      </div>
 
-      {/* Revenue vs Budget Chart */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-sm font-semibold text-foreground">{year} Revenue: Actuals vs Budget</h2>
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm bg-red-500 inline-block" />Actual Revenue</span>
-            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-yellow-400 inline-block" />Budget Target</span>
+        {/* Revenue vs Budget vs Expenses Chart */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-foreground">{year} — Revenue vs Budget vs Expenses</h2>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: TEAL }} />Revenue
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: GREEN }} />Budget
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: RED }} />Expenses
+              </span>
+            </div>
           </div>
-        </div>
-        <p className="text-xs text-muted-foreground mb-3">Solid bars = actuals locked in · Dashed line = full-year budget target</p>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.20 0.005 240)" vertical={false} />
-            <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
-            <Tooltip
-              contentStyle={{ backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px" }}
-              labelStyle={{ color: "oklch(0.95 0.005 240)", fontSize: 12 }}
-              formatter={(v: number) => [fmtDollar(v)]}
-            />
-            <Bar dataKey="revenue" fill="oklch(0.62 0.22 25)" radius={[2, 2, 0, 0]} name="Actual Revenue" />
-            <Line type="monotone" dataKey="budget" stroke="oklch(0.78 0.16 60)" strokeDasharray="5 5" strokeWidth={2} dot={{ fill: "oklch(0.78 0.16 60)", r: 3 }} name="Budget Target" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Revenue & Profit Trend + Coaching Goals */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-card border border-border rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-foreground mb-3">Revenue & Profit Trend</h2>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-              <defs>
-                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="oklch(0.75 0.15 192)" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="oklch(0.75 0.15 192)" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="oklch(0.68 0.18 145)" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="oklch(0.68 0.18 145)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.20 0.005 240)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="month" tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
               <Tooltip
-                contentStyle={{ backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px" }}
-                formatter={(v: number) => [fmtDollar(v)]}
+                contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
+                labelStyle={{ color: "var(--foreground)" }}
+                formatter={(v: number) => [fmtD(v)]}
               />
-              <Area type="monotone" dataKey="revenue" stroke="oklch(0.75 0.15 192)" fill="url(#revGrad)" strokeWidth={2} dot={false} name="Revenue" />
-              <Area type="monotone" dataKey="profit" stroke="oklch(0.68 0.18 145)" fill="url(#profitGrad)" strokeWidth={2} dot={false} name="Profit" />
-            </AreaChart>
+              <Bar dataKey="Revenue" fill={TEAL} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Budget" fill={GREEN} radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Expenses" fill={RED} radius={[3, 3, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </div>
 
-        <div className="bg-card border border-border rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-foreground mb-3">
-            {year} Q{currentQ} — Coaching Goals
-          </h2>
-          {quarterGoals.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No coaching goals set for this quarter.</p>
-          ) : (
-            <ul className="space-y-2">
-              {quarterGoals.map((goal) => (
-                <li key={goal.id} className="flex items-start gap-2 text-sm">
-                  <span className={`mt-0.5 w-3 h-3 rounded-sm border shrink-0 ${goal.completed ? "bg-primary border-primary" : "border-border"}`} />
-                  <span className={goal.completed ? "line-through text-muted-foreground" : "text-foreground"}>
-                    {goal.title}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+        {/* Revenue & Profit Trend + Coaching Goals */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-foreground mb-4">Revenue & Profit Trend</h2>
+            <ResponsiveContainer width="100%" height={180}>
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <defs>
+                  <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={TEAL} stopOpacity={0.25} />
+                    <stop offset="95%" stopColor={TEAL} stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={GREEN} stopOpacity={0.25} />
+                    <stop offset="95%" stopColor={GREEN} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: MUTED_FG, fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: MUTED_FG, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
+                  formatter={(v: number) => [fmtD(v)]}
+                />
+                <Area type="monotone" dataKey="Revenue" stroke={TEAL} fill="url(#revGrad)" strokeWidth={2} dot={false} />
+                <Area type="monotone" dataKey="Profit" stroke={GREEN} fill="url(#profitGrad)" strokeWidth={2} dot={false} />
+                <Legend wrapperStyle={{ fontSize: 11, color: MUTED_FG }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Q{currentQ} {year} — Coaching Goals</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">{completedGoals}/{totalGoals} completed</p>
+              </div>
+              <Link href="/portal/coaching" className="text-xs text-primary hover:underline">View All →</Link>
+            </div>
+            {totalGoals > 0 && (
+              <div className="mb-4">
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-1.5 rounded-full transition-all duration-500"
+                    style={{ width: `${goalPct}%`, backgroundColor: goalPct >= 100 ? GREEN : TEAL }} />
+                </div>
+              </div>
+            )}
+            {coachingItems.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No coaching goals set for this quarter.</p>
+            ) : (
+              <ul className="space-y-2.5">
+                {coachingItems.slice(0, 6).map((goal) => (
+                  <li key={goal.id} className="flex items-start gap-2.5 text-sm">
+                    {goal.completed ? (
+                      <CheckCircle2 size={15} className="mt-0.5 shrink-0" style={{ color: TEAL }} />
+                    ) : (
+                      <Circle size={15} className="mt-0.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <div>
+                      <p className={`text-xs ${goal.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                        {goal.title}
+                      </p>
+                      {goal.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5">{goal.description}</p>
+                      )}
+                    </div>
+                  </li>
+                ))}
+                {coachingItems.length > 6 && (
+                  <li className="text-xs text-muted-foreground pl-6">+{coachingItems.length - 6} more goals</li>
+                )}
+              </ul>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

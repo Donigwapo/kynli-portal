@@ -1,43 +1,44 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { trpc } from "@/lib/trpc";
+import { usePortal } from "@/contexts/PortalContext";
 import {
-  CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
 } from "recharts";
-import { usePortal } from "../../contexts/PortalContext";
-import { trpc } from "../../lib/trpc";
+import { TrendingUp, TrendingDown, DollarSign, Percent } from "lucide-react";
 
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const TEAL = "oklch(0.75 0.15 192)";
+const GREEN = "oklch(0.68 0.18 145)";
+const RED = "oklch(0.62 0.22 25)";
+const AMBER = "oklch(0.78 0.16 60)";
+const MUTED_FG = "oklch(0.50 0.008 240)";
 
-function fmtD(val: number | string | null | undefined) {
-  const n = typeof val === "number" ? val : parseFloat(val ?? "0");
-  if (isNaN(n)) return "—";
-  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
-  return `$${n.toLocaleString()}`;
+function fmtD(n: number | string | null | undefined) {
+  const v = typeof n === "number" ? n : parseFloat(n ?? "0");
+  if (isNaN(v)) return "—";
+  if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(0)}k`;
+  return `$${v.toLocaleString()}`;
 }
-function fmtN(val: number | string | null | undefined) { return (typeof val === "number" ? val : parseFloat(val ?? "0")) || 0; }
-
-const TOOLTIP = {
-  contentStyle: { backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px", fontSize: 12 },
-  labelStyle: { color: "oklch(0.95 0.005 240)" },
-  formatter: (v: number) => [fmtD(String(v))],
-};
-const TICK = { fill: "oklch(0.50 0.008 240)", fontSize: 11 };
-const GRID = "oklch(0.20 0.005 240)";
+function fmtN(n: number | string | null | undefined) {
+  return typeof n === "number" ? n : parseFloat(n ?? "0") || 0;
+}
 
 export default function Reports() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const { impersonatingTenantSlug } = usePortal();
+  const tslug = impersonatingTenantSlug ?? undefined;
   const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
 
-  const { data: yearlyData, isLoading } = trpc.financials.get.useQuery({
-    year,
-    tenantSlug: impersonatingTenantSlug ?? undefined,
-  });
+  const { data: yearlyData = [], isLoading } = trpc.financials.get.useQuery(
+    { year, tenantSlug: tslug },
+    { staleTime: 30_000 }
+  );
 
-  const chartData = (yearlyData ?? []).map((row) => ({
+  const chartData = yearlyData.map(row => ({
     month: MONTHS_SHORT[(row.month ?? 1) - 1],
     Revenue: fmtN(row.revenue),
     Budget: fmtN(row.budget_revenue),
@@ -45,144 +46,204 @@ export default function Reports() {
     "Net Profit": fmtN(row.net_profit),
   }));
 
-  const totals = (yearlyData ?? []).reduce(
+  const totals = useMemo(() => yearlyData.reduce(
     (acc, row) => ({
       revenue: acc.revenue + fmtN(row.revenue),
       expenses: acc.expenses + fmtN(row.expenses),
       netProfit: acc.netProfit + fmtN(row.net_profit),
+      budgetRevenue: acc.budgetRevenue + fmtN(row.budget_revenue),
     }),
-    { revenue: 0, expenses: 0, netProfit: 0 }
-  );
+    { revenue: 0, expenses: 0, netProfit: 0, budgetRevenue: 0 }
+  ), [yearlyData]);
 
-  const avgMargin =
-    yearlyData && yearlyData.length > 0
-      ? (yearlyData ?? []).reduce((s, r) => s + fmtN(r.net_profit_margin) * 100, 0) / yearlyData.length
-      : 0;
+  const avgMargin = yearlyData.length > 0
+    ? yearlyData.reduce((s, r) => s + fmtN(r.net_profit_margin) * 100, 0) / yearlyData.length
+    : 0;
+
+  const revVsBudgetPct = totals.budgetRevenue > 0
+    ? ((totals.revenue / totals.budgetRevenue) * 100 - 100)
+    : 0;
 
   return (
-    <div className="p-6 space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Reports</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Annual financial summary — {year}</p>
-        </div>
-        <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
-          <SelectTrigger className="w-24 bg-card border-border text-sm h-8">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="bg-card border-border">
-            {years.map((y) => (
-              <SelectItem key={y} value={String(y)} className="text-sm">{y}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Annual summary cards */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: "Annual Revenue", value: fmtD(String(totals.revenue)), color: "text-primary" },
-          { label: "Annual Expenses", value: fmtD(String(totals.expenses)), color: "text-red-400" },
-          { label: "Annual Net Profit", value: fmtD(String(totals.netProfit)), color: totals.netProfit >= 0 ? "text-green-400" : "text-red-400" },
-          { label: "Avg. Profit Margin", value: `${avgMargin.toFixed(1)}%`, color: avgMargin >= 35 ? "text-green-400" : "text-red-400" },
-        ].map((card) => (
-          <div key={card.label} className="bg-card border border-border rounded-lg p-4">
-            <p className="text-xs text-muted-foreground mb-1">{card.label}</p>
-            {isLoading ? (
-              <div className="h-8 bg-muted rounded animate-pulse" />
-            ) : (
-              <p className={`text-2xl font-bold ${card.color}`}>{card.value}</p>
-            )}
+    <>
+      <div className="p-6 space-y-5">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Annual Reports</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Financial summary — {year}</p>
           </div>
-        ))}
-      </div>
+          <select
+            value={year}
+            onChange={e => setYear(Number(e.target.value))}
+            className="bg-card border border-border text-foreground text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {years.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
 
-      {/* Revenue vs Budget vs Expenses */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-sm font-semibold text-foreground">Revenue vs. Budget vs. Expenses — {year}</h2>
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-primary inline-block" />Revenue</span>
-            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-green-500 inline-block" />Budget</span>
-            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-red-500 inline-block" />Expenses</span>
+        {/* KPI Cards */}
+        <div className="grid grid-cols-4 gap-4">
+          {[
+            {
+              label: "Total Revenue",
+              value: fmtD(totals.revenue),
+              sub: `vs budget: ${revVsBudgetPct >= 0 ? "+" : ""}${revVsBudgetPct.toFixed(1)}%`,
+              color: TEAL,
+              icon: <DollarSign size={16} />,
+            },
+            {
+              label: "Total Expenses",
+              value: fmtD(totals.expenses),
+              sub: `${totals.revenue > 0 ? ((totals.expenses / totals.revenue) * 100).toFixed(1) : "0"}% of revenue`,
+              color: RED,
+              icon: <TrendingDown size={16} />,
+            },
+            {
+              label: "Net Profit",
+              value: fmtD(totals.netProfit),
+              sub: totals.netProfit >= 0 ? "Profitable year" : "Net loss",
+              color: totals.netProfit >= 0 ? GREEN : RED,
+              icon: <TrendingUp size={16} />,
+            },
+            {
+              label: "Avg Net Margin",
+              value: `${avgMargin.toFixed(1)}%`,
+              sub: avgMargin >= 35 ? "Above 35% target" : "Below 35% target",
+              color: avgMargin >= 35 ? GREEN : AMBER,
+              icon: <Percent size={16} />,
+            },
+          ].map(card => (
+            <div key={card.label} className="bg-card border border-border rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{card.label}</span>
+                <span className="text-muted-foreground">{card.icon}</span>
+              </div>
+              <div className="text-2xl font-bold" style={{ color: card.color }}>{card.value}</div>
+              <div className="text-xs text-muted-foreground mt-1">{card.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Revenue vs Budget vs Expenses Line Chart */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-foreground">{year} — Revenue vs Budget vs Expenses</h2>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 h-0.5 inline-block" style={{ backgroundColor: TEAL }} />Revenue
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 h-0.5 inline-block border-t-2 border-dashed" style={{ borderColor: GREEN }} />Budget
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 h-0.5 inline-block" style={{ backgroundColor: RED }} />Expenses
+              </span>
+            </div>
           </div>
+          {isLoading ? (
+            <div className="h-52 flex items-center justify-center text-muted-foreground text-sm">Loading...</div>
+          ) : chartData.length === 0 ? (
+            <div className="h-52 flex items-center justify-center text-muted-foreground text-sm">No data for {year}</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
+                  labelStyle={{ color: "var(--foreground)" }}
+                  formatter={(v: number) => [fmtD(v)]}
+                />
+                <Line type="monotone" dataKey="Revenue" stroke={TEAL} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="Budget" stroke={GREEN} strokeWidth={2} dot={false} strokeDasharray="5 3" />
+                <Line type="monotone" dataKey="Expenses" stroke={RED} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
-        {isLoading ? (
-          <div className="h-52 flex items-center justify-center text-muted-foreground text-sm">Loading…</div>
-        ) : chartData.length === 0 ? (
-          <div className="h-52 flex items-center justify-center text-muted-foreground text-sm">No data for {year}</div>
-        ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
-              <XAxis dataKey="month" tick={TICK} axisLine={false} tickLine={false} />
-              <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
-              <Tooltip {...TOOLTIP} />
-              <Line type="monotone" dataKey="Revenue" stroke="oklch(0.75 0.15 192)" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Budget" stroke="oklch(0.68 0.18 145)" strokeWidth={2} dot={false} strokeDasharray="5 3" />
-              <Line type="monotone" dataKey="Expenses" stroke="oklch(0.62 0.22 25)" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
 
-      {/* Net Profit trend */}
-      <div className="bg-card border border-border rounded-lg p-4">
-        <h2 className="text-sm font-semibold text-foreground mb-3">Net Profit Trend — {year}</h2>
-        {chartData.length === 0 ? (
-          <div className="h-40 flex items-center justify-center text-muted-foreground text-sm">No data for {year}</div>
-        ) : (
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
-              <XAxis dataKey="month" tick={TICK} axisLine={false} tickLine={false} />
-              <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
-              <Tooltip {...TOOLTIP} />
-              <Line type="monotone" dataKey="Net Profit" stroke="oklch(0.75 0.15 192)" strokeWidth={2} dot={{ r: 3, fill: "oklch(0.75 0.15 192)" }} />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-
-      {/* Monthly breakdown table */}
-      <div className="bg-card border border-border rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-semibold text-foreground">Monthly Breakdown — {year}</h2>
+        {/* Net Profit Trend */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <h2 className="text-sm font-semibold text-foreground mb-4">{year} — Net Profit Trend</h2>
+          {chartData.length === 0 ? (
+            <div className="h-40 flex items-center justify-center text-muted-foreground text-sm">No data for {year}</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
+                  labelStyle={{ color: "var(--foreground)" }}
+                  formatter={(v: number) => [fmtD(v)]}
+                />
+                <Bar dataKey="Net Profit" radius={[3, 3, 0, 0]}
+                  fill={TEAL}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                {["Month","Revenue","Budget","Expenses","Net Profit","Margin"].map((h) => (
-                  <th key={h} className={`py-2.5 px-4 text-xs text-muted-foreground font-medium ${h === "Month" ? "text-left" : "text-right"}`}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(yearlyData ?? []).map((row) => {
-                const np = fmtN(row.net_profit);
-                const mg = fmtN(row.net_profit_margin) * 100;
-                return (
-                  <tr key={row.id} className="border-b border-border/40 hover:bg-muted/10 transition-colors">
-                    <td className="py-2.5 px-4 text-foreground">{MONTHS_LONG[(row.month ?? 1) - 1]}</td>
-                    <td className="py-2.5 px-4 text-right text-primary">{fmtD(row.revenue)}</td>
-                    <td className="py-2.5 px-4 text-right text-muted-foreground">{fmtD(row.budget_revenue)}</td>
-                    <td className="py-2.5 px-4 text-right text-red-400">{fmtD(row.expenses)}</td>
-                    <td className={`py-2.5 px-4 text-right font-medium ${np >= 0 ? "text-green-400" : "text-red-400"}`}>{fmtD(row.net_profit)}</td>
-                    <td className={`py-2.5 px-4 text-right ${mg >= 35 ? "text-green-400" : "text-muted-foreground"}`}>{row.net_profit_margin != null ? `${mg.toFixed(1)}%` : "—"}</td>
-                  </tr>
-                );
-              })}
-              {(yearlyData ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={6} className="py-10 text-center text-muted-foreground">No data available for {year}</td>
+
+        {/* Monthly Breakdown Table */}
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Monthly Breakdown — {year}</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  {["Month","Revenue","Budget","Expenses","Net Profit","Margin"].map(h => (
+                    <th key={h} className={`py-3 px-5 text-xs text-muted-foreground font-medium ${h === "Month" ? "text-left" : "text-right"}`}>
+                      {h}
+                    </th>
+                  ))}
                 </tr>
+              </thead>
+              <tbody>
+                {yearlyData.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-10 text-center text-muted-foreground">No data available for {year}</td>
+                  </tr>
+                ) : yearlyData.map(row => {
+                  const np = fmtN(row.net_profit);
+                  const mg = fmtN(row.net_profit_margin) * 100;
+                  return (
+                    <tr key={row.id} className="border-b border-border/50 hover:bg-muted/10">
+                      <td className="py-3 px-5 text-foreground font-medium">{MONTHS_LONG[(row.month ?? 1) - 1]}</td>
+                      <td className="py-3 px-5 text-right" style={{ color: TEAL }}>{fmtD(row.revenue)}</td>
+                      <td className="py-3 px-5 text-right text-muted-foreground">{fmtD(row.budget_revenue)}</td>
+                      <td className="py-3 px-5 text-right" style={{ color: RED }}>{fmtD(row.expenses)}</td>
+                      <td className="py-3 px-5 text-right font-medium" style={{ color: np >= 0 ? GREEN : RED }}>{fmtD(row.net_profit)}</td>
+                      <td className="py-3 px-5 text-right" style={{ color: mg >= 35 ? GREEN : MUTED_FG }}>
+                        {row.net_profit_margin != null ? `${mg.toFixed(1)}%` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {yearlyData.length > 0 && (
+                <tfoot>
+                  <tr className="border-t border-border bg-muted/20">
+                    <td className="py-3 px-5 font-semibold text-foreground text-xs uppercase tracking-wider">Total</td>
+                    <td className="py-3 px-5 text-right font-bold" style={{ color: TEAL }}>{fmtD(totals.revenue)}</td>
+                    <td className="py-3 px-5 text-right font-semibold text-muted-foreground">{fmtD(totals.budgetRevenue)}</td>
+                    <td className="py-3 px-5 text-right font-semibold" style={{ color: RED }}>{fmtD(totals.expenses)}</td>
+                    <td className="py-3 px-5 text-right font-bold" style={{ color: totals.netProfit >= 0 ? GREEN : RED }}>{fmtD(totals.netProfit)}</td>
+                    <td className="py-3 px-5 text-right font-semibold" style={{ color: avgMargin >= 35 ? GREEN : MUTED_FG }}>
+                      {avgMargin.toFixed(1)}%
+                    </td>
+                  </tr>
+                </tfoot>
               )}
-            </tbody>
-          </table>
+            </table>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
