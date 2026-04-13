@@ -41,13 +41,13 @@ export default function Home() {
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
       <header className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-            <span className="text-primary font-bold text-sm">K</span>
-          </div>
-          <div>
-            <span className="text-sm font-bold text-foreground">KynLi</span>
-            <span className="text-xs text-muted-foreground ml-2">Command Center</span>
+        <div className="flex items-center gap-2">
+          <div className="bg-white rounded-lg px-2 py-1">
+            <img
+              src="https://d2xsxph8kpxj0f.cloudfront.net/310519663280358154/DHoPFRmeekJSRWmQf4bAQb/kynli-logo_c9409708.png"
+              alt="KynLi Consulting"
+              className="h-8 w-auto object-contain"
+            />
           </div>
         </div>
         <Button

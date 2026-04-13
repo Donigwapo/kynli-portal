@@ -79,15 +79,19 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
       <aside className="flex flex-col w-44 shrink-0 border-r border-sidebar-border" style={{ backgroundColor: "oklch(0.09 0.005 240)" }}>
 
         {/* Logo */}
-        <div className="flex items-center gap-2 px-4 py-4 border-b border-sidebar-border">
-          <div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center shrink-0">
-            <span className="text-primary font-bold text-xs leading-none">kc</span>
+        <div className="flex flex-col items-center px-3 py-3 border-b border-sidebar-border gap-1">
+          <div className="bg-white rounded-lg px-2 py-1">
+            <img
+              src="https://d2xsxph8kpxj0f.cloudfront.net/310519663280358154/DHoPFRmeekJSRWmQf4bAQb/kynli-logo_c9409708.png"
+              alt="KynLi Consulting"
+              className="h-7 w-auto object-contain"
+            />
           </div>
           {!isAdmin && !impersonatingTenantSlug && tenant?.company_name && (
-            <span className="text-xs text-muted-foreground truncate">{tenant.company_name}</span>
+            <span className="text-xs text-muted-foreground truncate w-full text-center">{tenant.company_name}</span>
           )}
           {isAdmin && (
-            <span className="text-xs text-muted-foreground truncate">KynLi Admin</span>
+            <span className="text-xs text-muted-foreground truncate">Admin</span>
           )}
         </div>
 

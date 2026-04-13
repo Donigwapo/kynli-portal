@@ -66,11 +66,14 @@ export default function Login() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center mb-3">
-            <span className="text-primary font-bold text-xl">K</span>
+          <div className="bg-white rounded-xl px-4 py-2 mb-4">
+            <img
+              src="https://d2xsxph8kpxj0f.cloudfront.net/310519663280358154/DHoPFRmeekJSRWmQf4bAQb/kynli-logo_c9409708.png"
+              alt="KynLi Consulting"
+              className="h-14 w-auto object-contain"
+            />
           </div>
-          <h1 className="text-xl font-bold text-foreground">KynLi Command Center</h1>
-          <p className="text-sm text-muted-foreground mt-1">Sign in to your client portal</p>
+          <p className="text-sm text-muted-foreground">Sign in to your client portal</p>
         </div>
 
         {/* Form */}
