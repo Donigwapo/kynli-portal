@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { BarChart3, BookOpen, Brain, FileText, FolderOpen, Loader2, Shield, Target, TrendingUp } from "lucide-react";
+import { BarChart3, BookOpen, FileText, FolderOpen, Loader2, Shield, Target, TrendingUp, Users } from "lucide-react";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 
@@ -30,7 +30,7 @@ export default function Home() {
     { icon: <BarChart3 size={20} />, label: "Financials", desc: "Revenue, expenses, margins & budget tracking" },
     { icon: <TrendingUp size={20} />, label: "Reports", desc: "Historical data and annual summaries" },
     { icon: <FolderOpen size={20} />, label: "Document Vault", desc: "Secure file storage — replaces SmartVault" },
-    { icon: <Brain size={20} />, label: "AI Summaries", desc: "Monthly AI-generated financial insights" },
+    { icon: <Users size={20} />, label: "Client Roster", desc: "Track clients by service, tenure, and LTV" },
     { icon: <BookOpen size={20} />, label: "Coaching", desc: "Quarterly goals and accountability tracking" },
     { icon: <Target size={20} />, label: "KPI Dashboard", desc: "CAC, Churn Rate, and Lifetime Value" },
     { icon: <FileText size={20} />, label: "Sales Tracker", desc: "Pipeline, targets, and referral breakdown" },
