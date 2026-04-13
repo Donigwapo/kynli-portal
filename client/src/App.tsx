@@ -19,6 +19,7 @@ import Coaching from "./pages/portal/Coaching";
 import KpiDashboard from "./pages/portal/KpiDashboard";
 import TimeIntelligence from "./pages/portal/TimeIntelligence";
 import SalesTracker from "./pages/portal/SalesTracker";
+import Clients from "./pages/portal/Clients";
 
 // Admin pages
 import AdminClients from "./pages/admin/AdminClients";
@@ -53,6 +54,7 @@ function Router() {
 
       {/* Client Portal — protected */}
       <Route path="/portal" component={() => <PortalRoute component={Overview} />} />
+      <Route path="/portal/clients" component={() => <PortalRoute component={Clients} />} />
       <Route path="/portal/financials" component={() => <PortalRoute component={Financials} />} />
       <Route path="/portal/reports" component={() => <PortalRoute component={Reports} />} />
       <Route path="/portal/documents" component={() => <PortalRoute component={Documents} />} />

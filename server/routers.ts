@@ -18,7 +18,9 @@ import {
   getSalesTrackerByYear,
   getTenantBySlug,
   getTimeLogs,
-  insertClientRosterEntry,
+  upsertClientRosterEntry,
+  updateClientRosterEntry,
+  deleteClientRosterEntry,
   insertCoachingItem,
   insertDocument,
   insertLineItem,
@@ -335,18 +337,61 @@ export const appRouter = router({
       }),
     add: adminProcedure
       .input(z.object({
-        tenantSlug: z.string(), clientName: z.string(),
-        packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
-        monthlyFee: z.number(), signedAt: z.string(),
-        status: z.enum(["active", "churned"]).optional(), totalIncome: z.number().optional(),
+        tenantSlug: z.string(),
+        clientName: z.string(),
+        package: z.string(),
+        monthlyAmount: z.number(),
+        signedDate: z.string().nullable().optional(),
+        status: z.enum(["active", "churned"]).optional(),
+        tenureMonths: z.number().optional(),
+        ltv: z.number().optional(),
+        totalIncome: z.number().optional(),
+        notes: z.string().nullable().optional(),
       }))
       .mutation(async ({ input }) => {
-        await insertClientRosterEntry({
-          tenant_slug: input.tenantSlug, client_name: input.clientName,
-          package_tier: input.packageTier, monthly_fee: input.monthlyFee,
-          signed_at: input.signedAt, status: input.status || "active",
-          total_income: input.totalIncome || 0,
+        await upsertClientRosterEntry(input.tenantSlug, {
+          client_name: input.clientName,
+          package: input.package,
+          monthly_amount: input.monthlyAmount,
+          signed_date: input.signedDate ?? null,
+          status: input.status ?? "active",
+          tenure_months: input.tenureMonths ?? 0,
+          ltv: input.ltv ?? 0,
+          total_income: input.totalIncome ?? 0,
+          notes: input.notes ?? null,
         });
+        return { success: true };
+      }),
+    update: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string(),
+        id: z.number(),
+        clientName: z.string().optional(),
+        package: z.string().optional(),
+        monthlyAmount: z.number().optional(),
+        signedDate: z.string().nullable().optional(),
+        status: z.enum(["active", "churned"]).optional(),
+        tenureMonths: z.number().optional(),
+        ltv: z.number().optional(),
+        totalIncome: z.number().optional(),
+        notes: z.string().nullable().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { tenantSlug, id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, ...rest } = input;
+        await updateClientRosterEntry(tenantSlug, id, {
+          ...(clientName !== undefined && { client_name: clientName }),
+          ...(monthlyAmount !== undefined && { monthly_amount: monthlyAmount }),
+          ...(signedDate !== undefined && { signed_date: signedDate }),
+          ...(tenureMonths !== undefined && { tenure_months: tenureMonths }),
+          ...(totalIncome !== undefined && { total_income: totalIncome }),
+          ...rest,
+        });
+        return { success: true };
+      }),
+    delete: adminProcedure
+      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteClientRosterEntry(input.tenantSlug, input.id);
         return { success: true };
       }),
   }),

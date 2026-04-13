@@ -116,13 +116,17 @@ export type ChatMessage = {
 
 export type ClientRosterEntry = {
   id: number;
-  tenant_slug: string;
   client_name: string;
-  package_tier: "legacy" | "momentum" | "growth_1" | "growth_2" | "cfo";
-  monthly_fee: number;
-  signed_at: string;
+  package: string;
+  monthly_amount: number;
+  signed_date: string | null;
   status: "active" | "churned";
+  tenure_months: number;
+  ltv: number;
   total_income: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Document = {
@@ -431,19 +435,45 @@ export async function insertChatMessage(slug: string, msg: Omit<ChatMessage, "id
 
 export async function getClientRoster(slug: string): Promise<ClientRosterEntry[]> {
   const { data, error } = await supabase
-    .from("client_roster")
+    .from(`${slug}_client_roster`)
     .select("*")
-    .eq("tenant_slug", slug)
-    .order("signed_at", { ascending: false });
+    .order("client_name", { ascending: true });
   if (error) return [];
   return (data || []).map((r: Record<string, unknown>) => ({
     ...r,
-    monthly_fee: parseFloat(r.monthly_fee as string),
-    total_income: parseFloat(r.total_income as string),
+    monthly_amount: parseFloat((r.monthly_amount ?? 0) as string),
+    ltv: parseFloat((r.ltv ?? 0) as string),
+    total_income: parseFloat((r.total_income ?? 0) as string),
+    tenure_months: Number(r.tenure_months ?? 0),
   })) as ClientRosterEntry[];
 }
 
-export async function insertClientRosterEntry(entry: Omit<ClientRosterEntry, "id" | "created_at" | "updated_at">): Promise<void> {
-  const { error } = await supabase.from("client_roster").insert(entry);
+export async function upsertClientRosterEntry(
+  slug: string,
+  entry: Omit<ClientRosterEntry, "id" | "created_at" | "updated_at">
+): Promise<void> {
+  const { error } = await supabase
+    .from(`${slug}_client_roster`)
+    .insert({ ...entry, updated_at: new Date().toISOString() });
+  if (error) throw new Error(error.message);
+}
+
+export async function updateClientRosterEntry(
+  slug: string,
+  id: number,
+  entry: Partial<Omit<ClientRosterEntry, "id" | "created_at" | "updated_at">>
+): Promise<void> {
+  const { error } = await supabase
+    .from(`${slug}_client_roster`)
+    .update({ ...entry, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteClientRosterEntry(slug: string, id: number): Promise<void> {
+  const { error } = await supabase
+    .from(`${slug}_client_roster`)
+    .delete()
+    .eq("id", id);
   if (error) throw new Error(error.message);
 }

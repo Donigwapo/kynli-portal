@@ -95,3 +95,12 @@
 - [x] Add financials.updateSummary tRPC procedure (PATCH-only, no financial figure overwrite)
 - [x] Add dedicated Monthly Summary tab in AdminDataEntry.tsx
   Note: Summary entry intentionally lives in a dedicated "Monthly Summary" tab (not the Financials form) to prevent accidental overwrites of financial figures.
+
+## Phase 12: Client Roster Tab
+- [ ] Create grit_media_group_llc_client_roster table in Supabase
+- [ ] Add ClientRosterEntry type and helpers to server/supabase.ts
+- [ ] Add clientRoster tRPC procedures (list, upsert, delete) to routers.ts
+- [ ] Build Clients.tsx portal page with package summary cards, search, filter tabs, sortable table
+- [ ] Wire Clients tab into PortalLayout nav and App.tsx routes
+- [ ] Add client roster CRUD to AdminDataEntry.tsx
+- [ ] TypeScript: 0 errors, tests passing

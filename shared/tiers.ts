@@ -34,6 +34,7 @@ export function hasAccess(tenantTier: PackageTier, requiredTier: PackageTier): b
 /** Tab visibility rules — minimum tier required per tab */
 export const TAB_ACCESS: Record<string, PackageTier> = {
   overview: "legacy",
+  clients: "legacy",
   financials: "legacy",
   documents: "legacy",
   reports: "legacy",

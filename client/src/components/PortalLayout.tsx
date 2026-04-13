@@ -27,6 +27,7 @@ interface NavItem {
 
 const CLIENT_NAV: NavItem[] = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={16} />, href: "/portal" },
+  { id: "clients", label: "Clients", icon: <Users size={16} />, href: "/portal/clients" },
   { id: "financials", label: "Financials", icon: <BarChart3 size={16} />, href: "/portal/financials" },
   { id: "reports", label: "Reports", icon: <TrendingUp size={16} />, href: "/portal/reports" },
   { id: "documents", label: "Portal", icon: <FolderOpen size={16} />, href: "/portal/documents" },
