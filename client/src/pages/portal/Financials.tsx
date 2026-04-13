@@ -1,330 +1,213 @@
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, ComposedChart,
+} from "recharts";
+import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
-const MONTHS = [
-  "January","February","March","April","May","June",
-  "July","August","September","October","November","December",
-];
+const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-function fmt(val: string | number | null | undefined, showSign = false): string {
-  const n = typeof val === "string" ? parseFloat(val) : (val ?? 0);
+function fmtD(val: number | string | null | undefined) {
+  const n = typeof val === "number" ? val : parseFloat(val ?? "0");
   if (isNaN(n)) return "—";
-  const abs = Math.abs(n);
-  let str: string;
-  if (abs >= 1_000_000) str = `$${(abs / 1_000_000).toFixed(1)}M`;
-  else str = `$${abs.toLocaleString()}`;
-  if (showSign && n > 0) return `+${str}`;
-  if (n < 0) return `-${str}`;
-  return str;
+  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
+  return `$${n.toLocaleString()}`;
 }
+function fmtN(val: number | string | null | undefined) { return (typeof val === "number" ? val : parseFloat(val ?? "0")) || 0; }
 
-function num(val: string | number | null | undefined): number {
-  return parseFloat(String(val ?? "0")) || 0;
-}
-
-function MarginBadge({ margin }: { margin: number }) {
-  const color =
-    margin >= 30 ? "text-green-400" :
-    margin >= 15 ? "text-yellow-400" :
-    margin > 0   ? "text-orange-400" :
-    "text-muted-foreground";
-  return <span className={`text-xs font-medium ${color}`}>{margin.toFixed(1)}% margin</span>;
-}
-
-function VarianceCell({ variance }: { variance: number }) {
-  if (variance === 0) return <span className="text-muted-foreground">+$0</span>;
-  const color = variance > 0 ? "text-green-400" : "text-red-400";
-  return <span className={color}>{fmt(variance, true)}</span>;
-}
-
-type PeriodDetailProps = { year: number; month: number; tenantId: number | undefined };
-
-function PeriodDetail({ year, month, tenantId }: PeriodDetailProps) {
-  const { data: financials } = trpc.financials.get.useQuery({ year, tenantId });
-  const period = (financials ?? []).find((f) => f.month === month);
-  const { data: lineItems } = trpc.financials.lineItems.useQuery(
-    { year, month, tenantId },
-    { enabled: !!period }
-  );
-
-  if (!period) {
-    return <div className="px-4 pb-4 text-xs text-muted-foreground">No data for this period.</div>;
-  }
-
-  const revenue = num(period.revenue);
-  const expenses = num(period.expenses);
-  const profit = num(period.netProfit);
-  const budgetRevenue = num(period.budgetRevenue);
-  const budgetExpenses = num(period.budgetExpenses);
-  const budgetProfit = budgetRevenue - budgetExpenses;
-
-  const incomeItems = (lineItems ?? []).filter((i) => i.type === "income");
-  const expenseItems = (lineItems ?? []).filter((i) => i.type === "expense");
-
+function ThinBar({ value, max, red = false }: { value: number; max: number; red?: boolean }) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   return (
-    <div className="px-4 pb-5 space-y-5 border-t border-border/50 pt-4">
-      {/* 3-column metric summary */}
-      <div className="grid grid-cols-3 gap-6">
-        <div>
-          <p className="text-xs text-muted-foreground mb-0.5">Revenue</p>
-          <p className="text-xl font-bold text-foreground">{fmt(revenue)}</p>
-          {budgetRevenue > 0 && (
-            <>
-              <p className="text-xs text-muted-foreground mt-0.5">Budget: {fmt(budgetRevenue)}</p>
-              <p className={`text-xs font-medium mt-0.5 ${revenue - budgetRevenue >= 0 ? "text-green-400" : "text-red-400"}`}>
-                {fmt(revenue - budgetRevenue, true)}
-              </p>
-            </>
-          )}
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground mb-0.5">Expenses</p>
-          <p className="text-xl font-bold text-foreground">{fmt(expenses)}</p>
-          {budgetExpenses > 0 && (
-            <>
-              <p className="text-xs text-muted-foreground mt-0.5">Budget: {fmt(budgetExpenses)}</p>
-              <p className={`text-xs font-medium mt-0.5 ${expenses - budgetExpenses <= 0 ? "text-green-400" : "text-red-400"}`}>
-                {fmt(expenses - budgetExpenses, true)}
-              </p>
-            </>
-          )}
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground mb-0.5">Net Profit</p>
-          <p className={`text-xl font-bold ${profit >= 0 ? "text-foreground" : "text-red-400"}`}>{fmt(profit)}</p>
-          {budgetProfit !== 0 && (
-            <>
-              <p className="text-xs text-muted-foreground mt-0.5">Budget: {fmt(budgetProfit)}</p>
-              <p className={`text-xs font-medium mt-0.5 ${profit - budgetProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
-                {fmt(profit - budgetProfit, true)}
-              </p>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Income Sources */}
-      {incomeItems.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
-            <h3 className="text-sm font-semibold text-foreground">Income Sources</h3>
-          </div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border/50">
-                <th className="text-left text-muted-foreground font-medium pb-2 pr-4">Category</th>
-                <th className="text-right text-muted-foreground font-medium pb-2 px-4">Actual</th>
-                <th className="text-right text-muted-foreground font-medium pb-2 px-4">Budget</th>
-                <th className="text-right text-muted-foreground font-medium pb-2">Variance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {incomeItems.map((item) => {
-                const amt = num(item.amount);
-                return (
-                  <tr key={item.id} className="border-b border-border/20">
-                    <td className="py-2 text-foreground pr-4">{item.label}</td>
-                    <td className="py-2 text-right text-foreground font-medium px-4">{fmt(amt)}</td>
-                    <td className="py-2 text-right text-muted-foreground px-4">—</td>
-                    <td className="py-2 text-right text-muted-foreground">—</td>
-                  </tr>
-                );
-              })}
-              <tr className="border-t border-border">
-                <td className="py-2.5 font-semibold text-foreground pr-4">Total Income</td>
-                <td className="py-2.5 text-right font-bold text-foreground px-4">{fmt(revenue)}</td>
-                <td className="py-2.5 text-right text-muted-foreground px-4">
-                  {budgetRevenue > 0 ? fmt(budgetRevenue) : "—"}
-                </td>
-                <td className="py-2.5 text-right">
-                  {budgetRevenue > 0
-                    ? <VarianceCell variance={revenue - budgetRevenue} />
-                    : <span className="text-muted-foreground">—</span>}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Expenses */}
-      {expenseItems.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
-            <h3 className="text-sm font-semibold text-foreground">Expenses</h3>
-          </div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border/50">
-                <th className="text-left text-muted-foreground font-medium pb-2 pr-4">Category</th>
-                <th className="text-right text-muted-foreground font-medium pb-2 px-4">Actual</th>
-                <th className="text-right text-muted-foreground font-medium pb-2 px-4">Budget</th>
-                <th className="text-right text-muted-foreground font-medium pb-2">Variance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {expenseItems.map((item) => {
-                const amt = num(item.amount);
-                return (
-                  <tr key={item.id} className="border-b border-border/20">
-                    <td className="py-2 text-foreground pr-4">{item.label}</td>
-                    <td className="py-2 text-right text-foreground font-medium px-4">{fmt(amt)}</td>
-                    <td className="py-2 text-right text-muted-foreground px-4">—</td>
-                    <td className="py-2 text-right text-muted-foreground">—</td>
-                  </tr>
-                );
-              })}
-              <tr className="border-t border-border">
-                <td className="py-2.5 font-semibold text-foreground pr-4">Total Expenses</td>
-                <td className="py-2.5 text-right font-bold text-foreground px-4">{fmt(expenses)}</td>
-                <td className="py-2.5 text-right text-muted-foreground px-4">
-                  {budgetExpenses > 0 ? fmt(budgetExpenses) : "—"}
-                </td>
-                <td className="py-2.5 text-right">
-                  {budgetExpenses > 0
-                    ? <VarianceCell variance={budgetExpenses - expenses} />
-                    : <span className="text-muted-foreground">—</span>}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {incomeItems.length === 0 && expenseItems.length === 0 && (
-        <p className="text-xs text-muted-foreground">No line item detail available for this period.</p>
-      )}
-    </div>
-  );
-}
-
-type AccordionRowProps = {
-  year: number;
-  month: number;
-  tenantId: number | undefined;
-  hasData: boolean;
-  revenue: number;
-  expenses: number;
-  profit: number;
-  margin: number;
-};
-
-function AccordionRow({ year, month, tenantId, hasData, revenue, expenses, profit, margin }: AccordionRowProps) {
-  const [open, setOpen] = useState(false);
-  const label = `${MONTHS[month - 1]} ${year}`;
-
-  return (
-    <div className="border-b border-border/40 last:border-0">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/[0.02] transition-colors text-left"
-      >
-        <div className="flex items-center gap-5 flex-wrap">
-          <span className="text-sm font-semibold text-foreground w-36 shrink-0">{label}</span>
-          <span className="text-xs text-muted-foreground">
-            Rev: <span className="text-foreground">{hasData ? fmt(revenue) : "$0"}</span>
-          </span>
-          <span className="text-xs text-muted-foreground">
-            Exp: <span className="text-foreground">{hasData ? fmt(expenses) : "$0"}</span>
-          </span>
-          <span className="text-xs text-muted-foreground">
-            Profit:{" "}
-            <span className={hasData && profit < 0 ? "text-red-400 font-medium" : "text-foreground font-medium"}>
-              {hasData ? fmt(profit) : "$0"}
-            </span>
-          </span>
-          <MarginBadge margin={hasData ? margin : 0} />
-        </div>
-        <div className="text-muted-foreground shrink-0 ml-2">
-          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        </div>
-      </button>
-      {open && <PeriodDetail year={year} month={month} tenantId={tenantId} />}
+    <div className="w-full h-1 bg-muted rounded-full overflow-hidden mt-1">
+      <div className={`h-full rounded-full ${red ? "bg-red-500" : "bg-primary"}`} style={{ width: `${pct}%` }} />
     </div>
   );
 }
 
 export default function Financials() {
   const now = new Date();
-  const currentYear = now.getFullYear();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const { impersonatingTenantSlug } = usePortal();
 
-  const { data: tenant } = trpc.tenant.me.useQuery(undefined);
-  const tenantId = tenant?.id;
+  const tslug = impersonatingTenantSlug ?? undefined;
 
-  const { data: allFinancials } = trpc.financials.get.useQuery(
-    { year: currentYear, tenantId: undefined },
-    { enabled: !!tenant }
-  );
-  const { data: prevFinancials } = trpc.financials.get.useQuery(
-    { year: currentYear - 1, tenantId: undefined },
-    { enabled: !!tenant }
-  );
-  const { data: prev2Financials } = trpc.financials.get.useQuery(
-    { year: currentYear - 2, tenantId: undefined },
-    { enabled: !!tenant }
-  );
+  const { data: financials, isLoading } = trpc.financials.get.useQuery({ year, month, tenantSlug: tslug });
+  const { data: lineItems } = trpc.financials.lineItems.useQuery({ year, month, tenantSlug: tslug });
+  const { data: yearlyData } = trpc.financials.get.useQuery({ year, tenantSlug: tslug });
 
-  // Build lookup: "year-month" → row
-  const lookup: Record<string, { revenue: number; expenses: number; profit: number; margin: number }> = {};
-  [...(allFinancials ?? []), ...(prevFinancials ?? []), ...(prev2Financials ?? [])].forEach((f) => {
-    lookup[`${f.year}-${f.month}`] = {
-      revenue: num(f.revenue),
-      expenses: num(f.expenses),
-      profit: num(f.netProfit),
-      margin: num(f.margin),
-    };
-  });
+  const current = financials?.[0];
+  const revenue = fmtN(current?.revenue);
+  const expenses = fmtN(current?.expenses);
+  const profit = fmtN(current?.net_profit);
+  const margin = fmtN(current?.net_profit_margin) * 100;
+  const budgetRev = fmtN(current?.budget_revenue);
+  const budgetExp = fmtN(current?.budget_expenses);
+  const revPct = budgetRev > 0 ? Math.round((revenue / budgetRev) * 100) : null;
+  const expPct = budgetExp > 0 ? Math.round((expenses / budgetExp) * 100) : null;
 
-  // Build period list: from current month down, 3 years back
-  const periods: { year: number; month: number }[] = [];
-  for (const y of [currentYear, currentYear - 1, currentYear - 2]) {
-    for (let m = 12; m >= 1; m--) {
-      if (y === currentYear && m > now.getMonth() + 1) continue;
-      periods.push({ year: y, month: m });
-    }
-  }
+  const chartData = (yearlyData ?? []).map((row) => ({
+    month: MONTHS_SHORT[(row.month ?? 1) - 1],
+    revenue: fmtN(row.revenue),
+    budget: fmtN(row.budget_revenue),
+    expenses: fmtN(row.expenses),
+  }));
+
+  const topIncome = (lineItems ?? []).filter((i) => i.type === "income").slice(0, 5);
+  const topExpenses = (lineItems ?? []).filter((i) => i.type === "expense").slice(0, 5);
+  const totalIncome = topIncome.reduce((s, i) => s + fmtN(i.amount), 0) || 1;
+  const totalExp = topExpenses.reduce((s, i) => s + fmtN(i.amount), 0) || 1;
+
+  const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
+
+  const tooltipStyle = {
+    contentStyle: { backgroundColor: "oklch(0.14 0.005 240)", border: "1px solid oklch(0.20 0.005 240)", borderRadius: "6px", fontSize: 12 },
+    labelStyle: { color: "oklch(0.95 0.005 240)" },
+    formatter: (v: number) => [fmtD(String(v))],
+  };
 
   return (
     <div className="p-6 space-y-5">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Financial Data</h1>
+          <h1 className="text-2xl font-bold text-foreground">Financials</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            View your monthly P&amp;L data and line item breakdowns
+            {MONTHS_LONG[month - 1]} {year}
           </p>
+        </div>
+        <div className="flex gap-2">
+          <Select value={String(month)} onValueChange={(v) => setMonth(Number(v))}>
+            <SelectTrigger className="w-36 bg-card border-border text-sm h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-border">
+              {MONTHS_LONG.map((m, i) => (
+                <SelectItem key={i + 1} value={String(i + 1)} className="text-sm">{m}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
+            <SelectTrigger className="w-24 bg-card border-border text-sm h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-border">
+              {years.map((y) => (
+                <SelectItem key={y} value={String(y)} className="text-sm">{y}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
-      {/* Period History Accordion */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3.5 border-b border-border">
-          <h2 className="text-sm font-semibold text-foreground">Period History</h2>
+      {/* 4 metric cards */}
+      <div className="grid grid-cols-4 gap-4">
+        {[
+          { label: "Revenue", value: fmtD(current?.revenue), sub: budgetRev > 0 ? `Budget: ${fmtD(current?.budget_revenue)}` : undefined, badge: revPct !== null ? `${revPct}% of budget` : undefined, badgeGood: revPct !== null && revPct >= 90 },
+          { label: "Expenses", value: fmtD(current?.expenses), sub: budgetExp > 0 ? `Budget: ${fmtD(current?.budget_expenses)}` : undefined, badge: expPct !== null ? `${expPct}% of budget` : undefined, badgeGood: expPct !== null && expPct <= 100 },
+          { label: "Net Profit", value: fmtD(current?.net_profit), sub: undefined, badge: profit >= 0 ? "Positive" : "Negative", badgeGood: profit >= 0 },
+          { label: "Net Profit Margin", value: current?.net_profit_margin != null ? `${(current.net_profit_margin * 100).toFixed(1)}%` : "—", sub: "Target: 35%+", badge: margin >= 35 ? "On Target" : "Below Target", badgeGood: margin >= 35 },
+        ].map((card) => (
+          <div key={card.label} className="bg-card border border-border rounded-lg p-4">
+            <div className="flex items-start justify-between mb-2">
+              <p className="text-xs text-muted-foreground">{card.label}</p>
+              {card.badge && (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${card.badgeGood ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                  {card.badge}
+                </span>
+              )}
+            </div>
+            {isLoading ? (
+              <div className="h-8 bg-muted rounded animate-pulse" />
+            ) : (
+              <>
+                <p className="text-2xl font-bold text-foreground">{card.value}</p>
+                {card.sub && <p className="text-xs text-muted-foreground mt-0.5">{card.sub}</p>}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Revenue vs Budget vs Expenses chart */}
+      <div className="bg-card border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-foreground">Revenue vs. Budget vs. Expenses — {year}</h2>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm bg-primary inline-block" />Revenue</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm bg-green-500 inline-block" />Budget</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm bg-red-500 inline-block" />Expenses</span>
+          </div>
         </div>
-        {periods.length === 0 ? (
-          <p className="px-4 py-8 text-xs text-muted-foreground text-center">No financial data available.</p>
-        ) : (
-          periods.map(({ year, month }) => {
-            const key = `${year}-${month}`;
-            const data = lookup[key];
-            return (
-              <AccordionRow
-                key={key}
-                year={year}
-                month={month}
-                tenantId={tenantId}
-                hasData={!!data}
-                revenue={data?.revenue ?? 0}
-                expenses={data?.expenses ?? 0}
-                profit={data?.profit ?? 0}
-                margin={data?.margin ?? 0}
-              />
-            );
-          })
-        )}
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.20 0.005 240)" vertical={false} />
+            <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
+            <Tooltip {...tooltipStyle} />
+            <Bar dataKey="revenue" fill="oklch(0.75 0.15 192)" radius={[2, 2, 0, 0]} name="Revenue" />
+            <Bar dataKey="budget" fill="oklch(0.68 0.18 145)" radius={[2, 2, 0, 0]} name="Budget" />
+            <Bar dataKey="expenses" fill="oklch(0.62 0.22 25)" radius={[2, 2, 0, 0]} name="Expenses" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Top 5 Income + Top 5 Expenses */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Income Sources</h2>
+          {topIncome.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">No income data for this period.</p>
+          ) : (
+            <div className="space-y-3">
+              {topIncome.map((item, i) => {
+                const amt = fmtN(item.amount);
+                const pct = ((amt / totalIncome) * 100).toFixed(1);
+                return (
+                  <div key={item.id}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground w-4 shrink-0">{i + 1}.</span>
+                      <span className="text-foreground flex-1 truncate mx-2">{item.label}</span>
+                      <span className="text-foreground font-medium">{fmtD(item.amount)}</span>
+                      <span className="text-muted-foreground ml-2 w-10 text-right">{pct}%</span>
+                    </div>
+                    <ThinBar value={amt} max={totalIncome} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-card border border-border rounded-lg p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3">Top 5 Expenses</h2>
+          {topExpenses.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">No expense data for this period.</p>
+          ) : (
+            <div className="space-y-3">
+              {topExpenses.map((item, i) => {
+                const amt = fmtN(item.amount);
+                const pct = ((amt / totalExp) * 100).toFixed(1);
+                const over = false; // budgetAmount not tracked at line-item level
+                return (
+                  <div key={item.id}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground w-4 shrink-0">{i + 1}.</span>
+                      <span className="text-foreground flex-1 truncate mx-2">{item.label}</span>
+                      <span className={`font-medium ${over ? "text-red-400" : "text-foreground"}`}>{fmtD(item.amount)}</span>
+                      <span className="text-muted-foreground ml-2 w-10 text-right">{pct}%</span>
+                    </div>
+                    <ThinBar value={amt} max={totalExp} red={over} />
+                    {over && null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -29,11 +29,11 @@ export default function AdminClients() {
   const [search, setSearch] = useState("");
   const [filterTier, setFilterTier] = useState<string>("all");
   const [ghlDialogOpen, setGhlDialogOpen] = useState(false);
-  const [selectedTenant, setSelectedTenant] = useState<{ id: number; name: string; notes: string } | null>(null);
+  const [selectedTenant, setSelectedTenant] = useState<{ slug: string; name: string; notes: string } | null>(null);
   const [ghlNotes, setGhlNotes] = useState("");
   const [addClientOpen, setAddClientOpen] = useState(false);
   const [, navigate] = useLocation();
-  const { setImpersonatingTenantId, setEffectiveTier } = usePortal();
+  const { setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
 
   const { data: tenants, isLoading, refetch } = trpc.tenant.list.useQuery();
   const updateGhl = trpc.tenant.updateGhlNotes.useMutation({
@@ -43,22 +43,22 @@ export default function AdminClients() {
   const filtered = (tenants ?? []).filter((t) => {
     const matchSearch =
       !search ||
-      t.companyName?.toLowerCase().includes(search.toLowerCase()) ||
-      t.contactName?.toLowerCase().includes(search.toLowerCase()) ||
+      t.company_name?.toLowerCase().includes(search.toLowerCase()) ||
+      t.contact_name?.toLowerCase().includes(search.toLowerCase()) ||
       t.email?.toLowerCase().includes(search.toLowerCase());
-    const matchTier = filterTier === "all" || t.packageTier === filterTier;
+    const matchTier = filterTier === "all" || t.package_tier === filterTier;
     return matchSearch && matchTier;
   });
 
   function handleImpersonate(tenant: typeof filtered[0]) {
-    setImpersonatingTenantId(tenant.id);
-    setEffectiveTier(tenant.packageTier as PackageTier);
+    setImpersonatingTenantSlug(tenant.slug);
+    setEffectiveTier(tenant.package_tier as PackageTier);
     navigate("/portal");
   }
 
   function openGhlDialog(tenant: typeof filtered[0]) {
-    setSelectedTenant({ id: tenant.id, name: tenant.companyName ?? "Client", notes: tenant.ghlNotes ?? "" });
-    setGhlNotes(tenant.ghlNotes ?? "");
+    setSelectedTenant({ slug: tenant.slug, name: tenant.company_name ?? "Client", notes: tenant.ghl_notes ?? "" });
+    setGhlNotes(tenant.ghl_notes ?? "");
     setGhlDialogOpen(true);
   }
 
@@ -130,37 +130,35 @@ export default function AdminClients() {
                     <th className="text-left px-5 py-3 text-xs text-muted-foreground font-medium">Contact</th>
                     <th className="text-left px-5 py-3 text-xs text-muted-foreground font-medium">Package</th>
                     <th className="text-left px-5 py-3 text-xs text-muted-foreground font-medium">Status</th>
-                    <th className="text-left px-5 py-3 text-xs text-muted-foreground font-medium">Signed</th>
+                    <th className="text-left px-5 py-3 text-xs text-muted-foreground font-medium">Slug</th>
                     <th className="text-right px-5 py-3 text-xs text-muted-foreground font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((tenant) => (
-                    <tr key={tenant.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors group">
+                    <tr key={tenant.slug} className="border-b border-border/50 hover:bg-muted/20 transition-colors group">
                       <td className="px-5 py-3">
-                        <p className="font-medium text-foreground">{tenant.companyName ?? "—"}</p>
+                        <p className="font-medium text-foreground">{tenant.company_name ?? "—"}</p>
                         <p className="text-xs text-muted-foreground">{tenant.email ?? ""}</p>
                       </td>
-                      <td className="px-5 py-3 text-foreground">{tenant.contactName ?? "—"}</td>
+                      <td className="px-5 py-3 text-foreground">{tenant.contact_name ?? "—"}</td>
                       <td className="px-5 py-3">
                         <Badge
                           variant="outline"
-                          className={`text-xs capitalize ${PACKAGE_COLORS[tenant.packageTier as PackageTier]}`}
+                          className={`text-xs capitalize ${PACKAGE_COLORS[tenant.package_tier as PackageTier]}`}
                         >
-                          {PACKAGE_LABELS[tenant.packageTier as PackageTier]}
+                          {PACKAGE_LABELS[tenant.package_tier as PackageTier]}
                         </Badge>
                       </td>
                       <td className="px-5 py-3">
                         <Badge
                           variant="outline"
-                          className={`text-xs ${tenant.isActive ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-red-500/30 text-red-400 bg-red-500/10"}`}
+                          className={`text-xs ${tenant.is_active ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-red-500/30 text-red-400 bg-red-500/10"}`}
                         >
-                          {tenant.isActive ? "Active" : "Inactive"}
+                          {tenant.is_active ? "Active" : "Inactive"}
                         </Badge>
                       </td>
-                      <td className="px-5 py-3 text-muted-foreground text-xs">
-                        {new Date(tenant.signedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      </td>
+                      <td className="px-5 py-3 text-muted-foreground text-xs font-mono">{tenant.slug}</td>
                       <td className="px-5 py-3">
                         <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button
@@ -215,7 +213,7 @@ export default function AdminClients() {
               <Button
                 size="sm"
                 className="bg-primary text-primary-foreground"
-                onClick={() => selectedTenant && updateGhl.mutate({ tenantId: selectedTenant.id, notes: ghlNotes })}
+                onClick={() => selectedTenant && updateGhl.mutate({ slug: selectedTenant.slug, notes: ghlNotes })}
                 disabled={updateGhl.isPending}
               >
                 {updateGhl.isPending ? "Saving…" : "Save Notes"}
@@ -237,7 +235,7 @@ export default function AdminClients() {
 
 function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose: () => void; onSuccess: () => void }) {
   const [form, setForm] = useState({
-    userId: "",
+    slug: "",
     companyName: "",
     contactName: "",
     email: "",
@@ -258,11 +256,11 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
         <div className="space-y-4 pt-2">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">User ID *</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Slug * (e.g. grit-media)</Label>
               <Input
-                value={form.userId}
-                onChange={(e) => setForm({ ...form, userId: e.target.value })}
-                placeholder="User ID from DB"
+                value={form.slug}
+                onChange={(e) => setForm({ ...form, slug: e.target.value })}
+                placeholder="client-slug"
                 className="bg-background border-border text-foreground text-sm"
               />
             </div>
@@ -297,8 +295,8 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
             <Button
               size="sm"
               className="bg-primary text-primary-foreground"
-              disabled={!form.userId || upsert.isPending}
-              onClick={() => upsert.mutate({ ...form, userId: Number(form.userId) })}
+              disabled={!form.slug || !form.companyName || upsert.isPending}
+              onClick={() => upsert.mutate({ slug: form.slug, companyName: form.companyName, contactName: form.contactName || undefined, email: form.email || undefined, packageTier: form.packageTier })}
             >
               {upsert.isPending ? "Adding…" : "Add Client"}
             </Button>

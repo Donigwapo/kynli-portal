@@ -7,34 +7,32 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
 import {
-  deleteCoachingItem,
-  deleteDocument,
-  getAllTenants,
-  getAiSummary,
+  getAllPortalTenants,
   getClientRoster,
   getCoachingItems,
   getDocuments,
   getFinancials,
   getKpiMetrics,
   getLineItems,
-  getLineItemsByYear,
   getSalesTracker,
-  getTenantById,
-  getTenantByUserId,
+  getSalesTrackerByYear,
+  getTenantBySlug,
   getTimeLogs,
   insertClientRosterEntry,
   insertCoachingItem,
   insertDocument,
   insertLineItem,
   insertTimeLog,
+  supabase,
   toggleCoachingItem,
-  updateTenantGhlNotes,
-  upsertAiSummary,
+  deleteCoachingItem,
+  deleteDocument,
   upsertFinancial,
   upsertKpiMetric,
+  upsertPortalTenant,
   upsertSalesTracker,
-  upsertTenant,
-} from "./db";
+  type PortalUser,
+} from "./supabase";
 
 // ─── Admin guard middleware ───────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -45,23 +43,40 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
 });
 
 // ─── Tenant context helper ────────────────────────────────────────────────────
-// Resolves the effective tenant: either the logged-in client's own tenant,
-// or (for admins) an impersonated tenant via tenantId override.
-async function resolveTenant(userId: number, role: string, impersonateTenantId?: number) {
-  if (role === "admin" && impersonateTenantId) {
-    const t = await getTenantById(impersonateTenantId);
-    if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-    return t;
-  }
-  const t = await getTenantByUserId(userId);
-  if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
-  return t;
+async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
+  if (user.role === "admin" && impersonateSlug) return impersonateSlug;
+  if (user.tenant_slug) return user.tenant_slug;
+  throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
 }
 
+// ─── AI Summary helpers ───────────────────────────────────────────────────────
+async function getAiSummary(slug: string, year: number, month: number) {
+  const { data } = await supabase
+    .from(`${slug}_ai_summaries`)
+    .select("*")
+    .eq("year", year)
+    .eq("month", month)
+    .single();
+  return data || null;
+}
+
+async function upsertAiSummary(slug: string, year: number, month: number, content: string) {
+  await supabase
+    .from(`${slug}_ai_summaries`)
+    .upsert({ year, month, content, generated_at: new Date().toISOString() }, { onConflict: "year,month" });
+}
+
+async function updateTenantGhlNotes(slug: string, notes: string) {
+  await supabase
+    .from("portal_tenants")
+    .update({ ghl_notes: notes, updated_at: new Date().toISOString() })
+    .eq("slug", slug);
+}
+
+// ─── App Router ───────────────────────────────────────────────────────────────
 export const appRouter = router({
   system: systemRouter,
 
-  // ─── Auth ─────────────────────────────────────────────────────────────────
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
@@ -71,320 +86,285 @@ export const appRouter = router({
     }),
   }),
 
-  // ─── Tenant ───────────────────────────────────────────────────────────────
   tenant: router({
     me: protectedProcedure.query(async ({ ctx }) => {
-      return getTenantByUserId(ctx.user.id);
+      if (!ctx.user.tenant_slug) return null;
+      return getTenantBySlug(ctx.user.tenant_slug);
     }),
-    getById: adminProcedure
-      .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return getTenantById(input.id);
-      }),
-    list: adminProcedure.query(async () => {
-      return getAllTenants();
-    }),
+    getBySlug: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => getTenantBySlug(input.slug)),
+    list: adminProcedure.query(async () => getAllPortalTenants()),
     upsert: adminProcedure
-      .input(
-        z.object({
-          id: z.number().optional(),
-          userId: z.number(),
-          companyName: z.string().optional(),
-          contactName: z.string().optional(),
-          email: z.string().optional(),
-          packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
-          isActive: z.boolean().optional(),
-          ghlNotes: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        slug: z.string(),
+        companyName: z.string(),
+        contactName: z.string().optional(),
+        email: z.string().optional(),
+        packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
+        isActive: z.boolean().optional(),
+        ghlNotes: z.string().optional(),
+      }))
       .mutation(async ({ input }) => {
-        await upsertTenant(input as any);
+        await upsertPortalTenant({
+          slug: input.slug,
+          company_name: input.companyName,
+          contact_name: input.contactName,
+          email: input.email,
+          package_tier: input.packageTier,
+          is_active: input.isActive ?? true,
+          ghl_notes: input.ghlNotes,
+        });
         return { success: true };
       }),
     updateGhlNotes: adminProcedure
-      .input(z.object({ tenantId: z.number(), notes: z.string() }))
+      .input(z.object({ slug: z.string(), notes: z.string() }))
       .mutation(async ({ input }) => {
-        await updateTenantGhlNotes(input.tenantId, input.notes);
+        await updateTenantGhlNotes(input.slug, input.notes);
         return { success: true };
       }),
   }),
 
-  // ─── Financials ───────────────────────────────────────────────────────────
   financials: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number().optional(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), month: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getFinancials(tenant.id, input.year, input.month);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getFinancials(slug, input.year, input.month);
       }),
     lineItems: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getLineItems(tenant.id, input.year, input.month);
-      }),
-    lineItemsByYear: protectedProcedure
-      .input(z.object({ year: z.number(), tenantId: z.number().optional() }))
-      .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getLineItemsByYear(tenant.id, input.year);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getLineItems(slug, input.year, input.month);
       }),
     upsert: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-          revenue: z.string().optional(),
-          expenses: z.string().optional(),
-          netProfit: z.string().optional(),
-          margin: z.string().optional(),
-          budgetRevenue: z.string().optional(),
-          budgetExpenses: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(),
+        year: z.number(), month: z.number(),
+        revenue: z.number(), budgetRevenue: z.number(),
+        expenses: z.number(), budgetExpenses: z.number(),
+        netProfit: z.number(), netProfitMargin: z.number(),
+      }))
       .mutation(async ({ input }) => {
-        await upsertFinancial(input as any);
+        await upsertFinancial(input.tenantSlug, {
+          year: input.year, month: input.month,
+          revenue: input.revenue, budget_revenue: input.budgetRevenue,
+          expenses: input.expenses, budget_expenses: input.budgetExpenses,
+          net_profit: input.netProfit, net_profit_margin: input.netProfitMargin,
+        });
         return { success: true };
       }),
     addLineItem: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-          type: z.enum(["income", "expense"]),
-          label: z.string(),
-          amount: z.string(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(),
+        year: z.number(), month: z.number(),
+        type: z.enum(["income", "expense"]),
+        label: z.string(), amount: z.number(),
+      }))
       .mutation(async ({ input }) => {
-        await insertLineItem(input as any);
+        await insertLineItem(input.tenantSlug, {
+          year: input.year, month: input.month,
+          type: input.type, label: input.label, amount: input.amount,
+        });
         return { success: true };
       }),
   }),
 
-  // ─── Documents ────────────────────────────────────────────────────────────
   documents: router({
     list: protectedProcedure
-      .input(z.object({ year: z.number().optional(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getDocuments(tenant.id, input.year);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getDocuments(slug, input.year);
       }),
-    upload: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          name: z.string(),
-          description: z.string().optional(),
-          docType: z.string().optional(),
-          year: z.number(),
-          fileBase64: z.string(),
-          fileName: z.string().optional(),
-          mimeType: z.string(),
-        })
-      )
+    upload: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        name: z.string(), fileBase64: z.string(), mimeType: z.string(),
+        docType: z.string().optional(), description: z.string().optional(), year: z.number().optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const buffer = Buffer.from(input.fileBase64, "base64");
-        const safeFileName = input.fileName ?? input.name;
-        const fileKey = `tenants/${input.tenantId}/docs/${input.year}/${Date.now()}-${safeFileName}`;
+        const ext = input.mimeType.split("/")[1] || "bin";
+        const fileKey = `${slug}/docs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
-        await insertDocument({
-          tenantId: input.tenantId,
-          name: input.name,
-          fileKey,
-          fileUrl: url,
-          mimeType: input.mimeType,
-          year: input.year,
-          uploadedBy: ctx.user.id,
+        await insertDocument(slug, {
+          name: input.name, file_url: url, file_key: fileKey,
+          doc_type: input.docType || "general",
+          description: input.description || null,
+          year: input.year || null, mime_type: input.mimeType,
         });
         return { success: true, url };
       }),
     delete: adminProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenantSlug: z.string() }))
       .mutation(async ({ input }) => {
-        await deleteDocument(input.id);
+        await deleteDocument(input.tenantSlug, input.id);
         return { success: true };
       }),
   }),
 
-  // ─── Coaching ─────────────────────────────────────────────────────────────
   coaching: router({
     list: protectedProcedure
-      .input(z.object({ quarter: z.string().optional(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number().optional(), quarter: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getCoachingItems(tenant.id, input.quarter);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getCoachingItems(slug, input.year, input.quarter);
       }),
     add: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          quarter: z.string(),
-          title: z.string(),
-          notes: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(), year: z.number(), quarter: z.number(),
+        title: z.string(), description: z.string().optional(), sortOrder: z.number().optional(),
+      }))
       .mutation(async ({ input }) => {
-        await insertCoachingItem(input);
+        await insertCoachingItem(input.tenantSlug, {
+          year: input.year, quarter: input.quarter, title: input.title,
+          description: input.description || null, completed: false, sort_order: input.sortOrder || 0,
+        });
         return { success: true };
       }),
     toggle: protectedProcedure
-      .input(z.object({ id: z.number(), isCompleted: z.boolean() }))
-      .mutation(async ({ input }) => {
-        await toggleCoachingItem(input.id, input.isCompleted);
+      .input(z.object({ id: z.number(), completed: z.boolean(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        await toggleCoachingItem(slug, input.id, input.completed);
         return { success: true };
       }),
     delete: adminProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenantSlug: z.string() }))
       .mutation(async ({ input }) => {
-        await deleteCoachingItem(input.id);
+        await deleteCoachingItem(input.tenantSlug, input.id);
         return { success: true };
       }),
   }),
 
-  // ─── KPI Metrics ──────────────────────────────────────────────────────────
   kpi: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getKpiMetrics(tenant.id, input.year);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getKpiMetrics(slug, input.year);
       }),
     upsert: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-          cac: z.string().optional(),
-          churnRate: z.string().optional(),
-          ltv: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(), year: z.number(), month: z.number(),
+        cac: z.number().optional(), churnRate: z.number().optional(), ltv: z.number().optional(),
+      }))
       .mutation(async ({ input }) => {
-        await upsertKpiMetric(input as any);
+        await upsertKpiMetric(input.tenantSlug, {
+          year: input.year, month: input.month,
+          cac: input.cac ?? 0, churn_rate: input.churnRate ?? 0, ltv: input.ltv ?? 0,
+        });
         return { success: true };
       }),
   }),
 
-  // ─── Time Intelligence ────────────────────────────────────────────────────
   time: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getTimeLogs(tenant.id, input.year, input.month);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getTimeLogs(slug, input.year, input.month);
       }),
     add: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-          focusArea: z.string(),
-          hours: z.string(),
-          delegationSuggestion: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(), year: z.number(), month: z.number(),
+        focusArea: z.string(), hours: z.number(), delegationNote: z.string().optional(),
+      }))
       .mutation(async ({ input }) => {
-        await insertTimeLog(input as any);
+        await insertTimeLog(input.tenantSlug, {
+          year: input.year, month: input.month,
+          focus_area: input.focusArea, hours: input.hours,
+          delegation_note: input.delegationNote || null,
+        });
         return { success: true };
       }),
   }),
 
-  // ─── Sales Tracker ────────────────────────────────────────────────────────
   sales: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getSalesTracker(tenant.id, input.year, input.month);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getSalesTracker(slug, input.year, input.month);
+      }),
+    getByYear: protectedProcedure
+      .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getSalesTrackerByYear(slug, input.year);
       }),
     upsert: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-          goalClients: z.number(),
-          signedClients: z.number(),
-          referralCount: z.number(),
-          outboundCount: z.number(),
-        })
-      )
+      .input(z.object({
+        tenantSlug: z.string(), year: z.number(), month: z.number(),
+        goalClients: z.number(), signedClients: z.number(),
+        referralCount: z.number(), outboundCount: z.number(),
+      }))
       .mutation(async ({ input }) => {
-        await upsertSalesTracker(input);
-        return { success: true };
-      }),
-  }),
-  // ─── Client Roster ────────────────────────────────────────────────────────────
-  clientRoster: router({
-    list: protectedProcedure
-      .input(z.object({ tenantId: z.number().optional() }))
-      .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getClientRoster(tenant.id);
-      }),
-    add: protectedProcedure
-      .input(
-        z.object({
-          clientName: z.string(),
-          packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
-          monthlyFee: z.string(),
-          signedAt: z.date(),
-          status: z.enum(["active", "churned"]).optional(),
-          totalIncome: z.string().optional(),
-        })
-      )
-      .mutation(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role);
-        await insertClientRosterEntry({ ...input, tenantId: tenant.id });
+        await upsertSalesTracker(input.tenantSlug, {
+          year: input.year, month: input.month,
+          goal_clients: input.goalClients, signed_clients: input.signedClients,
+          referral_count: input.referralCount, outbound_count: input.outboundCount,
+        });
         return { success: true };
       }),
   }),
 
-  // ─── AI Summaries ────────────────────────────────────────────────────────────
+  roster: router({
+    list: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getClientRoster(slug);
+      }),
+    add: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string(), clientName: z.string(),
+        packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
+        monthlyFee: z.number(), signedAt: z.string(),
+        status: z.enum(["active", "churned"]).optional(), totalIncome: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await insertClientRosterEntry({
+          tenant_slug: input.tenantSlug, client_name: input.clientName,
+          package_tier: input.packageTier, monthly_fee: input.monthlyFee,
+          signed_at: input.signedAt, status: input.status || "active",
+          total_income: input.totalIncome || 0,
+        });
+        return { success: true };
+      }),
+  }),
+
   aiSummary: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number(), tenantId: z.number().optional() }))
+      .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await resolveTenant(ctx.user.id, ctx.user.role, input.tenantId);
-        return getAiSummary(tenant.id, input.year, input.month);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getAiSummary(slug, input.year, input.month);
       }),
     generate: adminProcedure
-      .input(
-        z.object({
-          tenantId: z.number(),
-          year: z.number(),
-          month: z.number(),
-        })
-      )
+      .input(z.object({ tenantSlug: z.string(), year: z.number(), month: z.number() }))
       .mutation(async ({ input }) => {
-        const financialData = await getFinancials(input.tenantId, input.year, input.month);
-        const lineItemData = await getLineItems(input.tenantId, input.year, input.month);
-
+        const financialData = await getFinancials(input.tenantSlug, input.year, input.month);
+        const lineItemData = await getLineItems(input.tenantSlug, input.year, input.month);
+        const fin = financialData[0];
         const prompt = `You are a financial advisor for KynLi Consulting. Generate a concise, professional monthly financial summary for a client based on the following data:
-
 Month: ${input.month}/${input.year}
-${financialData.length > 0 ? `Revenue: $${financialData[0].revenue}, Expenses: $${financialData[0].expenses}, Net Profit: $${financialData[0].netProfit}, Margin: ${financialData[0].margin}%` : "No financial data available."}
-
+${fin ? `Revenue: $${fin.revenue}, Expenses: $${fin.expenses}, Net Profit: $${fin.net_profit}, Margin: ${(fin.net_profit_margin * 100).toFixed(1)}%` : "No financial data available."}
 Top Income Sources: ${lineItemData.filter(i => i.type === "income").slice(0, 5).map(i => `${i.label}: $${i.amount}`).join(", ") || "None"}
 Top Expenses: ${lineItemData.filter(i => i.type === "expense").slice(0, 5).map(i => `${i.label}: $${i.amount}`).join(", ") || "None"}
-
 Write a 3-4 paragraph summary covering: overall performance, key highlights, areas of concern, and one actionable recommendation. Use clear, non-technical language suitable for a business owner.`;
-
         const response = await invokeLLM({
           messages: [
             { role: "system", content: "You are a professional financial advisor writing client summaries." },
             { role: "user", content: prompt },
           ],
         });
-
         const rawContent = response.choices[0]?.message?.content;
         const content = typeof rawContent === "string" ? rawContent : "Summary unavailable.";
-        await upsertAiSummary({ tenantId: input.tenantId, year: input.year, month: input.month, content });
+        await upsertAiSummary(input.tenantSlug, input.year, input.month, content);
         return { success: true, content };
       }),
   }),

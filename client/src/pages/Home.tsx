@@ -1,6 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { getLoginUrl } from "@/const";
 import { BarChart3, BookOpen, Brain, FileText, FolderOpen, Loader2, Shield, Target, TrendingUp } from "lucide-react";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
@@ -11,7 +10,11 @@ export default function Home() {
 
   useEffect(() => {
     if (!loading && isAuthenticated) {
-      navigate("/portal");
+      if (user?.role === "admin") {
+        navigate("/admin");
+      } else {
+        navigate("/portal");
+      }
     }
   }, [loading, isAuthenticated, user]);
 
@@ -50,7 +53,7 @@ export default function Home() {
         <Button
           size="sm"
           className="bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => window.location.href = getLoginUrl()}
+          onClick={() => navigate("/login")}
         >
           Sign In
         </Button>
@@ -73,10 +76,10 @@ export default function Home() {
           <Button
             size="lg"
             className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 h-12 text-base font-semibold"
-            onClick={() => window.location.href = getLoginUrl()}
-          >
-            Access Your Portal
-          </Button>
+          onClick={() => navigate("/login")}
+        >
+          Access Your Portal
+        </Button>
           <p className="text-xs text-muted-foreground mt-4">
             Your account must be enrolled by your KynLi advisor to access the portal.
           </p>

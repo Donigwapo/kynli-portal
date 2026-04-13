@@ -1,120 +1,143 @@
-import { useState, useEffect } from "react";
-import { Target } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { BookOpen, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
-const QUARTERS = [
-  { label: "Q1 (Jan–Mar)", value: "Q1" },
-  { label: "Q2 (Apr–Jun)", value: "Q2" },
-  { label: "Q3 (Jul–Sep)", value: "Q3" },
-  { label: "Q4 (Oct–Dec)", value: "Q4" },
-];
-
-function getCurrentQuarter(): string {
-  const m = new Date().getMonth();
-  if (m < 3) return "Q1";
-  if (m < 6) return "Q2";
-  if (m < 9) return "Q3";
-  return "Q4";
+function getQuarters(year: number): { label: string; num: number }[] {
+  return [1, 2, 3, 4].map((n) => ({ label: `${year}-Q${n}`, num: n }));
 }
 
 export default function Coaching() {
   const now = new Date();
+  const currentQuarterNum = Math.ceil((now.getMonth() + 1) / 3);
   const [year, setYear] = useState(now.getFullYear());
-  const [quarter, setQuarter] = useState(getCurrentQuarter());
-  const years = Array.from({ length: 4 }, (_, i) => now.getFullYear() + 1 - i);
-  const quarterKey = `${year}-${quarter}`;
-  const isCurrentQuarter = year === now.getFullYear() && quarter === getCurrentQuarter();
+  const [quarter, setQuarter] = useState(currentQuarterNum);
+  const { impersonatingTenantSlug } = usePortal();
+  const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  const { data: items, isLoading } = trpc.coaching.list.useQuery({
-    quarter: quarterKey,
-    tenantId: undefined,
+  const { data: items, isLoading, refetch } = trpc.coaching.list.useQuery({
+    year,
+    quarter,
+    tenantSlug: impersonatingTenantSlug ?? undefined,
   });
 
-  // Combine all items into a single text block for display
-  const text = (items ?? []).map((i) => i.title).join("\n");
-  const lineCount = text ? text.split("\n").filter(Boolean).length : 0;
-  const charCount = text.length;
+  const toggle = trpc.coaching.toggle.useMutation({ onSuccess: () => refetch() });
+
+  const completed = (items ?? []).filter((i) => i.completed).length;
+  const total = (items ?? []).length;
 
   return (
-    <div className="p-6 space-y-5">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-0.5">
-            <Target size={20} className="text-primary" />
-            <h1 className="text-2xl font-bold text-foreground">Quarterly Coaching Goals</h1>
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+            <BookOpen size={20} />
           </div>
-          <p className="text-sm text-muted-foreground">Your north star for the quarter. Review weekly, update as needed.</p>
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Coaching & Accountability</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Quarterly goals and 90-day action items</p>
+          </div>
         </div>
-        {/* Quarter + Year selectors */}
-        <div className="flex items-center gap-2 shrink-0">
-          <select
-            value={quarter}
-            onChange={(e) => setQuarter(e.target.value)}
-            className="bg-card border border-border rounded-md text-xs text-foreground px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+        <div className="flex gap-2">
+          <Select
+            value={String(quarter)}
+            onValueChange={(v) => setQuarter(Number(v))}
           >
-            {QUARTERS.map((q) => (
-              <option key={q.value} value={q.value}>{q.label}</option>
-            ))}
-          </select>
-          <select
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            className="bg-card border border-border rounded-md text-xs text-foreground px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
-          >
-            {years.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
+            <SelectTrigger className="w-28 bg-card border-border text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-border">
+              {getQuarters(year).map((q) => (
+                <SelectItem key={q.num} value={String(q.num)} className="text-sm">Q{q.num}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={String(year)} onValueChange={(v) => { setYear(Number(v)); setQuarter(currentQuarterNum); }}>
+            <SelectTrigger className="w-24 bg-card border-border text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-border">
+              {years.map((y) => (
+                <SelectItem key={y} value={String(y)} className="text-sm">{y}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
-      {/* Quarter badge */}
-      <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 bg-primary/10 text-primary text-xs font-medium px-3 py-1 rounded-full border border-primary/20">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-          {QUARTERS.find((q) => q.value === quarter)?.label} · {year}
-          {isCurrentQuarter && (
-            <span className="ml-1 bg-primary/20 text-primary text-[10px] px-1.5 py-0.5 rounded-full">Current Quarter</span>
+      {/* Progress bar */}
+      {total > 0 && (
+        <Card className="bg-card border-border">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-foreground">Quarter Progress</span>
+              <Badge variant="outline" className="text-xs border-primary/30 text-primary bg-primary/10">
+                {completed}/{total} completed
+              </Badge>
+            </div>
+            <div className="w-full bg-muted rounded-full h-2">
+              <div
+                className="bg-primary h-2 rounded-full transition-all duration-500"
+                style={{ width: `${total > 0 ? (completed / total) * 100 : 0}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {total > 0 ? Math.round((completed / total) * 100) : 0}% of goals completed for {year} Q{quarter}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Items list */}
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-2 border-b border-border">
+          <CardTitle className="text-sm font-semibold text-foreground">
+            Goals & Action Items — {year} Q{quarter}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+          ) : (items ?? []).length === 0 ? (
+            <div className="py-12 text-center">
+              <CheckCircle2 size={40} className="text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm font-medium text-foreground">No items for {year} Q{quarter}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Your coach will add goals and action items for this quarter.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {(items ?? []).map((item) => (
+                <div
+                  key={item.id}
+                  className={`flex items-start gap-4 px-5 py-4 transition-colors ${item.completed ? "opacity-60" : "hover:bg-muted/20"}`}
+                >
+                  <Checkbox
+                    checked={item.completed}
+                    onCheckedChange={(checked) =>
+                      toggle.mutate({ id: item.id, completed: !!checked })
+                    }
+                    className="mt-0.5 border-primary/40 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-medium ${item.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                      {item.title}
+                    </p>
+                    {item.description && (
+                      <p className="text-xs text-muted-foreground mt-1">{item.description}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
-        </span>
-      </div>
-
-      {/* Goals display */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-semibold text-foreground">Goals &amp; Focus Areas</h2>
-        </div>
-        {isLoading ? (
-          <div className="h-64 flex items-center justify-center">
-            <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          </div>
-        ) : text ? (
-          <div className="p-4">
-            <pre className="text-sm text-foreground font-mono leading-relaxed whitespace-pre-wrap">{text}</pre>
-          </div>
-        ) : (
-          <div className="h-64 flex flex-col items-center justify-center gap-2 text-center px-6">
-            <Target size={32} className="text-muted-foreground/30" />
-            <p className="text-sm text-muted-foreground">No goals set for this quarter yet.</p>
-            <p className="text-xs text-muted-foreground/60">Your advisor will update your quarterly goals here.</p>
-          </div>
-        )}
-        {text && (
-          <div className="flex items-center justify-between px-4 py-2 border-t border-border/50 text-[11px] text-muted-foreground">
-            <span>{lineCount} {lineCount === 1 ? "goal" : "goals"} · {charCount} characters</span>
-            <span className="text-muted-foreground/50">Updated by your advisor</span>
-          </div>
-        )}
-      </div>
-
-      {/* How to use */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-foreground mb-2">How to use this</h3>
-        <div className="space-y-1.5 text-xs text-muted-foreground">
-          <p>Your quarterly goals are set by your KynLi advisor based on your strategy sessions. Review them weekly to stay on track.</p>
-          <p>Switch between quarters using the selectors above to review how your focus has evolved over time.</p>
-          <p>A summary of your current quarter's goals also appears on the main Overview dashboard for quick reference.</p>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -93,8 +93,6 @@ export const documents = mysqlTable("documents", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  docType: varchar("docType", { length: 64 }).default("other"), // financials | tax_returns | w2_1099 | other
   fileKey: varchar("fileKey", { length: 512 }).notNull(),
   fileUrl: text("fileUrl").notNull(),
   mimeType: varchar("mimeType", { length: 128 }),
@@ -173,23 +171,6 @@ export const salesTracker = mysqlTable("sales_tracker", {
 
 export type SalesTracker = typeof salesTracker.$inferSelect;
 export type InsertSalesTracker = typeof salesTracker.$inferInsert;
-
-// ─── Client Roster (KynLi's own client list — visible to CFO/admin users) ────
-export const clientRoster = mysqlTable("client_roster", {
-  id: int("id").autoincrement().primaryKey(),
-  tenantId: int("tenantId").notNull(), // FK → tenants.id (the KynLi account that owns this roster)
-  clientName: varchar("clientName", { length: 255 }).notNull(),
-  packageTier: mysqlEnum("packageTier", ["legacy", "momentum", "growth_1", "growth_2", "cfo"]).notNull(),
-  monthlyFee: decimal("monthlyFee", { precision: 15, scale: 2 }).default("0").notNull(),
-  signedAt: timestamp("signedAt").notNull(),
-  status: mysqlEnum("status", ["active", "churned"]).default("active").notNull(),
-  totalIncome: decimal("totalIncome", { precision: 15, scale: 2 }).default("0").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
-
-export type ClientRosterEntry = typeof clientRoster.$inferSelect;
-export type InsertClientRosterEntry = typeof clientRoster.$inferInsert;
 
 // ─── AI Summaries ────────────────────────────────────────────────────────────
 export const aiSummaries = mysqlTable("ai_summaries", {

@@ -1,18 +1,22 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import {
-  BookOpen,
   BarChart3,
+  BookOpen,
+  Brain,
   Clock,
-  DollarSign,
-  FileBarChart,
+  FileText,
   FolderOpen,
+  LayoutDashboard,
   LogOut,
+  Target,
   TrendingUp,
   Users,
 } from "lucide-react";
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
+import { hasAccess, PackageTier, TAB_ACCESS } from "../../../shared/tiers";
+import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
 
 interface NavItem {
@@ -22,27 +26,47 @@ interface NavItem {
   href: string;
 }
 
-// Exact order from the mockup screenshot
 const CLIENT_NAV: NavItem[] = [
-  { id: "overview",          label: "Overview",          icon: <BarChart3 size={16} />,      href: "/portal" },
-  { id: "clients",           label: "Clients",           icon: <Users size={16} />,          href: "/portal/clients" },
-  { id: "sales_tracker",     label: "Sales Tracker",     icon: <TrendingUp size={16} />,     href: "/portal/sales" },
-  { id: "financials",        label: "Financials",        icon: <DollarSign size={16} />,     href: "/portal/financials" },
-  { id: "time_intelligence", label: "Time Intelligence", icon: <Clock size={16} />,          href: "/portal/time" },
-  { id: "coaching",          label: "Coaching",          icon: <BookOpen size={16} />,       href: "/portal/coaching" },
-  { id: "documents",         label: "Portal",            icon: <FolderOpen size={16} />,     href: "/portal/documents" },
-  { id: "reports",           label: "Reports",           icon: <FileBarChart size={16} />,   href: "/portal/reports" },
+  { id: "overview", label: "Overview", icon: <LayoutDashboard size={16} />, href: "/portal" },
+  { id: "financials", label: "Financials", icon: <BarChart3 size={16} />, href: "/portal/financials" },
+  { id: "reports", label: "Reports", icon: <TrendingUp size={16} />, href: "/portal/reports" },
+  { id: "documents", label: "Portal", icon: <FolderOpen size={16} />, href: "/portal/documents" },
+  { id: "ai_summaries", label: "AI Summaries", icon: <Brain size={16} />, href: "/portal/ai-summaries" },
+  { id: "coaching", label: "Coaching", icon: <BookOpen size={16} />, href: "/portal/coaching" },
+  { id: "kpi_dashboard", label: "KPI Dashboard", icon: <Target size={16} />, href: "/portal/kpi" },
+  { id: "time_intelligence", label: "Time Intelligence", icon: <Clock size={16} />, href: "/portal/time" },
+  { id: "sales_tracker", label: "Sales Tracker", icon: <FileText size={16} />, href: "/portal/sales" },
+];
 
+const ADMIN_NAV: NavItem[] = [
+  { id: "admin_clients", label: "Clients", icon: <Users size={16} />, href: "/admin" },
+  { id: "admin_overview", label: "Overview", icon: <LayoutDashboard size={16} />, href: "/admin/overview" },
+  { id: "admin_sales", label: "Sales Tracker", icon: <FileText size={16} />, href: "/admin/sales" },
+  { id: "admin_financials", label: "Financials", icon: <BarChart3 size={16} />, href: "/admin/financials" },
+  { id: "admin_time", label: "Time Intelligence", icon: <Clock size={16} />, href: "/admin/time" },
+  { id: "admin_coaching", label: "Coaching", icon: <BookOpen size={16} />, href: "/admin/coaching" },
+  { id: "admin_portal", label: "Portal", icon: <FolderOpen size={16} />, href: "/admin/data-entry" },
+  { id: "admin_reports", label: "Reports", icon: <TrendingUp size={16} />, href: "/admin/reports" },
 ];
 
 interface PortalLayoutProps {
   children: ReactNode;
+  isAdmin?: boolean;
 }
 
-export default function PortalLayout({ children }: PortalLayoutProps) {
+export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
-  const { data: tenant } = trpc.tenant.me.useQuery(undefined);
+  const { effectiveTier, impersonatingTenantSlug, setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !isAdmin && !impersonatingTenantSlug });
+
+  const activeTier: PackageTier = (tenant?.package_tier as PackageTier) ?? effectiveTier;
+
+  const visibleNav = CLIENT_NAV.filter((item) =>
+    hasAccess(activeTier, TAB_ACCESS[item.id] as PackageTier)
+  );
+
+  const navItems = isAdmin ? ADMIN_NAV : visibleNav;
 
   // User initials for avatar
   const initials = user?.name
@@ -51,42 +75,56 @@ export default function PortalLayout({ children }: PortalLayoutProps) {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar */}
-      <aside
-        className="flex flex-col w-48 shrink-0 border-r border-sidebar-border"
-        style={{ backgroundColor: "oklch(0.09 0.005 240)" }}
-      >
+      {/* Sidebar — matches mockup exactly */}
+      <aside className="flex flex-col w-44 shrink-0 border-r border-sidebar-border" style={{ backgroundColor: "oklch(0.09 0.005 240)" }}>
+
         {/* Logo */}
-        <div className="flex items-center gap-2.5 px-4 py-4 border-b border-sidebar-border">
-          <div className="w-7 h-7 rounded-md bg-primary/20 flex items-center justify-center shrink-0">
+        <div className="flex items-center gap-2 px-4 py-4 border-b border-sidebar-border">
+          <div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center shrink-0">
             <span className="text-primary font-bold text-xs leading-none">kc</span>
           </div>
-          {tenant?.companyName && (
-            <span className="text-xs text-muted-foreground truncate leading-tight">{tenant.companyName}</span>
+          {!isAdmin && !impersonatingTenantSlug && tenant?.company_name && (
+            <span className="text-xs text-muted-foreground truncate">{tenant.company_name}</span>
+          )}
+          {isAdmin && (
+            <span className="text-xs text-muted-foreground truncate">KynLi Admin</span>
           )}
         </div>
 
+        {/* Impersonation banner */}
+        {impersonatingTenantSlug && (
+          <div className="mx-3 mt-2 px-2 py-1.5 rounded bg-amber-500/10 border border-amber-500/20">
+            <p className="text-xs text-amber-400 font-medium leading-tight">Viewing as client</p>
+            <button
+              onClick={() => {
+                setImpersonatingTenantSlug(null);
+                setEffectiveTier("cfo");
+              }}
+              className="text-xs text-amber-300/70 underline mt-0.5 hover:text-amber-300"
+            >
+              Exit view
+            </button>
+          </div>
+        )}
+
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
-          {CLIENT_NAV.map((item) => {
+        <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+          {navItems.map((item) => {
             const isActive =
               location === item.href ||
-              (item.href !== "/portal" && location.startsWith(item.href));
+              (item.href.length > 6 && location.startsWith(item.href));
             return (
               <Link key={item.id} href={item.href}>
                 <div
                   className={cn(
-                    "flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm transition-all cursor-pointer",
+                    "flex items-center gap-2.5 px-2 py-2 rounded text-sm transition-colors",
                     isActive
-                      ? "bg-primary/15 text-primary font-medium"
-                      : "text-sidebar-foreground/55 hover:text-sidebar-foreground hover:bg-white/5"
+                      ? "text-primary"
+                      : "text-sidebar-foreground/60 hover:text-sidebar-foreground"
                   )}
                 >
                   <span className="shrink-0">{item.icon}</span>
-                  <span className="flex-1 truncate">{item.label}</span>
-                  {isActive && (
-                    <span className="text-primary/60 text-xs">›</span>
-                  )}
+                  <span className="truncate">{item.label}</span>
                 </div>
               </Link>
             );
@@ -95,17 +133,13 @@ export default function PortalLayout({ children }: PortalLayoutProps) {
 
         {/* User section — bottom */}
         <div className="border-t border-sidebar-border p-3">
-          <div className="flex items-center gap-2.5 mb-2.5">
-            <div className="w-7 h-7 rounded-full bg-muted/40 flex items-center justify-center shrink-0">
-              <span className="text-foreground text-xs font-semibold">{initials}</span>
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+              <span className="text-primary text-xs font-semibold">{initials}</span>
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-medium text-sidebar-foreground truncate leading-tight">
-                {user?.name ?? "—"}
-              </p>
-              <p className="text-[11px] text-muted-foreground truncate leading-tight">
-                {user?.email ?? ""}
-              </p>
+              <p className="text-xs font-medium text-sidebar-foreground truncate leading-tight">{user?.name ?? "—"}</p>
+              <p className="text-xs text-muted-foreground truncate leading-tight">{user?.email ?? ""}</p>
             </div>
           </div>
           <button

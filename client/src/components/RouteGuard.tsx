@@ -1,5 +1,4 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { Loader2 } from "lucide-react";
 import { ReactNode, useEffect } from "react";
 import { useLocation } from "wouter";
@@ -21,7 +20,7 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
   useEffect(() => {
     if (loading) return;
     if (!isAuthenticated) {
-      window.location.href = getLoginUrl();
+      navigate("/login");
       return;
     }
     if (requireAdmin && user?.role !== "admin") {

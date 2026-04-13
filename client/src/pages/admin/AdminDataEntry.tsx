@@ -22,7 +22,7 @@ const MONTHS = [
 
 export default function AdminDataEntry() {
   const now = new Date();
-  const [tenantId, setTenantId] = useState("");
+  const [tenantSlug, setTenantSlug] = useState("");
   const [year, setYear] = useState(String(now.getFullYear()));
   const [month, setMonth] = useState(String(now.getMonth() + 1));
   const years = Array.from({ length: 5 }, (_, i) => String(now.getFullYear() - i));
@@ -30,7 +30,7 @@ export default function AdminDataEntry() {
   const { data: tenants } = trpc.tenant.list.useQuery();
 
   // ── Financials ──────────────────────────────────────────────────────────────
-  const [fin, setFin] = useState({ revenue: "", expenses: "", netProfit: "", margin: "", budgetRevenue: "", budgetExpenses: "" });
+  const [fin, setFin] = useState({ revenue: "", expenses: "", netProfit: "", netProfitMargin: "", budgetRevenue: "", budgetExpenses: "" });
   const upsertFin = trpc.financials.upsert.useMutation({ onSuccess: () => toast.success("Financials saved") });
 
   // ── Line Items ──────────────────────────────────────────────────────────────
@@ -38,16 +38,19 @@ export default function AdminDataEntry() {
   const addLi = trpc.financials.addLineItem.useMutation({ onSuccess: () => { toast.success("Line item added"); setLi({ type: "income", label: "", amount: "" }); } });
 
   // ── Coaching ────────────────────────────────────────────────────────────────
-  const [coaching, setCoaching] = useState({ quarter: `${now.getFullYear()}-Q${Math.ceil((now.getMonth() + 1) / 3)}`, title: "", notes: "" });
-  const addCoaching = trpc.coaching.add.useMutation({ onSuccess: () => { toast.success("Coaching item added"); setCoaching({ ...coaching, title: "", notes: "" }); } });
+  const currentQNum = Math.ceil((now.getMonth() + 1) / 3);
+  const [coachingQuarter, setCoachingQuarter] = useState(String(currentQNum));
+  const [coachingTitle, setCoachingTitle] = useState("");
+  const [coachingNotes, setCoachingNotes] = useState("");
+  const addCoaching = trpc.coaching.add.useMutation({ onSuccess: () => { toast.success("Coaching item added"); setCoachingTitle(""); setCoachingNotes(""); } });
 
   // ── KPI ─────────────────────────────────────────────────────────────────────
   const [kpi, setKpi] = useState({ cac: "", churnRate: "", ltv: "" });
   const upsertKpi = trpc.kpi.upsert.useMutation({ onSuccess: () => toast.success("KPI metrics saved") });
 
   // ── Time ────────────────────────────────────────────────────────────────────
-  const [time, setTime] = useState({ focusArea: "", hours: "", delegationSuggestion: "" });
-  const addTime = trpc.time.add.useMutation({ onSuccess: () => { toast.success("Time log added"); setTime({ focusArea: "", hours: "", delegationSuggestion: "" }); } });
+  const [time, setTime] = useState({ focusArea: "", hours: "", delegationNote: "" });
+  const addTime = trpc.time.add.useMutation({ onSuccess: () => { toast.success("Time log added"); setTime({ focusArea: "", hours: "", delegationNote: "" }); } });
 
   // ── Sales ───────────────────────────────────────────────────────────────────
   const [sales, setSales] = useState({ goalClients: "", signedClients: "", referralCount: "", outboundCount: "" });
@@ -61,16 +64,15 @@ export default function AdminDataEntry() {
   const [docFile, setDocFile] = useState<File | null>(null);
   const uploadDoc = trpc.documents.upload.useMutation({ onSuccess: () => { toast.success("Document uploaded"); setDocName(""); setDocFile(null); } });
 
-  const tid = tenantId ? Number(tenantId) : 0;
   const yr = Number(year);
   const mo = Number(month);
 
   async function handleDocUpload() {
-    if (!docFile || !tid) return;
+    if (!docFile || !tenantSlug) return;
     const reader = new FileReader();
     reader.onload = (e) => {
       const base64 = (e.target?.result as string).split(",")[1];
-      uploadDoc.mutate({ tenantId: tid, name: docName || docFile.name, year: yr, fileBase64: base64, mimeType: docFile.type });
+      uploadDoc.mutate({ tenantSlug, name: docName || docFile.name, year: yr, fileBase64: base64, mimeType: docFile.type });
     };
     reader.readAsDataURL(docFile);
   }
@@ -88,14 +90,14 @@ export default function AdminDataEntry() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <Label className="text-xs text-muted-foreground mb-1.5 block">Client *</Label>
-              <Select value={tenantId} onValueChange={setTenantId}>
+              <Select value={tenantSlug} onValueChange={setTenantSlug}>
                 <SelectTrigger className="bg-background border-border text-sm h-9">
                   <SelectValue placeholder="Select client" />
                 </SelectTrigger>
                 <SelectContent className="bg-card border-border">
                   {(tenants ?? []).map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)} className="text-sm">
-                      {t.companyName ?? `Client #${t.id}`}
+                    <SelectItem key={t.slug} value={t.slug} className="text-sm">
+                      {t.company_name ?? t.slug}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -138,14 +140,19 @@ export default function AdminDataEntry() {
             <CardHeader className="pb-3"><CardTitle className="text-sm">Monthly Financials</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {[["revenue","Revenue"],["expenses","Expenses"],["netProfit","Net Profit"],["margin","Margin %"],["budgetRevenue","Budget Revenue"],["budgetExpenses","Budget Expenses"]].map(([key, label]) => (
+                {[["revenue","Revenue"],["expenses","Expenses"],["netProfit","Net Profit"],["netProfitMargin","Margin (0-1)"],["budgetRevenue","Budget Revenue"],["budgetExpenses","Budget Expenses"]].map(([key, label]) => (
                   <div key={key}>
                     <Label className="text-xs text-muted-foreground mb-1.5 block">{label}</Label>
                     <Input value={fin[key as keyof typeof fin]} onChange={(e) => setFin({ ...fin, [key]: e.target.value })} placeholder="0.00" className="bg-background border-border text-sm h-9" />
                   </div>
                 ))}
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || upsertFin.isPending} onClick={() => upsertFin.mutate({ tenantId: tid, year: yr, month: mo, ...fin })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || upsertFin.isPending} onClick={() => upsertFin.mutate({
+                tenantSlug, year: yr, month: mo,
+                revenue: Number(fin.revenue), expenses: Number(fin.expenses),
+                netProfit: Number(fin.netProfit), netProfitMargin: Number(fin.netProfitMargin),
+                budgetRevenue: Number(fin.budgetRevenue), budgetExpenses: Number(fin.budgetExpenses),
+              })}>
                 {upsertFin.isPending ? "Saving…" : "Save Financials"}
               </Button>
             </CardContent>
@@ -173,7 +180,7 @@ export default function AdminDataEntry() {
                   <Input value={li.amount} onChange={(e) => setLi({ ...li, amount: e.target.value })} placeholder="0.00" className="bg-background border-border text-sm h-9" />
                 </div>
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || !li.label || !li.amount || addLi.isPending} onClick={() => addLi.mutate({ tenantId: tid, year: yr, month: mo, ...li })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || !li.label || !li.amount || addLi.isPending} onClick={() => addLi.mutate({ tenantSlug, year: yr, month: mo, type: li.type, label: li.label, amount: Number(li.amount) })}>
                 {addLi.isPending ? "Adding…" : "Add Line Item"}
               </Button>
             </CardContent>
@@ -185,19 +192,26 @@ export default function AdminDataEntry() {
           <Card className="bg-card border-border">
             <CardHeader className="pb-3"><CardTitle className="text-sm">Add Coaching Item</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">Quarter</Label>
-                <Input value={coaching.quarter} onChange={(e) => setCoaching({ ...coaching, quarter: e.target.value })} placeholder="e.g. 2026-Q2" className="bg-background border-border text-sm h-9 max-w-xs" />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1.5 block">Quarter (1-4)</Label>
+                  <Select value={coachingQuarter} onValueChange={setCoachingQuarter}>
+                    <SelectTrigger className="bg-background border-border text-sm h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent className="bg-card border-border">
+                      {[1,2,3,4].map((q) => <SelectItem key={q} value={String(q)} className="text-sm">Q{q}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Goal / Action Item</Label>
-                <Input value={coaching.title} onChange={(e) => setCoaching({ ...coaching, title: e.target.value })} placeholder="e.g. Increase revenue by 15%" className="bg-background border-border text-sm h-9" />
+                <Input value={coachingTitle} onChange={(e) => setCoachingTitle(e.target.value)} placeholder="e.g. Increase revenue by 15%" className="bg-background border-border text-sm h-9" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Notes (optional)</Label>
-                <Textarea value={coaching.notes} onChange={(e) => setCoaching({ ...coaching, notes: e.target.value })} placeholder="Additional context or instructions…" className="bg-background border-border text-sm min-h-[80px]" />
+                <Textarea value={coachingNotes} onChange={(e) => setCoachingNotes(e.target.value)} placeholder="Additional context or instructions…" className="bg-background border-border text-sm min-h-[80px]" />
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || !coaching.title || addCoaching.isPending} onClick={() => addCoaching.mutate({ tenantId: tid, ...coaching })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || !coachingTitle || addCoaching.isPending} onClick={() => addCoaching.mutate({ tenantSlug, year: yr, quarter: Number(coachingQuarter), title: coachingTitle, description: coachingNotes || undefined })}>
                 {addCoaching.isPending ? "Adding…" : "Add Item"}
               </Button>
             </CardContent>
@@ -210,7 +224,7 @@ export default function AdminDataEntry() {
             <CardHeader className="pb-3"><CardTitle className="text-sm">Upload Document</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">File Name (optional override)</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Document Name (optional)</Label>
                 <Input value={docName} onChange={(e) => setDocName(e.target.value)} placeholder="Leave blank to use filename" className="bg-background border-border text-sm h-9" />
               </div>
               <div>
@@ -221,7 +235,7 @@ export default function AdminDataEntry() {
                   className="block w-full text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer"
                 />
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || !docFile || uploadDoc.isPending} onClick={handleDocUpload}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || !docFile || uploadDoc.isPending} onClick={handleDocUpload}>
                 {uploadDoc.isPending ? "Uploading…" : "Upload to Vault"}
               </Button>
             </CardContent>
@@ -241,7 +255,12 @@ export default function AdminDataEntry() {
                   </div>
                 ))}
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || upsertKpi.isPending} onClick={() => upsertKpi.mutate({ tenantId: tid, year: yr, month: mo, ...kpi })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || upsertKpi.isPending} onClick={() => upsertKpi.mutate({
+                tenantSlug, year: yr, month: mo,
+                cac: kpi.cac ? Number(kpi.cac) : undefined,
+                churnRate: kpi.churnRate ? Number(kpi.churnRate) : undefined,
+                ltv: kpi.ltv ? Number(kpi.ltv) : undefined,
+              })}>
                 {upsertKpi.isPending ? "Saving…" : "Save KPI"}
               </Button>
             </CardContent>
@@ -264,10 +283,14 @@ export default function AdminDataEntry() {
                 </div>
               </div>
               <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">Delegation Suggestion (optional)</Label>
-                <Textarea value={time.delegationSuggestion} onChange={(e) => setTime({ ...time, delegationSuggestion: e.target.value })} placeholder="e.g. Consider delegating email triage to a VA" className="bg-background border-border text-sm min-h-[80px]" />
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Delegation Note (optional)</Label>
+                <Textarea value={time.delegationNote} onChange={(e) => setTime({ ...time, delegationNote: e.target.value })} placeholder="e.g. Consider delegating email triage to a VA" className="bg-background border-border text-sm min-h-[80px]" />
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || !time.focusArea || !time.hours || addTime.isPending} onClick={() => addTime.mutate({ tenantId: tid, year: yr, month: mo, ...time })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || !time.focusArea || !time.hours || addTime.isPending} onClick={() => addTime.mutate({
+                tenantSlug, year: yr, month: mo,
+                focusArea: time.focusArea, hours: Number(time.hours),
+                delegationNote: time.delegationNote || undefined,
+              })}>
                 {addTime.isPending ? "Adding…" : "Add Time Entry"}
               </Button>
             </CardContent>
@@ -287,7 +310,11 @@ export default function AdminDataEntry() {
                   </div>
                 ))}
               </div>
-              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tid || upsertSales.isPending} onClick={() => upsertSales.mutate({ tenantId: tid, year: yr, month: mo, goalClients: Number(sales.goalClients), signedClients: Number(sales.signedClients), referralCount: Number(sales.referralCount), outboundCount: Number(sales.outboundCount) })}>
+              <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || upsertSales.isPending} onClick={() => upsertSales.mutate({
+                tenantSlug, year: yr, month: mo,
+                goalClients: Number(sales.goalClients), signedClients: Number(sales.signedClients),
+                referralCount: Number(sales.referralCount), outboundCount: Number(sales.outboundCount),
+              })}>
                 {upsertSales.isPending ? "Saving…" : "Save Sales Data"}
               </Button>
             </CardContent>
@@ -302,7 +329,7 @@ export default function AdminDataEntry() {
               <p className="text-sm text-muted-foreground">
                 This will use the existing financial data for the selected client, month, and year to generate an AI-powered summary. Make sure financial data is entered first.
               </p>
-              <Button size="sm" className="bg-primary text-primary-foreground gap-2" disabled={!tid || generateSummary.isPending} onClick={() => generateSummary.mutate({ tenantId: tid, year: yr, month: mo })}>
+              <Button size="sm" className="bg-primary text-primary-foreground gap-2" disabled={!tenantSlug || generateSummary.isPending} onClick={() => generateSummary.mutate({ tenantSlug, year: yr, month: mo })}>
                 {generateSummary.isPending ? "Generating…" : "Generate Summary"}
               </Button>
             </CardContent>

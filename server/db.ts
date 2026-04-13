@@ -3,7 +3,6 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   aiSummaries,
-  clientRoster,
   coachingItems,
   documents,
   financials,
@@ -138,21 +137,6 @@ export async function getLineItems(tenantId: number, year: number, month: number
     .orderBy(desc(lineItems.amount));
 }
 
-export async function getLineItemsByYear(tenantId: number, year: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db
-    .select()
-    .from(lineItems)
-    .where(
-      and(
-        eq(lineItems.tenantId, tenantId),
-        eq(lineItems.year, year)
-      )
-    )
-    .orderBy(desc(lineItems.amount));
-}
-
 export async function insertLineItem(data: typeof lineItems.$inferInsert) {
   const db = await getDb();
   if (!db) return;
@@ -281,21 +265,4 @@ export async function upsertAiSummary(data: typeof aiSummaries.$inferInsert) {
   const db = await getDb();
   if (!db) return;
   await db.insert(aiSummaries).values(data).onDuplicateKeyUpdate({ set: data });
-}
-
-// ─── Client Roster ────────────────────────────────────────────────────────────
-export async function getClientRoster(tenantId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db
-    .select()
-    .from(clientRoster)
-    .where(eq(clientRoster.tenantId, tenantId))
-    .orderBy(clientRoster.clientName);
-}
-
-export async function insertClientRosterEntry(data: typeof clientRoster.$inferInsert) {
-  const db = await getDb();
-  if (!db) return;
-  await db.insert(clientRoster).values(data);
 }

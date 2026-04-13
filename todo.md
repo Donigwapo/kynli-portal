@@ -62,28 +62,21 @@
 - [ ] Admin: edit/delete coaching items from UI
 - [ ] Admin: edit/delete line items from UI
 
-## Bug Fixes
-- [x] Fix 404 on sidebar tab navigation — route mismatch between PortalLayout hrefs and App.tsx routes
-- [x] Fix admin sidebar 404 — remove broken nav links (overview, sales, financials, time, coaching, reports) that have no registered routes
-- [x] Create Grit Media Group LLC test tenant (Growth 1 tier)
-- [x] Seed Jan/Feb/Mar 2026 financials + line items for Grit Media Group LLC
-- [x] Remove admin redirect on login — all users go directly to /portal (client view)
-- [ ] Auto-associate logged-in user with Grit Media Group LLC tenant data for demo
-- [ ] Verify Overview, Financials, Reports, Coaching tabs display real Grit Media data
-
-## UI Rebuild — Match Mockup Exactly
-- [x] Overview tab — exact mockup match (header, 4 metric cards, sales target bar, top 5 income/expenses with budget sub-lines, combo revenue chart, trend + donut charts, coaching goals)
-- [x] Financials tab — exact mockup match
-- [x] Reports tab — exact mockup match
-- [x] Coaching tab — exact mockup match
-- [x] Document Vault (Portal) tab — exact mockup match
-- [x] AI Summaries tab — exact mockup match
-- [x] KPI Dashboard tab — exact mockup match
-- [x] Time Intelligence tab — exact mockup match
-- [x] Sales Tracker tab — exact mockup match
-
-## Sidebar Fix
-- [x] Remove KPI Dashboard and AI Summaries from sidebar nav and routes (user request)
-- [ ] Remove tier gating from sidebar — CFO build shows all tabs always
-- [ ] Match exact nav order from mockup: Overview → Clients (TBD) → Sales Tracker → Financials → Time Intelligence → Coaching → Portal → Reports
-- [ ] Match sidebar visual style from mockup screenshot (larger spacing, rounded active state with teal bg, arrow indicator on active)
+## Phase 10: Supabase Migration
+- [x] Install @supabase/supabase-js
+- [x] Create server/supabase.ts with admin client and all data query helpers
+- [x] Run DDL SQL in Supabase dashboard (14 tables: portal_users, portal_tenants, + 12 per-client tables for grit_media_group_llc)
+- [x] Seed Grit Media Group LLC: 3 months financials (Jan-Mar 2026), line items, coaching goals (Q1 2026), KPI metrics, time logs, sales tracker, client roster
+- [x] Create Supabase Auth users: mechealleq@gmail.com (client) + admin@kynli.com (admin)
+- [x] Seed portal_users and portal_tenants tables
+- [x] Replace Manus OAuth with Supabase email+password auth (server/auth.ts)
+- [x] Update server/_core/context.ts to use JWT session cookie (Supabase-based)
+- [x] Update server/_core/index.ts to register Supabase auth routes + install cookie-parser
+- [x] Create client/src/pages/Login.tsx with email+password form
+- [x] Add /login route to App.tsx
+- [x] Update RouteGuard.tsx, useAuth.ts, Home.tsx to use /login instead of Manus OAuth
+- [x] Rewrite server/routers.ts to use Supabase helpers instead of Drizzle/MySQL
+- [x] Fix all frontend files: tenantId → tenantSlug, camelCase → snake_case field names
+- [x] Fix PortalContext.tsx, PortalLayout.tsx, AdminClients.tsx, AdminDataEntry.tsx
+- [x] All 4 vitest tests passing (supabase.test.ts + auth.logout.test.ts)
+- [x] End-to-end API test: login → auth.me → financials.get → coaching.list all pass
