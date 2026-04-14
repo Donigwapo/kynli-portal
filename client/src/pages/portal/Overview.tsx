@@ -3,6 +3,7 @@ import { usePortal } from "@/contexts/PortalContext";
 import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  PieChart, Pie, Cell,
 } from "recharts";
 import {
   TrendingUp, TrendingDown, DollarSign, Percent, Users,
@@ -109,6 +110,24 @@ export default function Overview() {
 
   const activeClients = rosterData.filter(c => c.status === "active").length;
   const churnedClients = rosterData.filter(c => c.status === "churned").length;
+
+  // Active clients by package for donut chart
+  const TIER_COLORS: Record<string, string> = {
+    "Video Production": "oklch(0.68 0.18 145)",
+    "Social Media":     "oklch(0.75 0.15 192)",
+    "Brand Strategy":   "oklch(0.72 0.18 280)",
+    "Content + Photo":  "oklch(0.78 0.16 60)",
+    "Full Service":     "oklch(0.62 0.22 25)",
+  };
+  const TIER_FALLBACK = "oklch(0.35 0.005 240)";
+  const tierBreakdown = useMemo(() => {
+    const active = rosterData.filter(c => c.status === "active");
+    const counts: Record<string, number> = {};
+    active.forEach(c => { counts[c.package] = (counts[c.package] ?? 0) + 1; });
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [rosterData]);
 
   const incomeItems = lineItemsData.filter(li => li.type === "income");
   const expenseItems = lineItemsData.filter(li => li.type === "expense");
@@ -337,8 +356,8 @@ export default function Overview() {
           </ResponsiveContainer>
         </div>
 
-        {/* Revenue & Profit Trend + Coaching Goals */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Revenue & Profit Trend + Active Clients by Tier + Coaching Goals */}
+        <div className="grid grid-cols-3 gap-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-semibold text-foreground mb-4">Revenue & Profit Trend</h2>
             <ResponsiveContainer width="100%" height={180}>
@@ -365,6 +384,58 @@ export default function Overview() {
                 <Legend wrapperStyle={{ fontSize: 11, color: MUTED_FG }} />
               </AreaChart>
             </ResponsiveContainer>
+          </div>
+
+          {/* Active Clients by Tier — donut chart */}
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-foreground mb-4">Active Clients by Tier</h2>
+            {tierBreakdown.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-xs">
+                No active clients yet
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-center">
+                  <PieChart width={160} height={160}>
+                    <Pie
+                      data={tierBreakdown}
+                      cx={75}
+                      cy={75}
+                      innerRadius={48}
+                      outerRadius={72}
+                      paddingAngle={3}
+                      dataKey="value"
+                      stroke="none"
+                    >
+                      {tierBreakdown.map((entry, i) => (
+                        <Cell
+                          key={entry.name}
+                          fill={TIER_COLORS[entry.name] ?? TIER_FALLBACK}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 11 }}
+                      formatter={(v: number, name: string) => [v, name]}
+                    />
+                  </PieChart>
+                </div>
+                <div className="space-y-2 mt-2">
+                  {tierBreakdown.map(entry => (
+                    <div key={entry.name} className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: TIER_COLORS[entry.name] ?? TIER_FALLBACK }}
+                        />
+                        <span className="text-muted-foreground truncate max-w-[110px]">{entry.name}</span>
+                      </div>
+                      <span className="font-semibold text-foreground">{entry.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">
