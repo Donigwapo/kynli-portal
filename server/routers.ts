@@ -396,7 +396,19 @@ export const appRouter = router({
     getFocusAreas: protectedProcedure
       .query(async ({ ctx }) => {
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
-        return getFocusAreasDb(ctx.user.id);
+        const existing = await getFocusAreasDb(ctx.user.id);
+        if (existing.length === 0) {
+          const defaults = [
+            "Sales", "Marketing", "Consulting", "Strategy & Analysis",
+            "Training & Leadership", "Operations", "Fulfillment",
+            "Coaching", "Strategic Partner", "Other",
+          ];
+          for (const label of defaults) {
+            await addFocusAreaDb(ctx.user.id, label);
+          }
+          return getFocusAreasDb(ctx.user.id);
+        }
+        return existing;
       }),
     addFocusArea: protectedProcedure
       .input(z.object({ label: z.string() }))
