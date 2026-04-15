@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   aiSummaries,
+  categoryIntelligence,
   coachingItems,
   documents,
   financials,
@@ -352,4 +353,45 @@ export async function deleteTaskCategoryDb(tenantId: number, id: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(taskCategories).where(and(eq(taskCategories.id, id), eq(taskCategories.tenantId, tenantId)));
+}
+
+export async function updateTaskCategoryMetaDb(
+  tenantId: number,
+  id: number,
+  meta: { description?: string | null; ownerName?: string | null; ownerRole?: string | null }
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(taskCategories)
+    .set(meta)
+    .where(and(eq(taskCategories.id, id), eq(taskCategories.tenantId, tenantId)));
+}
+
+// ─── Category Intelligence ────────────────────────────────────────────────────
+export async function getCategoryIntelligenceDb(tenantId: number, year: number, month: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(categoryIntelligence)
+    .where(
+      and(
+        eq(categoryIntelligence.tenantId, tenantId),
+        eq(categoryIntelligence.year, year),
+        eq(categoryIntelligence.month, month)
+      )
+    )
+    .orderBy(desc(categoryIntelligence.totalHours));
+}
+
+export async function upsertCategoryIntelligenceDb(
+  data: typeof categoryIntelligence.$inferInsert
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .insert(categoryIntelligence)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: data });
 }

@@ -1,12 +1,13 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  BarChart, Bar, XAxis, YAxis, Cell,
   ResponsiveContainer, Tooltip,
 } from "recharts";
 import {
   Clock, Zap, BarChart2, Lightbulb, Plus, Upload, Download,
-  X, Check, UserPlus, Trash2, ChevronDown,
+  X, Check, UserPlus, Trash2, ChevronDown, Sparkles, AlertTriangle, ArrowRight, Edit2, Save,
 } from "lucide-react";
 
 type TimeLog = {
@@ -18,7 +19,16 @@ type TimeLog = {
 };
 type TeamMember = { id: number; tenantId: number; name: string; createdAt?: Date | null };
 type FocusArea = { id: number; tenantId: number; label: string; createdAt?: Date | null };
-type TaskCategory = { id: number; tenantId: number; label: string; createdAt?: Date | null };
+type TaskCategory = { id: number; tenantId: number; label: string; description?: string | null; ownerName?: string | null; ownerRole?: string | null; createdAt?: Date | null };
+type CatIntelRow = {
+  id: number; tenantId: number; year: number; month: number;
+  categoryLabel: string; focusArea: string | null;
+  ownerName: string | null; ownerRole: string | null;
+  totalHours: string | null; percentOfTotal: string | null;
+  whatItMeans: string | null; expertTrapRisk: boolean | null;
+  delegatable: boolean | null; delegateTo: string | null;
+  aiRationale: string | null; generatedAt?: Date | null;
+};
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -506,6 +516,48 @@ export default function TimeIntelligence() {
   const sortedLogs = [...(logs as TimeLog[])].sort((a, b) =>
     totalDecimalHours(b.hours, b.minutes) - totalDecimalHours(a.hours, a.minutes));
 
+  // ─── Category Intelligence ────────────────────────────────────────────────
+  const { data: catIntel = [], refetch: refetchCatIntel } = trpc.time.getCategoryIntelligence.useQuery(
+    { year, month },
+    { staleTime: 60_000 }
+  );
+  const runAnalysisMutation = trpc.time.runCategoryIntelligence.useMutation({
+    onSuccess: () => refetchCatIntel(),
+  });
+
+  // Team Member Hours (computed from logs)
+  const memberHoursData = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const l of logs as TimeLog[]) {
+      const name = l.teamMember ?? "Unassigned";
+      map[name] = (map[name] ?? 0) + totalDecimalHours(l.hours, l.minutes);
+    }
+    return Object.entries(map)
+      .map(([name, hours]) => ({ name, hours: Math.round(hours * 10) / 10 }))
+      .sort((a, b) => b.hours - a.hours);
+  }, [logs]);
+
+  // Category metadata inline edit
+  const [editingCatId, setEditingCatId] = useState<number | null>(null);
+  const [editCatForm, setEditCatForm] = useState<{ description: string; ownerName: string; ownerRole: string }>({ description: "", ownerName: "", ownerRole: "" });
+  const updateCatMetaMutation = trpc.time.updateTaskCategoryMeta.useMutation({
+    onSuccess: () => utils.time.getTaskCategories.invalidate(),
+  });
+
+  const startEditCat = useCallback((cat: TaskCategory) => {
+    setEditingCatId(cat.id);
+    setEditCatForm({ description: cat.description ?? "", ownerName: cat.ownerName ?? "", ownerRole: cat.ownerRole ?? "" });
+  }, []);
+
+  const saveEditCat = useCallback((cat: TaskCategory) => {
+    updateCatMetaMutation.mutate({
+      id: cat.id,
+      description: editCatForm.description || null,
+      ownerName: editCatForm.ownerName || null,
+      ownerRole: editCatForm.ownerRole || null,
+    }, { onSuccess: () => setEditingCatId(null) });
+  }, [editCatForm, updateCatMetaMutation]);
+
   // ─── Add Entry handler ────────────────────────────────────────────────────
   function handleAddEntry(data: {
     logDate: string; teamMember: string; taskCategory: string;
@@ -819,8 +871,191 @@ export default function TimeIntelligence() {
                 </div>
               </div>
             )}
+            {/* ─── Category Intelligence ─────────────────────────────── */}
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles size={14} style={{ color: TEAL }} />
+                    <h2 className="text-sm font-semibold text-foreground">Category Intelligence</h2>
+                    <span className="text-xs text-muted-foreground">What each tracked category means — and who should own it.</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs flex items-center gap-1" style={{ color: "oklch(0.78 0.16 60)" }}>
+                      <AlertTriangle size={11} /> Expert's Trap risk
+                    </span>
+                    <span className="text-xs flex items-center gap-1" style={{ color: TEAL }}>
+                      <ArrowRight size={11} /> Delegatable
+                    </span>
+                    <button
+                      onClick={() => runAnalysisMutation.mutate({ year, month })}
+                      disabled={runAnalysisMutation.isPending}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors"
+                      style={{ backgroundColor: TEAL, color: "#000" }}
+                    >
+                      <Sparkles size={12} />
+                      {runAnalysisMutation.isPending ? "Analyzing…" : catIntel.length > 0 ? "Re-run AI Analysis" : "Run AI Analysis"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Category Metadata Setup — shown when no AI results yet */}
+                {catIntel.length === 0 && taskCategories.length > 0 && (
+                  <div className="px-5 py-4 border-b border-border bg-[#0d0d0d]">
+                    <p className="text-xs text-muted-foreground mb-3">
+                      Optional: Add descriptions and owner info per category so the AI can give better suggestions.
+                    </p>
+                    <div className="space-y-2">
+                      {(taskCategories as TaskCategory[]).map(cat => (
+                        <div key={cat.id} className="rounded-xl border border-[#222] p-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-semibold text-foreground">{cat.label}</span>
+                            {editingCatId !== cat.id ? (
+                              <button onClick={() => startEditCat(cat)} className="text-muted-foreground hover:text-foreground p-1 rounded">
+                                <Edit2 size={12} />
+                              </button>
+                            ) : (
+                              <button onClick={() => saveEditCat(cat)} disabled={updateCatMetaMutation.isPending} className="text-xs font-semibold flex items-center gap-1 px-2 py-0.5 rounded" style={{ backgroundColor: TEAL, color: "#000" }}>
+                                <Save size={11} /> Save
+                              </button>
+                            )}
+                          </div>
+                          {editingCatId === cat.id ? (
+                            <div className="space-y-1.5">
+                              <input
+                                type="text" placeholder="Description (what this category means)…"
+                                value={editCatForm.description}
+                                onChange={e => setEditCatForm(f => ({ ...f, description: e.target.value }))}
+                                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                              />
+                              <div className="flex gap-2">
+                                <input
+                                  type="text" placeholder="Owner name (e.g. Cameron)"
+                                  value={editCatForm.ownerName}
+                                  onChange={e => setEditCatForm(f => ({ ...f, ownerName: e.target.value }))}
+                                  className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                                />
+                                <input
+                                  type="text" placeholder="Owner role (e.g. CEO, Bookkeeper)"
+                                  value={editCatForm.ownerRole}
+                                  onChange={e => setEditCatForm(f => ({ ...f, ownerRole: e.target.value }))}
+                                  className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex gap-4 text-xs text-muted-foreground">
+                              {cat.description && <span className="truncate">{cat.description}</span>}
+                              {(cat.ownerName || cat.ownerRole) && (
+                                <span className="shrink-0">{[cat.ownerName, cat.ownerRole].filter(Boolean).join(" · ")}</span>
+                              )}
+                              {!cat.description && !cat.ownerName && <span className="italic">No metadata yet — click edit to add</span>}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Results Table */}
+                {catIntel.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border">
+                          {["Category", "What It Means", "Focus Area", "Owner", "Hours"].map(h => (
+                            <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {(catIntel as CatIntelRow[]).map(row => {
+                          const focusColor = {
+                            "Sales": "oklch(0.62 0.22 25)",
+                            "Marketing": "oklch(0.78 0.16 60)",
+                            "Strategy & Analysis": TEAL,
+                            "Training & Leadership": "oklch(0.65 0.20 310)",
+                            "Fulfillment": "oklch(0.68 0.18 145)",
+                            "Coaching": "oklch(0.72 0.14 240)",
+                            "Operations": MUTED_FG,
+                            "Consulting": "oklch(0.75 0.15 192)",
+                          }[row.focusArea ?? ""] ?? MUTED_FG;
+                          return (
+                            <tr key={row.id} className={`hover:bg-white/[0.02] ${row.expertTrapRisk ? "bg-amber-500/5" : ""}`}>
+                              <td className="px-4 py-3 font-semibold text-foreground">
+                                <div className="flex items-center gap-1.5">
+                                  {row.expertTrapRisk && <AlertTriangle size={12} className="text-amber-400 shrink-0" />}
+                                  {row.categoryLabel}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-muted-foreground max-w-xs">
+                                <p className="leading-relaxed">{row.whatItMeans}</p>
+                                {row.aiRationale && (
+                                  <p className="mt-1 text-xs opacity-60 italic">{row.aiRationale}</p>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {row.focusArea && (
+                                  <span className="font-medium" style={{ color: focusColor }}>{row.focusArea}</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {row.delegatable ? (
+                                  <div>
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold" style={{ backgroundColor: "oklch(0.68 0.18 145 / 0.15)", color: "oklch(0.68 0.18 145)" }}>
+                                      Delegate
+                                    </span>
+                                    {row.delegateTo && <p className="text-muted-foreground mt-0.5 text-xs">→ {row.delegateTo}</p>}
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">{row.ownerName ?? "—"}</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right font-semibold text-foreground">
+                                {row.totalHours ? `${parseFloat(row.totalHours).toFixed(1)}h` : "—"}
+                                {row.percentOfTotal && (
+                                  <span className="text-muted-foreground font-normal ml-1">({parseFloat(row.percentOfTotal).toFixed(1)}%)</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {catIntel.length === 0 && taskCategories.length === 0 && (
+                  <div className="px-5 py-8 text-center">
+                    <p className="text-sm text-muted-foreground">Add time entries with Task Categories first, then run the AI analysis.</p>
+                  </div>
+                )}
+              </div>
+
+            {/* ─── Team Member Hours ─────────────────────────────────────── */}
+            {memberHoursData.length > 0 && (
+              <div className="bg-card border border-border rounded-xl p-5">
+                <h2 className="text-sm font-semibold text-foreground mb-4">Team Member Hours</h2>
+                <ResponsiveContainer width="100%" height={Math.max(80, memberHoursData.length * 52)}>
+                  <BarChart data={memberHoursData} layout="vertical" margin={{ top: 0, right: 60, left: 10, bottom: 0 }}>
+                    <XAxis type="number" tick={{ fill: MUTED_FG, fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fill: "var(--foreground)", fontSize: 12 }} axisLine={false} tickLine={false} width={90} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
+                      formatter={(v: number) => [`${v.toFixed(1)}h`, "Hours"]}
+                    />
+                    <Bar dataKey="hours" radius={[0, 6, 6, 0]}>
+                      {memberHoursData.map((_, i) => (
+                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </>
         )}
+
 
         {/* Team Members quick manage link */}
         <div className="flex justify-end">

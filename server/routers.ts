@@ -16,6 +16,9 @@ import {
   getTaskCategoriesDb,
   addTaskCategoryDb,
   deleteTaskCategoryDb,
+  updateTaskCategoryMetaDb,
+  getCategoryIntelligenceDb,
+  upsertCategoryIntelligenceDb,
   getTimeLogs as getTimeLogsDb,
   getTimeLogsByYear as getTimeLogsByYearDb,
   insertTimeLog as insertTimeLogDb,
@@ -462,6 +465,149 @@ export const appRouter = router({
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
         await deleteTaskCategoryDb(ctx.user.id, input.id);
         return { success: true };
+      }),
+
+    updateTaskCategoryMeta: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        description: z.string().nullable().optional(),
+        ownerName: z.string().nullable().optional(),
+        ownerRole: z.string().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        const { id, ...meta } = input;
+        await updateTaskCategoryMetaDb(ctx.user.id, id, meta);
+        return { success: true };
+      }),
+
+    getCategoryIntelligence: protectedProcedure
+      .input(z.object({ year: z.number(), month: z.number() }))
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getCategoryIntelligenceDb(ctx.user.id, input.year, input.month);
+      }),
+
+    runCategoryIntelligence: protectedProcedure
+      .input(z.object({ year: z.number(), month: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        const tenantId = ctx.user.id;
+
+        // Gather time logs for the month
+        const logs = await getTimeLogsDb(tenantId, input.year, input.month);
+        if (logs.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "No time logs found for this month." });
+
+        // Gather task category metadata
+        const categories = await getTaskCategoriesDb(tenantId);
+
+        // Aggregate hours per category
+        const totalHoursAll = logs.reduce((s, l) => s + parseFloat(String(l.hours)) + (l.minutes ?? 0) / 60, 0);
+        const catMap: Record<string, {
+          totalHours: number;
+          focusAreas: string[];
+          teamMembers: string[];
+          description?: string | null;
+          ownerName?: string | null;
+          ownerRole?: string | null;
+        }> = {};
+
+        for (const log of logs) {
+          const cat = log.taskCategory ?? "Uncategorized";
+          if (!catMap[cat]) catMap[cat] = { totalHours: 0, focusAreas: [], teamMembers: [] };
+          catMap[cat].totalHours += parseFloat(String(log.hours)) + (log.minutes ?? 0) / 60;
+          if (log.focusArea && !catMap[cat].focusAreas.includes(log.focusArea)) catMap[cat].focusAreas.push(log.focusArea);
+          if (log.teamMember && !catMap[cat].teamMembers.includes(log.teamMember)) catMap[cat].teamMembers.push(log.teamMember);
+        }
+
+        // Merge saved metadata
+        for (const c of categories) {
+          if (catMap[c.label]) {
+            catMap[c.label].description = c.description;
+            catMap[c.label].ownerName = c.ownerName;
+            catMap[c.label].ownerRole = c.ownerRole;
+          }
+        }
+
+        // Build prompt for LLM
+        const catSummaries = Object.entries(catMap).map(([label, d]) => ({
+          category: label,
+          totalHours: Math.round(d.totalHours * 10) / 10,
+          percentOfTotal: Math.round((d.totalHours / totalHoursAll) * 1000) / 10,
+          focusAreas: d.focusAreas,
+          teamMembers: d.teamMembers,
+          description: d.description ?? null,
+          ownerName: d.ownerName ?? null,
+          ownerRole: d.ownerRole ?? null,
+        }));
+
+        const prompt = `You are a business operations analyst. Analyze the following time tracking data for a client and return a JSON array of category intelligence objects.
+
+Month: ${input.month}/${input.year}
+Total hours tracked: ${Math.round(totalHoursAll * 10) / 10}
+
+Categories:
+${JSON.stringify(catSummaries, null, 2)}
+
+For each category, return a JSON object with these fields:
+- category: string (exact category name from input)
+- whatItMeans: string (1-2 sentence explanation of what this work represents in a business context. Use the provided description if available, otherwise infer from the category name and focus areas.)
+- expertTrapRisk: boolean (true if a high-value owner role like CEO, Founder, or Director is spending significant hours on work that could be delegated — especially fulfillment, admin, or operational tasks)
+- delegatable: boolean (true if this work type can reasonably be handed off to a lower-cost team member)
+- delegateTo: string or null (if delegatable, suggest a role title to delegate to, e.g. "Virtual Assistant", "Bookkeeper", "Marketing Coordinator")
+- aiRationale: string (1-2 sentences explaining your expert trap and delegation assessment)
+
+Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
+
+        const response = await invokeLLM({
+          messages: [
+            { role: "system", content: "You are a business operations analyst. Return only valid JSON." },
+            { role: "user", content: prompt },
+          ],
+        });
+
+        const rawContent = response.choices?.[0]?.message?.content ?? "[]";
+        const raw = typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent);
+        let results: Array<{
+          category: string;
+          whatItMeans: string;
+          expertTrapRisk: boolean;
+          delegatable: boolean;
+          delegateTo: string | null;
+          aiRationale: string;
+        }> = [];
+
+        try {
+          const cleaned = raw.replace(/```json|```/g, "").trim();
+          results = JSON.parse(cleaned);
+        } catch {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "AI returned invalid JSON. Please try again." });
+        }
+
+        // Upsert results into DB
+        for (const r of results) {
+          const d = catMap[r.category];
+          if (!d) continue;
+          await upsertCategoryIntelligenceDb({
+            tenantId,
+            year: input.year,
+            month: input.month,
+            categoryLabel: r.category,
+            focusArea: d.focusAreas[0] ?? null,
+            ownerName: d.ownerName ?? d.teamMembers[0] ?? null,
+            ownerRole: d.ownerRole ?? null,
+            totalHours: String(Math.round(d.totalHours * 100) / 100),
+            percentOfTotal: String(Math.round((d.totalHours / totalHoursAll) * 10000) / 100),
+            whatItMeans: r.whatItMeans,
+            expertTrapRisk: r.expertTrapRisk,
+            delegatable: r.delegatable,
+            delegateTo: r.delegateTo ?? null,
+            aiRationale: r.aiRationale,
+            generatedAt: new Date(),
+          });
+        }
+
+        return getCategoryIntelligenceDb(tenantId, input.year, input.month);
       }),
   }),
 

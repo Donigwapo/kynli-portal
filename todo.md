@@ -121,3 +121,14 @@
 - [x] Rebuild Reports.tsx — 4 KPI cards, revenue/budget/expenses line chart, net profit bar chart, monthly breakdown table with totals
 - [x] Remove double-wrapping PortalLayout from all rebuilt pages (PortalRoute already wraps)
 - [x] TypeScript: 0 errors after all rebuilds
+
+## Phase 15: Category Intelligence (AI Analysis)
+- [x] Extend task_categories schema with description, ownerName, ownerRole fields
+- [x] Add category_intelligence table for AI analysis results (DB migration pushed)
+- [x] Server: updateTaskCategoryMeta mutation
+- [x] Server: getCategoryIntelligence query
+- [x] Server: runCategoryIntelligence mutation (LLM-powered, aggregates logs, upserts results)
+- [x] Frontend: Category Intelligence panel with inline category metadata editor (description, owner name, role)
+- [x] Frontend: AI analysis table — Category, What It Means, Focus Area (color-coded), Owner/Delegate badge, Hours %
+- [x] Frontend: Expert's Trap and Delegatable flags from AI
+- [x] Frontend: Team Member Hours horizontal bar chart (computed from logs, no AI needed)

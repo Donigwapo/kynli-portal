@@ -165,11 +165,39 @@ export const taskCategories = mysqlTable("task_categories", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").notNull(),
   label: varchar("label", { length: 255 }).notNull(),
+  description: text("description"),          // user-provided: what this category means
+  ownerName: varchar("ownerName", { length: 255 }), // user-provided: who owns this
+  ownerRole: varchar("ownerRole", { length: 255 }), // user-provided: owner's role/title
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type TaskCategory = typeof taskCategories.$inferSelect;
 export type InsertTaskCategory = typeof taskCategories.$inferInsert;
+
+// ─── Category Intelligence (AI Analysis Results) ────────────────────────────
+export const categoryIntelligence = mysqlTable("category_intelligence", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull(),
+  year: int("year").notNull(),
+  month: int("month").notNull(),
+  categoryLabel: varchar("categoryLabel", { length: 255 }).notNull(),
+  focusArea: varchar("focusArea", { length: 255 }),
+  ownerName: varchar("ownerName", { length: 255 }),
+  ownerRole: varchar("ownerRole", { length: 255 }),
+  totalHours: decimal("totalHours", { precision: 8, scale: 2 }).default("0"),
+  percentOfTotal: decimal("percentOfTotal", { precision: 6, scale: 2 }).default("0"),
+  whatItMeans: text("whatItMeans"),           // AI-generated description
+  expertTrapRisk: boolean("expertTrapRisk").default(false), // AI flag
+  delegatable: boolean("delegatable").default(false),       // AI flag
+  delegateTo: varchar("delegateTo", { length: 255 }),        // AI suggestion: who to delegate to
+  aiRationale: text("aiRationale"),           // AI reasoning
+  generatedAt: timestamp("generatedAt").defaultNow().notNull(),
+}, (t) => ({
+  uniqTenantYearMonthCat: uniqueIndex("cat_intel_tenant_year_month_cat").on(t.tenantId, t.year, t.month, t.categoryLabel),
+}));
+
+export type CategoryIntelligence = typeof categoryIntelligence.$inferSelect;
+export type InsertCategoryIntelligence = typeof categoryIntelligence.$inferInsert;
 
 // ─── Time Logs (Time Intelligence) ───────────────────────────────────────────
 export const timeLogs = mysqlTable("time_logs", {
