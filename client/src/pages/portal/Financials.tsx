@@ -3,7 +3,6 @@ import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSi
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from "recharts";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
-import PortalLayout from "@/components/PortalLayout";
 
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -301,7 +300,7 @@ export default function Financials() {
   const expandedPeriod = expandedMonth != null ? financials.find(f => f.month === expandedMonth) : null;
 
   return (
-    <PortalLayout>
+    <>
       <div className="p-6 space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -417,6 +416,6 @@ export default function Financials() {
           )}
         </div>
       </div>
-    </PortalLayout>
+    </>
   );
 }
