@@ -397,13 +397,15 @@ export const appRouter = router({
       .query(async ({ ctx }) => {
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
         const existing = await getFocusAreasDb(ctx.user.id);
-        if (existing.length === 0) {
-          const defaults = [
-            "Sales", "Marketing", "Consulting", "Strategy & Analysis",
-            "Training & Leadership", "Operations", "Fulfillment",
-            "Coaching", "Strategic Partner", "Other",
-          ];
-          for (const label of defaults) {
+        const existingLabels = existing.map(f => f.label.toLowerCase());
+        const defaults = [
+          "Sales", "Marketing", "Consulting", "Strategy & Analysis",
+          "Training & Leadership", "Operations", "Fulfillment",
+          "Coaching", "Strategic Partner", "Other",
+        ];
+        const missing = defaults.filter(d => !existingLabels.includes(d.toLowerCase()));
+        if (missing.length > 0) {
+          for (const label of missing) {
             await addFocusAreaDb(ctx.user.id, label);
           }
           return getFocusAreasDb(ctx.user.id);
@@ -428,16 +430,19 @@ export const appRouter = router({
       .mutation(async ({ ctx }) => {
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
         const existing = await getFocusAreasDb(ctx.user.id);
-        if (existing.length > 0) return { seeded: false };
+        const existingLabels = existing.map(f => f.label.toLowerCase());
         const defaults = [
           "Sales", "Marketing", "Consulting", "Strategy & Analysis",
           "Training & Leadership", "Operations", "Fulfillment",
           "Coaching", "Strategic Partner", "Other",
         ];
-        for (const label of defaults) {
+        // Only insert defaults that are not already present (case-insensitive)
+        const missing = defaults.filter(d => !existingLabels.includes(d.toLowerCase()));
+        if (missing.length === 0) return { seeded: false };
+        for (const label of missing) {
           await addFocusAreaDb(ctx.user.id, label);
         }
-        return { seeded: true };
+        return { seeded: true, added: missing };
       }),
     getTaskCategories: protectedProcedure
       .query(async ({ ctx }) => {
