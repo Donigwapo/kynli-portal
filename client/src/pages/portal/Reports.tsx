@@ -119,6 +119,30 @@ export default function Reports() {
     [yearlyData, activeMonths]
   );
 
+  // For P&L table: always show all 12 months (or active months), merging DB data with empty rows
+  const plTableRows = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const nowMonth = new Date().getMonth() + 1; // 1-based
+    const dbByMonth: Record<number, typeof yearlyData[0]> = {};
+    yearlyData.forEach(r => { if (r.month) dbByMonth[r.month] = r; });
+    return activeMonths.map(m => {
+      const row = dbByMonth[m];
+      const rev = fmtN(row?.revenue);
+      const bud = fmtN(row?.budget_revenue);
+      const exp = fmtN(row?.expenses);
+      const np = fmtN(row?.net_profit);
+      const rawMargin = fmtN(row?.net_profit_margin);
+      // If margin stored as decimal (e.g. 0.193), multiply by 100; if already >1, use as-is
+      const margin = rawMargin > 1 ? rawMargin : rawMargin * 100;
+      const variance = rev - bud;
+      // Determine label: if month is in the future (no data yet), show "Projection"; if has data, "Actual"
+      const isFuture = (year > nowYear) || (year === nowYear && m > nowMonth);
+      const hasData = rev > 0 || exp > 0;
+      const label = hasData ? "Actual" : (bud > 0 ? "Projection" : "—");
+      return { m, rev, bud, exp, np, margin, variance, label, isFuture, hasData };
+    });
+  }, [yearlyData, activeMonths, year]);
+
   // Aggregate financial totals
   const totals = useMemo(() => filteredFin.reduce(
     (acc, row) => ({
@@ -325,41 +349,32 @@ export default function Reports() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredFin.map((row) => {
-                        const rev = fmtN(row.revenue);
-                        const bud = fmtN(row.budget_revenue);
-                        const variance = rev - bud;
-                        const exp = fmtN(row.expenses);
-                        const np = fmtN(row.net_profit);
-                        const margin = fmtN(row.net_profit_margin) * 100;
-                        const isActual = rev > 0 || exp > 0;
-                        return (
-                          <tr key={row.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                            <td className="px-5 py-3 font-medium text-foreground">{MONTHS_SHORT[(row.month ?? 1) - 1]} {row.year}</td>
-                            <td className="px-4 py-3 text-right text-foreground">{fmtDFull(rev)}</td>
-                            <td className="px-4 py-3 text-right text-muted-foreground">{fmtDFull(bud)}</td>
-                            <td className="px-4 py-3 text-right font-medium" style={{ color: varianceColor(variance) }}>
-                              {variance >= 0 ? "+" : ""}{fmtDFull(variance)}
-                            </td>
-                            <td className="px-4 py-3 text-right text-foreground">{fmtDFull(exp)}</td>
-                            <td className="px-4 py-3 text-right font-bold" style={{ color: np >= 0 ? TEAL : RED }}>{fmtDFull(np)}</td>
-                            <td className="px-4 py-3 text-right font-semibold" style={{ color: margin >= 30 ? TEAL : margin >= 15 ? AMBER : RED }}>{margin.toFixed(1)}%</td>
-                            <td className="px-5 py-3 text-right text-muted-foreground text-xs">{isActual ? "Actual" : bud > 0 ? "Budget" : "—"}</td>
-                          </tr>
-                        );
-                      })}
+                      {plTableRows.map(({ m, rev, bud, exp, np, margin, variance, label }) => (
+                        <tr key={m} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                          <td className="px-5 py-3 font-bold text-foreground">{MONTHS_SHORT[m - 1]} {year}</td>
+                          <td className="px-4 py-3 text-right text-foreground">{fmtDFull(rev)}</td>
+                          <td className="px-4 py-3 text-right text-muted-foreground">{fmtDFull(bud)}</td>
+                          <td className="px-4 py-3 text-right font-bold" style={{ color: variance > 0 ? GREEN : variance < 0 ? RED : GREEN }}>
+                            {variance >= 0 ? "+" : ""}{fmtDFull(variance)}
+                          </td>
+                          <td className="px-4 py-3 text-right text-foreground">{fmtDFull(exp)}</td>
+                          <td className="px-4 py-3 text-right font-bold" style={{ color: GREEN }}>{fmtDFull(np)}</td>
+                          <td className="px-4 py-3 text-right font-semibold" style={{ color: margin >= 30 ? AMBER : margin > 0 ? AMBER : AMBER }}>{margin.toFixed(1)}%</td>
+                          <td className="px-5 py-3 text-right text-muted-foreground text-xs">{label}</td>
+                        </tr>
+                      ))}
                     </tbody>
                     <tfoot>
-                      <tr className="border-t-2 border-border bg-muted/10">
-                        <td className="px-5 py-3 font-bold text-foreground">Total</td>
+                      <tr className="border-t-2 border-border">
+                        <td className="px-5 py-3 font-bold text-foreground">TOTAL</td>
                         <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totals.revenue)}</td>
                         <td className="px-4 py-3 text-right font-bold text-muted-foreground">{fmtDFull(totals.budgetRevenue)}</td>
-                        <td className="px-4 py-3 text-right font-bold" style={{ color: varianceColor(totals.revenue - totals.budgetRevenue) }}>
+                        <td className="px-4 py-3 text-right font-bold" style={{ color: (totals.revenue - totals.budgetRevenue) >= 0 ? GREEN : RED }}>
                           {totals.revenue - totals.budgetRevenue >= 0 ? "+" : ""}{fmtDFull(totals.revenue - totals.budgetRevenue)}
                         </td>
                         <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totals.expenses)}</td>
-                        <td className="px-4 py-3 text-right font-bold" style={{ color: totals.netProfit >= 0 ? TEAL : RED }}>{fmtDFull(totals.netProfit)}</td>
-                        <td className="px-4 py-3 text-right font-bold" style={{ color: netMargin >= 30 ? TEAL : netMargin >= 15 ? AMBER : RED }}>{netMargin.toFixed(1)}%</td>
+                        <td className="px-4 py-3 text-right font-bold" style={{ color: GREEN }}>{fmtDFull(totals.netProfit)}</td>
+                        <td className="px-4 py-3 text-right font-bold text-foreground">{netMargin.toFixed(1)}%</td>
                         <td className="px-5 py-3" />
                       </tr>
                     </tfoot>
