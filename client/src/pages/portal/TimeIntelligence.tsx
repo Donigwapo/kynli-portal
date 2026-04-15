@@ -523,36 +523,32 @@ export default function TimeIntelligence() {
             </button>
 
             {/* Import */}
-            {isAdmin && (
-              <>
-                <input
-                  ref={importRef}
-                  type="file"
-                  accept=".csv"
-                  className="hidden"
-                  onChange={handleImportFile}
-                />
-                <button
-                  onClick={() => importRef.current?.click()}
-                  disabled={addBulkMutation.isPending}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-50"
-                  title="Import CSV"
-                >
-                  <Upload size={14} />
-                  {addBulkMutation.isPending ? "Importing…" : "Import"}
-                </button>
+            <input
+              ref={importRef}
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <button
+              onClick={() => importRef.current?.click()}
+              disabled={addBulkMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-50"
+              title="Import CSV"
+            >
+              <Upload size={14} />
+              {addBulkMutation.isPending ? "Importing…" : "Import"}
+            </button>
 
-                {/* Add Entry */}
-                <button
-                  onClick={() => setShowAddModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
-                  style={{ backgroundColor: TEAL, color: "#000" }}
-                >
-                  <Plus size={14} />
-                  Add Entry
-                </button>
-              </>
-            )}
+            {/* Add Entry */}
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+              style={{ backgroundColor: TEAL, color: "#000" }}
+            >
+              <Plus size={14} />
+              Add Entry
+            </button>
           </div>
         </div>
 
@@ -565,17 +561,15 @@ export default function TimeIntelligence() {
             <Clock size={36} className="text-muted-foreground mx-auto mb-3" />
             <p className="text-sm font-medium text-foreground">No time logs for this period</p>
             <p className="text-xs text-muted-foreground mt-1">
-              {isAdmin ? "Use \"Add Entry\" to log time, or import a CSV file." : "Your advisor will add time tracking data after review."}
+              Use "Add Entry" to log time, or import a CSV file.
             </p>
-            {isAdmin && (
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold"
-                style={{ backgroundColor: TEAL, color: "#000" }}
-              >
-                <Plus size={14} /> Add Entry
-              </button>
-            )}
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold"
+              style={{ backgroundColor: TEAL, color: "#000" }}
+            >
+              <Plus size={14} /> Add Entry
+            </button>
           </div>
         ) : (
           <>
@@ -681,14 +675,12 @@ export default function TimeIntelligence() {
                               {h.toFixed(1)}h
                               <span className="text-muted-foreground font-normal ml-1.5">{pct.toFixed(0)}%</span>
                             </span>
-                            {isAdmin && (
-                              <button
-                                onClick={() => tslug && deleteMutation.mutate({ tenantSlug: tslug, id: log.id })}
-                                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 p-0.5 rounded transition-opacity"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            )}
+                            <button
+                              onClick={() => tslug && deleteMutation.mutate({ tenantSlug: tslug, id: log.id })}
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 p-0.5 rounded transition-opacity"
+                            >
+                              <Trash2 size={12} />
+                            </button>
                           </div>
                         </div>
                         <div className="h-1 bg-muted rounded-full overflow-hidden">
@@ -722,8 +714,8 @@ export default function TimeIntelligence() {
           </>
         )}
 
-        {/* Admin: Team Members quick manage link */}
-        {isAdmin && tslug && (
+        {/* Team Members quick manage link */}
+        {tslug && (
           <div className="flex justify-end">
             <button
               onClick={() => setShowTeamModal(true)}
@@ -751,6 +743,15 @@ export default function TimeIntelligence() {
           teamMembers={teamMembers}
           tslug={tslug}
         />
+      )}
+      {/* Show add modal even when no data yet */}
+      {showAddModal && !tslug && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="bg-card border border-border rounded-xl p-6 text-center">
+            <p className="text-sm text-muted-foreground">No tenant profile found. Please contact your advisor.</p>
+            <button onClick={() => setShowAddModal(false)} className="mt-3 text-xs text-primary">Close</button>
+          </div>
+        </div>
       )}
     </>
   );

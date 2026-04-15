@@ -293,7 +293,7 @@ export const appRouter = router({
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getTimeLogsByYear(slug, input.year);
       }),
-    add: adminProcedure
+    add: protectedProcedure
       .input(z.object({
         tenantSlug: z.string(),
         year: z.number(), month: z.number(),
@@ -318,7 +318,7 @@ export const appRouter = router({
         });
         return { success: true };
       }),
-    addBulk: adminProcedure
+    addBulk: protectedProcedure
       .input(z.object({
         tenantSlug: z.string(),
         entries: z.array(z.object({
@@ -347,7 +347,7 @@ export const appRouter = router({
         }
         return { success: true, count: input.entries.length };
       }),
-    deleteEntry: adminProcedure
+    deleteEntry: protectedProcedure
       .input(z.object({ tenantSlug: z.string(), id: z.number() }))
       .mutation(async ({ input }) => {
         const { error } = await supabase.from(`${input.tenantSlug}_time_logs`).delete().eq("id", input.id);
@@ -360,13 +360,13 @@ export const appRouter = router({
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getTeamMembers(slug);
       }),
-    addTeamMember: adminProcedure
+    addTeamMember: protectedProcedure
       .input(z.object({ tenantSlug: z.string(), name: z.string() }))
       .mutation(async ({ input }) => {
         await addTeamMember(input.tenantSlug, input.name);
         return { success: true };
       }),
-    deleteTeamMember: adminProcedure
+    deleteTeamMember: protectedProcedure
       .input(z.object({ tenantSlug: z.string(), id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteTeamMember(input.tenantSlug, input.id);
