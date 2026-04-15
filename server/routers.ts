@@ -18,6 +18,10 @@ import {
   getSalesTrackerByYear,
   getTenantBySlug,
   getTimeLogs,
+  getTimeLogsByYear,
+  getTeamMembers,
+  addTeamMember,
+  deleteTeamMember,
   upsertClientRosterEntry,
   deleteClientRosterEntry,
   insertCoachingItem,
@@ -283,17 +287,89 @@ export const appRouter = router({
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getTimeLogs(slug, input.year, input.month);
       }),
+    getByYear: protectedProcedure
+      .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getTimeLogsByYear(slug, input.year);
+      }),
     add: adminProcedure
       .input(z.object({
-        tenantSlug: z.string(), year: z.number(), month: z.number(),
-        focusArea: z.string(), hours: z.number(), delegationNote: z.string().optional(),
+        tenantSlug: z.string(),
+        year: z.number(), month: z.number(),
+        logDate: z.string().nullable().optional(),
+        teamMember: z.string().nullable().optional(),
+        taskCategory: z.string().nullable().optional(),
+        focusArea: z.string(),
+        hours: z.number(),
+        minutes: z.number().nullable().optional(),
+        delegationNote: z.string().nullable().optional(),
       }))
       .mutation(async ({ input }) => {
         await insertTimeLog(input.tenantSlug, {
           year: input.year, month: input.month,
-          focus_area: input.focusArea, hours: input.hours,
+          log_date: input.logDate || null,
+          team_member: input.teamMember || null,
+          task_category: input.taskCategory || null,
+          focus_area: input.focusArea,
+          hours: input.hours,
+          minutes: input.minutes ?? null,
           delegation_note: input.delegationNote || null,
         });
+        return { success: true };
+      }),
+    addBulk: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string(),
+        entries: z.array(z.object({
+          year: z.number(), month: z.number(),
+          logDate: z.string().nullable().optional(),
+          teamMember: z.string().nullable().optional(),
+          taskCategory: z.string().nullable().optional(),
+          focusArea: z.string(),
+          hours: z.number(),
+          minutes: z.number().nullable().optional(),
+          delegationNote: z.string().nullable().optional(),
+        })),
+      }))
+      .mutation(async ({ input }) => {
+        for (const e of input.entries) {
+          await insertTimeLog(input.tenantSlug, {
+            year: e.year, month: e.month,
+            log_date: e.logDate || null,
+            team_member: e.teamMember || null,
+            task_category: e.taskCategory || null,
+            focus_area: e.focusArea,
+            hours: e.hours,
+            minutes: e.minutes ?? null,
+            delegation_note: e.delegationNote || null,
+          });
+        }
+        return { success: true, count: input.entries.length };
+      }),
+    deleteEntry: adminProcedure
+      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
+      .mutation(async ({ input }) => {
+        const { error } = await supabase.from(`${input.tenantSlug}_time_logs`).delete().eq("id", input.id);
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        return { success: true };
+      }),
+    getTeamMembers: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getTeamMembers(slug);
+      }),
+    addTeamMember: adminProcedure
+      .input(z.object({ tenantSlug: z.string(), name: z.string() }))
+      .mutation(async ({ input }) => {
+        await addTeamMember(input.tenantSlug, input.name);
+        return { success: true };
+      }),
+    deleteTeamMember: adminProcedure
+      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteTeamMember(input.tenantSlug, input.id);
         return { success: true };
       }),
   }),

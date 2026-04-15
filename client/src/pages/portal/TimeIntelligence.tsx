@@ -1,69 +1,488 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
-  ResponsiveContainer, Tooltip, Legend,
+  ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Clock, Zap, BarChart2, Lightbulb } from "lucide-react";
+import {
+  Clock, Zap, BarChart2, Lightbulb, Plus, Upload, Download,
+  X, Check, UserPlus, Trash2, ChevronDown,
+} from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
 
-type TimeLog = { id: number; year: number; month: number; focus_area: string; hours: number; delegation_note: string | null; created_at?: string };
+type TimeLog = {
+  id: number; year: number; month: number;
+  log_date: string | null; team_member: string | null;
+  task_category: string | null; focus_area: string;
+  hours: number; minutes: number | null;
+  delegation_note: string | null; created_at?: string;
+};
+type TeamMember = { id: number; slug: string; name: string };
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const FOCUS_AREAS = ["Consulting","Sales Activities","Client Fulfillment","Operations","Marketing","Finance","Strategy","Leadership","Admin","Other"];
 const TEAL = "oklch(0.75 0.15 192)";
 const GREEN = "oklch(0.68 0.18 145)";
-const RED = "oklch(0.62 0.22 25)";
 const AMBER = "oklch(0.78 0.16 60)";
 const MUTED_FG = "oklch(0.50 0.008 240)";
-
 const CHART_COLORS = [
-  "oklch(0.75 0.15 192)",
-  "oklch(0.68 0.18 145)",
-  "oklch(0.78 0.16 60)",
-  "oklch(0.65 0.20 310)",
-  "oklch(0.62 0.22 25)",
-  "oklch(0.72 0.14 240)",
+  "oklch(0.75 0.15 192)","oklch(0.68 0.18 145)","oklch(0.78 0.16 60)",
+  "oklch(0.65 0.20 310)","oklch(0.62 0.22 25)","oklch(0.72 0.14 240)",
 ];
 
-// Classify focus areas as strategic vs operational
 function isStrategic(area: string): boolean {
-  const strategic = ["strategy", "planning", "vision", "leadership", "growth", "business dev", "client", "sales", "marketing", "product", "innovation"];
-  const lower = area.toLowerCase();
-  return strategic.some(k => lower.includes(k));
+  const strategic = ["strategy","planning","vision","leadership","growth","business dev","client","sales","marketing","product","innovation","consulting"];
+  return strategic.some(k => area.toLowerCase().includes(k));
 }
 
+function totalDecimalHours(hours: number, minutes: number | null): number {
+  return hours + (minutes ?? 0) / 60;
+}
+
+// ─── Add Entry Modal ──────────────────────────────────────────────────────────
+function AddEntryModal({
+  onClose, onSave, teamMembers, tslug,
+}: {
+  onClose: () => void;
+  onSave: (data: {
+    logDate: string; teamMember: string; taskCategory: string;
+    focusArea: string; hours: number; minutes: number; delegationNote: string;
+    year: number; month: number;
+  }) => void;
+  teamMembers: TeamMember[];
+  tslug: string;
+}) {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const defaultDate = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+  const [logDate, setLogDate] = useState(defaultDate);
+  const [teamMember, setTeamMember] = useState(teamMembers[0]?.name ?? "");
+  const [taskCategory, setTaskCategory] = useState("");
+  const [focusArea, setFocusArea] = useState("Consulting");
+  const [hours, setHours] = useState(0);
+  const [minutes, setMinutes] = useState(0);
+  const [delegationNote, setDelegationNote] = useState("");
+  const [newMemberName, setNewMemberName] = useState("");
+  const [showAddMember, setShowAddMember] = useState(false);
+
+  const addMemberMutation = trpc.time.addTeamMember.useMutation();
+  const utils = trpc.useUtils();
+
+  function handleAddMember() {
+    if (!newMemberName.trim()) return;
+    addMemberMutation.mutate(
+      { tenantSlug: tslug, name: newMemberName.trim() },
+      {
+        onSuccess: () => {
+          utils.time.getTeamMembers.invalidate();
+          setTeamMember(newMemberName.trim());
+          setNewMemberName("");
+          setShowAddMember(false);
+        },
+      }
+    );
+  }
+
+  function handleSave() {
+    const d = new Date(logDate);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    onSave({ logDate, teamMember, taskCategory, focusArea, hours, minutes, delegationNote, year, month });
+  }
+
+  const inputCls = "w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground";
+  const labelCls = "block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#111111] border border-[#222] rounded-2xl w-full max-w-lg mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[#222]">
+          <h2 className="text-lg font-bold text-foreground">Add Time Entry</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-white/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          {/* Date */}
+          <div>
+            <label className={labelCls}>Date</label>
+            <input
+              type="date"
+              value={logDate}
+              onChange={e => setLogDate(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+
+          {/* Team Member */}
+          <div>
+            <label className={labelCls}>Team Member</label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <select
+                  value={teamMember}
+                  onChange={e => setTeamMember(e.target.value)}
+                  className={`${inputCls} appearance-none pr-8`}
+                >
+                  {teamMembers.length === 0 && (
+                    <option value="">— No members yet —</option>
+                  )}
+                  {teamMembers.map(m => (
+                    <option key={m.id} value={m.name}>{m.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              </div>
+              <button
+                onClick={() => setShowAddMember(v => !v)}
+                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                title="Add new team member"
+              >
+                <UserPlus size={16} />
+              </button>
+            </div>
+            {showAddMember && (
+              <div className="flex gap-2 mt-2">
+                <input
+                  type="text"
+                  value={newMemberName}
+                  onChange={e => setNewMemberName(e.target.value)}
+                  placeholder="Enter name..."
+                  className={`${inputCls} flex-1`}
+                  onKeyDown={e => e.key === "Enter" && handleAddMember()}
+                />
+                <button
+                  onClick={handleAddMember}
+                  disabled={addMemberMutation.isPending}
+                  className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Task Category */}
+          <div>
+            <label className={labelCls}>Task Category</label>
+            <input
+              type="text"
+              value={taskCategory}
+              onChange={e => setTaskCategory(e.target.value)}
+              placeholder="e.g. Sales Activities"
+              className={inputCls}
+            />
+          </div>
+
+          {/* Focus Area */}
+          <div>
+            <label className={labelCls}>Focus Area</label>
+            <div className="relative">
+              <select
+                value={focusArea}
+                onChange={e => setFocusArea(e.target.value)}
+                className={`${inputCls} appearance-none pr-8`}
+              >
+                {FOCUS_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Duration */}
+          <div>
+            <label className={labelCls}>Duration</label>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <input
+                  type="number"
+                  min={0}
+                  value={hours}
+                  onChange={e => setHours(Math.max(0, parseInt(e.target.value) || 0))}
+                  className={inputCls}
+                />
+                <p className="text-xs text-muted-foreground text-center mt-1.5">Hours</p>
+              </div>
+              <div>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={minutes}
+                  onChange={e => setMinutes(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+                  className={inputCls}
+                />
+                <p className="text-xs text-muted-foreground text-center mt-1.5">Minutes</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className={labelCls}>Notes (Optional)</label>
+            <textarea
+              value={delegationNote}
+              onChange={e => setDelegationNote(e.target.value)}
+              rows={3}
+              className={`${inputCls} resize-none`}
+              placeholder="Delegation notes, context..."
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-3 px-6 py-4 border-t border-[#222]">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-xl border border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-white/5 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={hours === 0 && minutes === 0}
+            className="flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+            style={{ backgroundColor: TEAL, color: "#000" }}
+          >
+            <Check size={16} />
+            Add Entry
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Team Members Manager Modal ───────────────────────────────────────────────
+function TeamMembersModal({
+  onClose, teamMembers, tslug,
+}: {
+  onClose: () => void;
+  teamMembers: TeamMember[];
+  tslug: string;
+}) {
+  const [newName, setNewName] = useState("");
+  const addMutation = trpc.time.addTeamMember.useMutation();
+  const deleteMutation = trpc.time.deleteTeamMember.useMutation();
+  const utils = trpc.useUtils();
+
+  function handleAdd() {
+    if (!newName.trim()) return;
+    addMutation.mutate(
+      { tenantSlug: tslug, name: newName.trim() },
+      { onSuccess: () => { utils.time.getTeamMembers.invalidate(); setNewName(""); } }
+    );
+  }
+
+  function handleDelete(id: number) {
+    deleteMutation.mutate(
+      { tenantSlug: tslug, id },
+      { onSuccess: () => utils.time.getTeamMembers.invalidate() }
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#111111] border border-[#222] rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[#222]">
+          <h2 className="text-base font-bold text-foreground">Manage Team Members</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-white/5">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="px-6 py-4 space-y-3">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              placeholder="Add team member name..."
+              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+              onKeyDown={e => e.key === "Enter" && handleAdd()}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={addMutation.isPending}
+              className="px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-50"
+              style={{ backgroundColor: TEAL, color: "#000" }}
+            >
+              Add
+            </button>
+          </div>
+          {teamMembers.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No team members yet.</p>
+          ) : (
+            <div className="space-y-1 max-h-64 overflow-y-auto">
+              {teamMembers.map(m => (
+                <div key={m.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-white/5">
+                  <span className="text-sm text-foreground">{m.name}</span>
+                  <button
+                    onClick={() => handleDelete(m.id)}
+                    disabled={deleteMutation.isPending}
+                    className="text-muted-foreground hover:text-red-400 p-1 rounded disabled:opacity-50"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-[#222]">
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 rounded-xl border border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-white/5"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function TimeIntelligence() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const { impersonatingTenantSlug } = usePortal();
-  const tslug = impersonatingTenantSlug ?? undefined;
-  const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !impersonatingTenantSlug });
+  const tslug = impersonatingTenantSlug ?? tenant?.slug ?? null;
+  const years = Array.from({ length: 4 }, (_, i) => now.getFullYear() - i);
 
-  const { data: logs = [], isLoading } = trpc.time.get.useQuery(
-    { year, month, tenantSlug: tslug },
-    { staleTime: 30_000 }
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  const { data: logs = [], isLoading, refetch } = trpc.time.get.useQuery(
+    { year, month, tenantSlug: tslug ?? undefined },
+    { enabled: !!tslug, staleTime: 30_000 }
   );
 
-  const totalHours = useMemo(() => logs.reduce((s: number, l: TimeLog) => s + (l.hours ?? 0), 0), [logs]);
-  const strategicHours = useMemo(
-    () => logs.filter((l: TimeLog) => isStrategic(l.focus_area)).reduce((s: number, l: TimeLog) => s + (l.hours ?? 0), 0),
-    [logs]
+  const { data: teamMembers = [], refetch: refetchMembers } = trpc.time.getTeamMembers.useQuery(
+    { tenantSlug: tslug ?? undefined },
+    { enabled: !!tslug, staleTime: 60_000 }
   );
+
+  const addMutation = trpc.time.add.useMutation({ onSuccess: () => refetch() });
+  const addBulkMutation = trpc.time.addBulk.useMutation({ onSuccess: () => refetch() });
+  const deleteMutation = trpc.time.deleteEntry.useMutation({ onSuccess: () => refetch() });
+
+  // Computed stats
+  const totalHours = useMemo(() =>
+    logs.reduce((s: number, l: TimeLog) => s + totalDecimalHours(l.hours, l.minutes), 0), [logs]);
+  const strategicHours = useMemo(() =>
+    logs.filter((l: TimeLog) => isStrategic(l.focus_area))
+      .reduce((s: number, l: TimeLog) => s + totalDecimalHours(l.hours, l.minutes), 0), [logs]);
   const operationalHours = totalHours - strategicHours;
   const strategicPct = totalHours > 0 ? (strategicHours / totalHours) * 100 : 0;
   const operationalPct = totalHours > 0 ? (operationalHours / totalHours) * 100 : 0;
   const delegationItems = logs.filter((l: TimeLog) => l.delegation_note);
 
-  // Radar chart data
   const radarData = logs.slice(0, 8).map((l: TimeLog) => ({
     area: l.focus_area.length > 14 ? l.focus_area.slice(0, 14) + "…" : l.focus_area,
-    hours: l.hours ?? 0,
-    pct: totalHours > 0 ? Math.round(((l.hours ?? 0) / totalHours) * 100) : 0,
+    hours: totalDecimalHours(l.hours, l.minutes),
   }));
 
-  // Sorted by hours desc
-  const sortedLogs = [...logs].sort((a: TimeLog, b: TimeLog) => (b.hours ?? 0) - (a.hours ?? 0));
+  const sortedLogs = [...logs].sort((a: TimeLog, b: TimeLog) =>
+    totalDecimalHours(b.hours, b.minutes) - totalDecimalHours(a.hours, a.minutes));
+
+  // ─── Add Entry handler ────────────────────────────────────────────────────
+  function handleAddEntry(data: {
+    logDate: string; teamMember: string; taskCategory: string;
+    focusArea: string; hours: number; minutes: number; delegationNote: string;
+    year: number; month: number;
+  }) {
+    if (!tslug) return;
+    addMutation.mutate({
+      tenantSlug: tslug,
+      year: data.year, month: data.month,
+      logDate: data.logDate,
+      teamMember: data.teamMember || null,
+      taskCategory: data.taskCategory || null,
+      focusArea: data.focusArea,
+      hours: data.hours,
+      minutes: data.minutes,
+      delegationNote: data.delegationNote || null,
+    });
+    setShowAddModal(false);
+  }
+
+  // ─── Export CSV ───────────────────────────────────────────────────────────
+  function handleExport() {
+    const header = "Date,Team Member,Task Category,Focus Area,Hours,Minutes,Delegation Note";
+    const rows = logs.map((l: TimeLog) => [
+      l.log_date ?? `${l.year}-${String(l.month).padStart(2, "0")}-01`,
+      l.team_member ?? "",
+      l.task_category ?? "",
+      l.focus_area,
+      l.hours,
+      l.minutes ?? 0,
+      (l.delegation_note ?? "").replace(/,/g, ";"),
+    ].join(","));
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `time_logs_${year}_${String(month).padStart(2, "0")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ─── Import CSV ───────────────────────────────────────────────────────────
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !tslug) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split("\n").filter(Boolean);
+      const header = lines[0].toLowerCase();
+      // Detect columns by header
+      const cols = header.split(",").map(c => c.trim().replace(/"/g, ""));
+      const idx = (name: string) => cols.findIndex(c => c.includes(name));
+      const iDate = idx("date");
+      const iMember = idx("member");
+      const iCategory = idx("category");
+      const iFocus = idx("focus");
+      const iHours = idx("hour");
+      const iMinutes = idx("minute");
+      const iNote = idx("note");
+
+      const entries = lines.slice(1).map(line => {
+        const parts = line.split(",").map(p => p.trim().replace(/^"|"$/g, ""));
+        const dateStr = iDate >= 0 ? parts[iDate] : "";
+        const d = dateStr ? new Date(dateStr) : new Date();
+        const yr = isNaN(d.getTime()) ? year : d.getFullYear();
+        const mo = isNaN(d.getTime()) ? month : d.getMonth() + 1;
+        return {
+          year: yr, month: mo,
+          logDate: dateStr || null,
+          teamMember: iMember >= 0 ? parts[iMember] || null : null,
+          taskCategory: iCategory >= 0 ? parts[iCategory] || null : null,
+          focusArea: iFocus >= 0 ? parts[iFocus] || "Other" : "Other",
+          hours: iHours >= 0 ? parseFloat(parts[iHours]) || 0 : 0,
+          minutes: iMinutes >= 0 ? parseInt(parts[iMinutes]) || null : null,
+          delegationNote: iNote >= 0 ? parts[iNote] || null : null,
+        };
+      }).filter(e => e.focusArea && (e.hours > 0 || (e.minutes ?? 0) > 0));
+
+      if (entries.length > 0) {
+        addBulkMutation.mutate({ tenantSlug: tslug, entries });
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
 
   return (
     <>
@@ -77,12 +496,13 @@ export default function TimeIntelligence() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Month / Year selectors */}
             <select
               value={month}
               onChange={e => setMonth(Number(e.target.value))}
               className="bg-card border border-border text-foreground text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
             >
-              {MONTHS_LONG.map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
+              {MONTHS_SHORT.map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
             </select>
             <select
               value={year}
@@ -91,6 +511,48 @@ export default function TimeIntelligence() {
             >
               {years.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
+
+            {/* Export */}
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted/20 transition-colors"
+              title="Export CSV"
+            >
+              <Download size={14} />
+              Export
+            </button>
+
+            {/* Import */}
+            {isAdmin && (
+              <>
+                <input
+                  ref={importRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleImportFile}
+                />
+                <button
+                  onClick={() => importRef.current?.click()}
+                  disabled={addBulkMutation.isPending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted/20 transition-colors disabled:opacity-50"
+                  title="Import CSV"
+                >
+                  <Upload size={14} />
+                  {addBulkMutation.isPending ? "Importing…" : "Import"}
+                </button>
+
+                {/* Add Entry */}
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+                  style={{ backgroundColor: TEAL, color: "#000" }}
+                >
+                  <Plus size={14} />
+                  Add Entry
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -102,7 +564,18 @@ export default function TimeIntelligence() {
           <div className="bg-card border border-border rounded-xl p-12 text-center">
             <Clock size={36} className="text-muted-foreground mx-auto mb-3" />
             <p className="text-sm font-medium text-foreground">No time logs for this period</p>
-            <p className="text-xs text-muted-foreground mt-1">Your advisor will add time tracking data after review.</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {isAdmin ? "Use \"Add Entry\" to log time, or import a CSV file." : "Your advisor will add time tracking data after review."}
+            </p>
+            {isAdmin && (
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold"
+                style={{ backgroundColor: TEAL, color: "#000" }}
+              >
+                <Plus size={14} /> Add Entry
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -112,7 +585,7 @@ export default function TimeIntelligence() {
                 { label: "Total Hours", value: `${totalHours.toFixed(1)}h`, sub: "this month", color: TEAL, icon: <Clock size={16} /> },
                 { label: "Strategic", value: `${strategicHours.toFixed(1)}h`, sub: `${strategicPct.toFixed(1)}% of total`, color: GREEN, icon: <Zap size={16} /> },
                 { label: "Operational", value: `${operationalHours.toFixed(1)}h`, sub: `${operationalPct.toFixed(1)}% of total`, color: AMBER, icon: <BarChart2 size={16} /> },
-                { label: "Focus Areas", value: logs.length, sub: `${delegationItems.length} delegation flags`, color: MUTED_FG, icon: <Lightbulb size={16} /> },
+                { label: "Focus Areas", value: String(logs.length), sub: `${delegationItems.length} delegation flags`, color: MUTED_FG, icon: <Lightbulb size={16} /> },
               ].map(card => (
                 <div key={card.label} className="bg-card border border-border rounded-xl p-4">
                   <div className="flex items-center justify-between mb-2">
@@ -155,7 +628,7 @@ export default function TimeIntelligence() {
               </p>
             </div>
 
-            {/* Radar Chart + Focus Area Table */}
+            {/* Radar + Focus Area Table */}
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-card border border-border rounded-xl p-5">
                 <h2 className="text-sm font-semibold text-foreground mb-4">Focus Area Distribution</h2>
@@ -186,19 +659,37 @@ export default function TimeIntelligence() {
                 </div>
                 <div className="divide-y divide-border">
                   {sortedLogs.map((log: TimeLog, i: number) => {
-                    const pct = totalHours > 0 ? ((log.hours ?? 0) / totalHours) * 100 : 0;
+                    const h = totalDecimalHours(log.hours, log.minutes);
+                    const pct = totalHours > 0 ? (h / totalHours) * 100 : 0;
                     const color = CHART_COLORS[i % CHART_COLORS.length];
                     return (
-                      <div key={log.id} className="px-5 py-3">
+                      <div key={log.id} className="px-5 py-3 group">
                         <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
                             <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                            <span className="text-xs text-foreground">{log.focus_area}</span>
+                            <div className="min-w-0">
+                              <span className="text-xs text-foreground block truncate">{log.focus_area}</span>
+                              {(log.team_member || log.task_category) && (
+                                <span className="text-xs text-muted-foreground">
+                                  {[log.team_member, log.task_category].filter(Boolean).join(" · ")}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <span className="text-xs font-semibold" style={{ color }}>
-                            {(log.hours ?? 0).toFixed(1)}h
-                            <span className="text-muted-foreground font-normal ml-1.5">{pct.toFixed(0)}%</span>
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-semibold" style={{ color }}>
+                              {h.toFixed(1)}h
+                              <span className="text-muted-foreground font-normal ml-1.5">{pct.toFixed(0)}%</span>
+                            </span>
+                            {isAdmin && (
+                              <button
+                                onClick={() => tslug && deleteMutation.mutate({ tenantSlug: tslug, id: log.id })}
+                                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 p-0.5 rounded transition-opacity"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="h-1 bg-muted rounded-full overflow-hidden">
                           <div className="h-1 rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
@@ -221,6 +712,7 @@ export default function TimeIntelligence() {
                   {delegationItems.map((log: TimeLog) => (
                     <div key={log.id} className="px-5 py-4">
                       <p className="text-sm font-medium text-foreground">{log.focus_area}</p>
+                      {log.team_member && <p className="text-xs text-muted-foreground mt-0.5">{log.team_member}</p>}
                       <p className="text-xs mt-1" style={{ color: AMBER }}>{log.delegation_note}</p>
                     </div>
                   ))}
@@ -229,7 +721,37 @@ export default function TimeIntelligence() {
             )}
           </>
         )}
+
+        {/* Admin: Team Members quick manage link */}
+        {isAdmin && tslug && (
+          <div className="flex justify-end">
+            <button
+              onClick={() => setShowTeamModal(true)}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+            >
+              <UserPlus size={12} />
+              Manage Team Members
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Modals */}
+      {showAddModal && tslug && (
+        <AddEntryModal
+          onClose={() => setShowAddModal(false)}
+          onSave={handleAddEntry}
+          teamMembers={teamMembers}
+          tslug={tslug}
+        />
+      )}
+      {showTeamModal && tslug && (
+        <TeamMembersModal
+          onClose={() => { setShowTeamModal(false); refetchMembers(); }}
+          teamMembers={teamMembers}
+          tslug={tslug}
+        />
+      )}
     </>
   );
 }

@@ -91,9 +91,21 @@ export type TimeLog = {
   id: number;
   year: number;
   month: number;
+  log_date: string | null;
+  team_member: string | null;
+  task_category: string | null;
   focus_area: string;
   hours: number;
+  minutes: number | null;
   delegation_note: string | null;
+  created_at?: string;
+};
+
+export type TeamMember = {
+  id: number;
+  slug: string;
+  name: string;
+  created_at?: string;
 };
 
 export type SalesTracker = {
@@ -477,4 +489,36 @@ export async function deleteClientRosterEntry(slug: string, id: number): Promise
     .delete()
     .eq("id", id);
   if (error) throw new Error(error.message);
+}
+
+// ─── Team Members ─────────────────────────────────────────────────────────────
+export async function getTeamMembers(slug: string): Promise<TeamMember[]> {
+  const { data, error } = await supabase
+    .from("team_members")
+    .select("*")
+    .eq("slug", slug)
+    .order("name");
+  if (error) return [];
+  return (data || []) as TeamMember[];
+}
+
+export async function addTeamMember(slug: string, name: string): Promise<void> {
+  const { error } = await supabase.from("team_members").insert({ slug, name });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteTeamMember(slug: string, id: number): Promise<void> {
+  const { error } = await supabase.from("team_members").delete().eq("id", id).eq("slug", slug);
+  if (error) throw new Error(error.message);
+}
+
+export async function getTimeLogsByYear(slug: string, year: number): Promise<TimeLog[]> {
+  const { data, error } = await supabase
+    .from(`${slug}_time_logs`)
+    .select("*")
+    .eq("year", year)
+    .order("month", { ascending: false })
+    .order("hours", { ascending: false });
+  if (error) return [];
+  return (data || []).map((r: Record<string, unknown>) => ({ ...r, hours: parseFloat(r.hours as string) })) as TimeLog[];
 }
