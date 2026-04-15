@@ -6,9 +6,11 @@ import {
   coachingItems,
   documents,
   financials,
+  focusAreas,
   kpiMetrics,
   lineItems,
   salesTracker,
+  teamMembers,
   tenants,
   timeLogs,
   users,
@@ -211,6 +213,44 @@ export async function upsertKpiMetric(data: typeof kpiMetrics.$inferInsert) {
   await db.insert(kpiMetrics).values(data).onDuplicateKeyUpdate({ set: data });
 }
 
+// ─── Team Members ─────────────────────────────────────────────────────────────
+export async function getTeamMembersDb(tenantId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(teamMembers).where(eq(teamMembers.tenantId, tenantId)).orderBy(teamMembers.name);
+}
+
+export async function addTeamMemberDb(tenantId: number, name: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(teamMembers).values({ tenantId, name });
+}
+
+export async function deleteTeamMemberDb(tenantId: number, id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(teamMembers).where(and(eq(teamMembers.id, id), eq(teamMembers.tenantId, tenantId)));
+}
+
+// ─── Focus Areas ──────────────────────────────────────────────────────────────
+export async function getFocusAreasDb(tenantId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(focusAreas).where(eq(focusAreas.tenantId, tenantId)).orderBy(focusAreas.label);
+}
+
+export async function addFocusAreaDb(tenantId: number, label: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(focusAreas).values({ tenantId, label });
+}
+
+export async function deleteFocusAreaDb(tenantId: number, id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(focusAreas).where(and(eq(focusAreas.id, id), eq(focusAreas.tenantId, tenantId)));
+}
+
 // ─── Time Logs ───────────────────────────────────────────────────────────────
 export async function getTimeLogs(tenantId: number, year: number, month: number) {
   const db = await getDb();
@@ -218,13 +258,30 @@ export async function getTimeLogs(tenantId: number, year: number, month: number)
   return db
     .select()
     .from(timeLogs)
-    .where(and(eq(timeLogs.tenantId, tenantId), eq(timeLogs.year, year), eq(timeLogs.month, month)));
+    .where(and(eq(timeLogs.tenantId, tenantId), eq(timeLogs.year, year), eq(timeLogs.month, month)))
+    .orderBy(desc(timeLogs.createdAt));
+}
+
+export async function getTimeLogsByYear(tenantId: number, year: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(timeLogs)
+    .where(and(eq(timeLogs.tenantId, tenantId), eq(timeLogs.year, year)))
+    .orderBy(desc(timeLogs.createdAt));
 }
 
 export async function insertTimeLog(data: typeof timeLogs.$inferInsert) {
   const db = await getDb();
   if (!db) return;
   await db.insert(timeLogs).values(data);
+}
+
+export async function deleteTimeLog(tenantId: number, id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(timeLogs).where(and(eq(timeLogs.id, id), eq(timeLogs.tenantId, tenantId)));
 }
 
 // ─── Sales Tracker ───────────────────────────────────────────────────────────
@@ -239,6 +296,16 @@ export async function getSalesTracker(tenantId: number, year: number, month: num
     )
     .limit(1);
   return result[0];
+}
+
+export async function getSalesTrackerByYear(tenantId: number, year: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(salesTracker)
+    .where(and(eq(salesTracker.tenantId, tenantId), eq(salesTracker.year, year)))
+    .orderBy(salesTracker.month);
 }
 
 export async function upsertSalesTracker(data: typeof salesTracker.$inferInsert) {

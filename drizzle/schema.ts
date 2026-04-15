@@ -138,15 +138,42 @@ export const kpiMetrics = mysqlTable("kpi_metrics", {
 export type KpiMetric = typeof kpiMetrics.$inferSelect;
 export type InsertKpiMetric = typeof kpiMetrics.$inferInsert;
 
+// ─── Team Members ────────────────────────────────────────────────────────────
+export const teamMembers = mysqlTable("team_members", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type TeamMember = typeof teamMembers.$inferSelect;
+export type InsertTeamMember = typeof teamMembers.$inferInsert;
+
+// ─── Focus Areas ─────────────────────────────────────────────────────────────
+export const focusAreas = mysqlTable("focus_areas", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type FocusArea = typeof focusAreas.$inferSelect;
+export type InsertFocusArea = typeof focusAreas.$inferInsert;
+
 // ─── Time Logs (Time Intelligence) ───────────────────────────────────────────
 export const timeLogs = mysqlTable("time_logs", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").notNull(),
   year: int("year").notNull(),
   month: int("month").notNull(),
+  logDate: varchar("logDate", { length: 10 }), // YYYY-MM-DD
+  teamMember: varchar("teamMember", { length: 255 }),
   focusArea: varchar("focusArea", { length: 128 }).notNull(),
+  taskCategory: varchar("taskCategory", { length: 255 }),
   hours: decimal("hours", { precision: 8, scale: 2 }).notNull(),
+  minutes: int("minutes").default(0),
   delegationSuggestion: text("delegationSuggestion"),
+  notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

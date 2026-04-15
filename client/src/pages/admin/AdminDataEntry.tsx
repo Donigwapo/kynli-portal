@@ -289,7 +289,7 @@ export default function AdminDataEntry() {
                 <Textarea value={time.delegationNote} onChange={(e) => setTime({ ...time, delegationNote: e.target.value })} placeholder="e.g. Consider delegating email triage to a VA" className="bg-background border-border text-sm min-h-[80px]" />
               </div>
               <Button size="sm" className="bg-primary text-primary-foreground" disabled={!tenantSlug || !time.focusArea || !time.hours || addTime.isPending} onClick={() => addTime.mutate({
-                tenantSlug, year: yr, month: mo,
+                year: yr, month: mo,
                 focusArea: time.focusArea, hours: Number(time.hours),
                 delegationNote: time.delegationNote || undefined,
               })}>

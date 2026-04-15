@@ -7,6 +7,18 @@ import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
 import {
+  getTeamMembersDb,
+  addTeamMemberDb,
+  deleteTeamMemberDb,
+  getFocusAreasDb,
+  addFocusAreaDb,
+  deleteFocusAreaDb,
+  getTimeLogs as getTimeLogsDb,
+  getTimeLogsByYear as getTimeLogsByYearDb,
+  insertTimeLog as insertTimeLogDb,
+  deleteTimeLog as deleteTimeLogDb,
+} from "./db";
+import {
   getAllPortalTenants,
   getClientRoster,
   getCoachingItems,
@@ -285,20 +297,19 @@ export const appRouter = router({
 
   time: router({
     get: protectedProcedure
-      .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
+      .input(z.object({ year: z.number(), month: z.number() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getTimeLogs(slug, input.year, input.month);
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getTimeLogsDb(ctx.user.id, input.year, input.month);
       }),
     getByYear: protectedProcedure
-      .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
+      .input(z.object({ year: z.number() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getTimeLogsByYear(slug, input.year);
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getTimeLogsByYearDb(ctx.user.id, input.year);
       }),
     add: protectedProcedure
       .input(z.object({
-        tenantSlug: z.string(),
         year: z.number(), month: z.number(),
         logDate: z.string().nullable().optional(),
         teamMember: z.string().nullable().optional(),
@@ -308,22 +319,23 @@ export const appRouter = router({
         minutes: z.number().nullable().optional(),
         delegationNote: z.string().nullable().optional(),
       }))
-      .mutation(async ({ input }) => {
-        await insertTimeLog(input.tenantSlug, {
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await insertTimeLogDb({
+          tenantId: ctx.user.id,
           year: input.year, month: input.month,
-          log_date: input.logDate || null,
-          team_member: input.teamMember || null,
-          task_category: input.taskCategory || null,
-          focus_area: input.focusArea,
-          hours: input.hours,
+          logDate: input.logDate || null,
+          teamMember: input.teamMember || null,
+          taskCategory: input.taskCategory || null,
+          focusArea: input.focusArea,
+          hours: String(input.hours),
           minutes: input.minutes ?? null,
-          delegation_note: input.delegationNote || null,
+          notes: input.delegationNote || null,
         });
         return { success: true };
       }),
     addBulk: protectedProcedure
       .input(z.object({
-        tenantSlug: z.string(),
         entries: z.array(z.object({
           year: z.number(), month: z.number(),
           logDate: z.string().nullable().optional(),
@@ -335,62 +347,66 @@ export const appRouter = router({
           delegationNote: z.string().nullable().optional(),
         })),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
         for (const e of input.entries) {
-          await insertTimeLog(input.tenantSlug, {
+          await insertTimeLogDb({
+            tenantId: ctx.user.id,
             year: e.year, month: e.month,
-            log_date: e.logDate || null,
-            team_member: e.teamMember || null,
-            task_category: e.taskCategory || null,
-            focus_area: e.focusArea,
-            hours: e.hours,
+            logDate: e.logDate || null,
+            teamMember: e.teamMember || null,
+            taskCategory: e.taskCategory || null,
+            focusArea: e.focusArea,
+            hours: String(e.hours),
             minutes: e.minutes ?? null,
-            delegation_note: e.delegationNote || null,
+            notes: e.delegationNote || null,
           });
         }
         return { success: true, count: input.entries.length };
       }),
     deleteEntry: protectedProcedure
-      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
-      .mutation(async ({ input }) => {
-        const { error } = await supabase.from(`${input.tenantSlug}_time_logs`).delete().eq("id", input.id);
-        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await deleteTimeLogDb(ctx.user.id, input.id);
         return { success: true };
       }),
     getTeamMembers: protectedProcedure
-      .input(z.object({ tenantSlug: z.string().optional() }))
-      .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getTeamMembers(slug);
+      .query(async ({ ctx }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getTeamMembersDb(ctx.user.id);
       }),
     addTeamMember: protectedProcedure
-      .input(z.object({ tenantSlug: z.string(), name: z.string() }))
-      .mutation(async ({ input }) => {
-        await addTeamMember(input.tenantSlug, input.name);
+      .input(z.object({ name: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await addTeamMemberDb(ctx.user.id, input.name);
         return { success: true };
       }),
     deleteTeamMember: protectedProcedure
-      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteTeamMember(input.tenantSlug, input.id);
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await deleteTeamMemberDb(ctx.user.id, input.id);
         return { success: true };
       }),
     getFocusAreas: protectedProcedure
-      .input(z.object({ tenantSlug: z.string().optional() }))
-      .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getFocusAreas(slug);
+      .query(async ({ ctx }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getFocusAreasDb(ctx.user.id);
       }),
     addFocusArea: protectedProcedure
-      .input(z.object({ tenantSlug: z.string(), label: z.string() }))
-      .mutation(async ({ input }) => {
-        await addFocusArea(input.tenantSlug, input.label);
+      .input(z.object({ label: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await addFocusAreaDb(ctx.user.id, input.label);
         return { success: true };
       }),
     deleteFocusArea: protectedProcedure
-      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteFocusArea(input.tenantSlug, input.id);
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await deleteFocusAreaDb(ctx.user.id, input.id);
         return { success: true };
       }),
   }),
