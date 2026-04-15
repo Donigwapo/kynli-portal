@@ -1030,7 +1030,7 @@ export default function TimeIntelligence() {
                     <p className="text-sm text-muted-foreground">Add time entries with Task Categories first, then run the AI analysis.</p>
                   </div>
                 )}
-              </div>
+            </div>
 
             {/* ─── Team Member Hours ─────────────────────────────────────── */}
             {memberHoursData.length > 0 && (

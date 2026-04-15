@@ -1,243 +1,221 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  CheckCircle2, Circle, Plus, Trash2, BookOpen, Target,
-} from "lucide-react";
-import { toast } from "sonner";
+import { Save, Target, ChevronDown, Info } from "lucide-react";
 
-type CoachingItem = {
-  id: number; year: number; quarter: number; title: string;
-  description: string | null; completed: boolean; sort_order: number;
-};
+// ─── Quarter helpers ──────────────────────────────────────────────────────────
+const QUARTERS = [
+  { value: 1, label: "Q1 (Jan–Mar)" },
+  { value: 2, label: "Q2 (Apr–Jun)" },
+  { value: 3, label: "Q3 (Jul–Sep)" },
+  { value: 4, label: "Q4 (Oct–Dec)" },
+];
 
-const TEAL = "oklch(0.75 0.15 192)";
-const GREEN = "oklch(0.68 0.18 145)";
-const MUTED_FG = "oklch(0.50 0.008 240)";
+function currentQuarter(): number {
+  return Math.ceil((new Date().getMonth() + 1) / 3);
+}
 
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function Coaching() {
   const now = new Date();
-  const currentQ = Math.ceil((now.getMonth() + 1) / 3);
   const [year, setYear] = useState(now.getFullYear());
-  const [quarter, setQuarter] = useState(currentQ);
+  const [quarter, setQuarter] = useState(currentQuarter());
+  const [content, setContent] = useState("");
+  const [savedContent, setSavedContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   const { impersonatingTenantSlug } = usePortal();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
   const tslug = impersonatingTenantSlug ?? undefined;
-  const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newDesc, setNewDesc] = useState("");
+  // Year options: 2 years back, current, 1 year forward
+  const yearOptions = [now.getFullYear() - 2, now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
 
-  const { data: items = [], isLoading, refetch } = trpc.coaching.list.useQuery(
+  const { data: note, isLoading } = trpc.coaching.getNote.useQuery(
     { year, quarter, tenantSlug: tslug },
-    { staleTime: 30_000 }
+    { enabled: !!user }
   );
 
-  const toggle = trpc.coaching.toggle.useMutation({
-    onSuccess: () => refetch(),
-    onError: () => toast.error("Failed to update goal"),
-  });
-  const add = trpc.coaching.add.useMutation({
-    onSuccess: () => { refetch(); setAddOpen(false); setNewTitle(""); setNewDesc(""); toast.success("Goal added"); },
-    onError: () => toast.error("Failed to add goal"),
-  });
-  const del = trpc.coaching.delete.useMutation({
-    onSuccess: () => { refetch(); toast.success("Goal removed"); },
-    onError: () => toast.error("Failed to delete goal"),
+  const saveMutation = trpc.coaching.saveNote.useMutation({
+    onSuccess: () => {
+      setSavedContent(content);
+      setLastSaved(new Date());
+      setSaving(false);
+    },
+    onError: () => {
+      setSaving(false);
+    },
   });
 
-  const completed = items.filter(i => i.completed).length;
-  const total = items.length;
-  const pct = total > 0 ? (completed / total) * 100 : 0;
+  // Load note when query resolves or quarter/year changes
+  useEffect(() => {
+    const c = note?.content ?? "";
+    setContent(c);
+    setSavedContent(c);
+    setLastSaved(null);
+  }, [note, year, quarter]);
 
-  const handleAdd = () => {
-    if (!newTitle.trim()) return;
-    add.mutate({
-      tenantSlug: tslug ?? "",
-      year, quarter,
-      title: newTitle.trim(),
-      description: newDesc.trim() || undefined,
-    });
-  };
+  const isDirty = content !== savedContent;
+
+  const handleSave = useCallback(() => {
+    if (!isDirty || saving) return;
+    setSaving(true);
+    saveMutation.mutate({ year, quarter, content, tenantSlug: tslug });
+  }, [isDirty, saving, saveMutation, year, quarter, content, tslug]);
+
+  // Ctrl+S / Cmd+S to save
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleSave]);
+
+  // Line and char count
+  const lines = content.split("\n").length;
+  const chars = content.length;
+
+  const selectedQ = QUARTERS.find(q => q.value === quarter)!;
+  const isCurrent = now.getFullYear() === year && currentQuarter() === quarter;
 
   return (
-    <>
-      <div className="p-6 space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Coaching Goals</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Q{quarter} {year} — {completed}/{total} completed
-            </p>
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2.5 mb-1">
+            <Target size={20} className="text-primary" />
+            <h1 className="text-2xl font-bold text-foreground">Quarterly Coaching Goals</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <p className="text-sm text-muted-foreground">Your north star for the quarter. Review weekly, update as needed.</p>
+        </div>
+        {/* Q + Year selectors */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="relative">
             <select
               value={quarter}
               onChange={e => setQuarter(Number(e.target.value))}
-              className="bg-card border border-border text-foreground text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+              className="appearance-none bg-card border border-border rounded-lg px-3 py-2 pr-8 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
             >
-              {[1,2,3,4].map(q => <option key={q} value={q}>Q{q}</option>)}
+              {QUARTERS.map(q => (
+                <option key={q.value} value={q.value}>{q.label}</option>
+              ))}
             </select>
+            <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          </div>
+          <div className="relative">
             <select
               value={year}
               onChange={e => setYear(Number(e.target.value))}
-              className="bg-card border border-border text-foreground text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+              className="appearance-none bg-card border border-border rounded-lg px-3 py-2 pr-8 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
             >
-              {years.map(y => <option key={y} value={y}>{y}</option>)}
+              {yearOptions.map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
             </select>
-            {isAdmin && (
-              <button
-                onClick={() => setAddOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-              >
-                <Plus size={14} />
-                Add Goal
-              </button>
-            )}
+            <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
           </div>
         </div>
+      </div>
 
-        {/* Progress Summary */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Target size={16} style={{ color: TEAL }} />
-              <h2 className="text-sm font-semibold text-foreground">Quarter Progress</h2>
-            </div>
-            <span className="text-lg font-bold" style={{ color: pct >= 100 ? GREEN : TEAL }}>
-              {pct.toFixed(0)}%
-            </span>
-          </div>
-          <div className="h-3 bg-muted rounded-full overflow-hidden">
-            <div
-              className="h-3 rounded-full transition-all duration-700"
-              style={{ width: `${pct}%`, backgroundColor: pct >= 100 ? GREEN : TEAL }}
-            />
-          </div>
-          <div className="flex justify-between text-xs text-muted-foreground mt-2">
-            <span>{completed} completed</span>
-            <span>{total - completed} remaining</span>
-          </div>
+      {/* Current quarter badge */}
+      <div className="flex items-center gap-2">
+        <div
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold"
+          style={{
+            backgroundColor: "oklch(0.75 0.15 192 / 0.12)",
+            border: "1px solid oklch(0.75 0.15 192 / 0.3)",
+            color: "oklch(0.75 0.15 192)",
+          }}
+        >
+          <Target size={13} />
+          {selectedQ.label} · {year}
         </div>
-
-        {/* Goals List */}
-        {isLoading ? (
-          <div className="space-y-3">
-            {[1,2,3].map(i => (
-              <div key={i} className="h-16 bg-card border border-border rounded-xl animate-pulse" />
-            ))}
-          </div>
-        ) : items.length === 0 ? (
-          <div className="bg-card border border-border rounded-xl p-12 text-center">
-            <BookOpen size={36} className="text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm font-medium text-foreground">No goals for Q{quarter} {year}</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {isAdmin ? "Add goals using the button above." : "Your advisor will set goals for this quarter."}
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {items.map((item: CoachingItem) => (
-              <div
-                key={item.id}
-                className={`bg-card border rounded-xl p-4 flex items-start gap-3 transition-all ${
-                  item.completed ? "border-border/50 opacity-75" : "border-border"
-                }`}
-              >
-                <button
-                  onClick={() => toggle.mutate({ id: item.id, completed: !item.completed, tenantSlug: tslug })}
-                  className="mt-0.5 shrink-0 hover:opacity-80 transition-opacity"
-                >
-                  {item.completed ? (
-                    <CheckCircle2 size={20} style={{ color: TEAL }} />
-                  ) : (
-                    <Circle size={20} className="text-muted-foreground" />
-                  )}
-                </button>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-medium ${item.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
-                    {item.title}
-                  </p>
-                  {item.description && (
-                    <p className="text-xs text-muted-foreground mt-1">{item.description}</p>
-                  )}
-                </div>
-                {isAdmin && (
-                  <button
-                    onClick={() => del.mutate({ id: item.id, tenantSlug: tslug ?? "" })}
-                    className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Stats */}
-        {items.length > 0 && (
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { label: "Total Goals", value: total, color: MUTED_FG },
-              { label: "Completed", value: completed, color: GREEN },
-              { label: "Remaining", value: total - completed, color: TEAL },
-            ].map(stat => (
-              <div key={stat.label} className="bg-card border border-border rounded-xl p-4 text-center">
-                <div className="text-2xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
-                <div className="text-xs text-muted-foreground mt-1">{stat.label}</div>
-              </div>
-            ))}
-          </div>
+        {isCurrent && (
+          <span className="text-xs text-muted-foreground">· Current Quarter</span>
         )}
       </div>
 
-      {/* Add Goal Dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">Add Coaching Goal</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Goal Title *</Label>
-              <Input
-                value={newTitle}
-                onChange={e => setNewTitle(e.target.value)}
-                placeholder="e.g., Increase referral rate to 60%"
-                className="bg-background border-border"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Description (optional)</Label>
-              <Textarea
-                value={newDesc}
-                onChange={e => setNewDesc(e.target.value)}
-                placeholder="Additional context or action steps..."
-                className="bg-background border-border resize-none"
-                rows={3}
-              />
-            </div>
+      {/* Goals editor card */}
+      <div
+        className="rounded-2xl border overflow-hidden"
+        style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+      >
+        {/* Card header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h2 className="text-sm font-semibold text-foreground">Goals &amp; Focus Areas</h2>
+          <button
+            onClick={handleSave}
+            disabled={!isDirty || saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-40"
+            style={{
+              backgroundColor: isDirty ? "oklch(0.75 0.15 192 / 0.15)" : "transparent",
+              border: `1px solid ${isDirty ? "oklch(0.75 0.15 192 / 0.4)" : "var(--border)"}`,
+              color: isDirty ? "oklch(0.75 0.15 192)" : "var(--muted-foreground)",
+            }}
+          >
+            <Save size={12} />
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+
+        {/* Textarea */}
+        {isLoading ? (
+          <div className="px-5 py-8 text-center">
+            <div className="text-sm text-muted-foreground animate-pulse">Loading…</div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAdd} disabled={!newTitle.trim() || add.isPending}>
-              {add.isPending ? "Adding..." : "Add Goal"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+        ) : (
+          <textarea
+            ref={textareaRef}
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            placeholder={`Write your Q${quarter} ${year} goals here…\n\nExamples:\n- Sign 12 new clients\n- Launch the new website\n- Hit $50k MRR`}
+            className="w-full resize-none bg-transparent px-5 py-5 text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/40 font-mono leading-relaxed"
+            style={{ minHeight: "360px" }}
+            spellCheck={false}
+          />
+        )}
+
+        {/* Footer: line/char count + keyboard hint */}
+        <div className="flex items-center justify-between px-5 py-2.5 border-t border-border">
+          <span className="text-xs text-muted-foreground">
+            {lines} {lines === 1 ? "line" : "lines"} · {chars} {chars === 1 ? "character" : "characters"}
+          </span>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            {lastSaved && (
+              <span>Saved {lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+            )}
+            <span>Ctrl+S to save</span>
+          </div>
+        </div>
+      </div>
+
+      {/* How to use this */}
+      <div
+        className="rounded-2xl border p-5 space-y-3"
+        style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+      >
+        <div className="flex items-center gap-2">
+          <Info size={14} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold text-foreground">How to use this</h3>
+        </div>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Write your quarterly goals in any format — bullet points, numbered lists, or paragraphs. This is your personal reference, not a formal document.
+        </p>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Switch between quarters using the selectors above. Each quarter saves independently, so you can track how your focus evolves over time.
+        </p>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          A summary of your current quarter's goals also appears on the main Overview dashboard for quick reference.
+        </p>
+      </div>
+    </div>
   );
 }

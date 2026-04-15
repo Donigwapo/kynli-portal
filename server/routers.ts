@@ -58,6 +58,8 @@ import {
   upsertKpiMetric,
   upsertPortalTenant,
   upsertSalesTracker,
+  getCoachingNote,
+  upsertCoachingNote,
   type PortalUser,
 } from "./supabase";
 
@@ -276,6 +278,19 @@ export const appRouter = router({
       .input(z.object({ id: z.number(), tenantSlug: z.string() }))
       .mutation(async ({ input }) => {
         await deleteCoachingItem(input.tenantSlug, input.id);
+        return { success: true };
+      }),
+    getNote: protectedProcedure
+      .input(z.object({ year: z.number(), quarter: z.number(), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getCoachingNote(slug, input.year, input.quarter);
+      }),
+    saveNote: protectedProcedure
+      .input(z.object({ year: z.number(), quarter: z.number(), content: z.string(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        await upsertCoachingNote(slug, input.year, input.quarter, input.content);
         return { success: true };
       }),
   }),

@@ -549,3 +549,32 @@ export async function deleteFocusArea(slug: string, id: number): Promise<void> {
   const { error } = await supabase.from("focus_areas").delete().eq("id", id).eq("slug", slug);
   if (error) throw new Error(error.message);
 }
+
+// ─── Coaching Notes (free-text per quarter) ───────────────────────────────────
+
+export type CoachingNote = {
+  id: number;
+  year: number;
+  quarter: number;
+  content: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export async function getCoachingNote(slug: string, year: number, quarter: number): Promise<CoachingNote | null> {
+  const { data, error } = await supabase
+    .from(`${slug}_coaching_notes`)
+    .select("*")
+    .eq("year", year)
+    .eq("quarter", quarter)
+    .single();
+  if (error || !data) return null;
+  return data as CoachingNote;
+}
+
+export async function upsertCoachingNote(slug: string, year: number, quarter: number, content: string): Promise<void> {
+  const { error } = await supabase
+    .from(`${slug}_coaching_notes`)
+    .upsert({ year, quarter, content, updated_at: new Date().toISOString() }, { onConflict: "year,quarter" });
+  if (error) throw new Error(error.message);
+}
