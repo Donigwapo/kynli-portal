@@ -1,4 +1,5 @@
 import {
+  bigint,
   boolean,
   decimal,
   int,
@@ -93,8 +94,12 @@ export const documents = mysqlTable("documents", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  docType: varchar("docType", { length: 64 }).default("Other").notNull(),
   fileKey: varchar("fileKey", { length: 512 }).notNull(),
   fileUrl: text("fileUrl").notNull(),
+  fileName: varchar("fileName", { length: 512 }),
+  fileSize: bigint("fileSize", { mode: "number" }),
   mimeType: varchar("mimeType", { length: 128 }),
   year: int("year").notNull(),
   uploadedBy: int("uploadedBy"), // FK → users.id (admin who uploaded)

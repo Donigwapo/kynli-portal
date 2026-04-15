@@ -73,7 +73,7 @@ export default function AdminDataEntry() {
     const reader = new FileReader();
     reader.onload = (e) => {
       const base64 = (e.target?.result as string).split(",")[1];
-      uploadDoc.mutate({ tenantSlug, name: docName || docFile.name, year: yr, fileBase64: base64, mimeType: docFile.type });
+      uploadDoc.mutate({ name: docName || docFile.name, year: yr, fileBase64: base64, mimeType: docFile.type });
     };
     reader.readAsDataURL(docFile);
   }

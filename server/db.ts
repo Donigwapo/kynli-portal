@@ -148,11 +148,12 @@ export async function insertLineItem(data: typeof lineItems.$inferInsert) {
 }
 
 // ─── Documents ───────────────────────────────────────────────────────────────
-export async function getDocuments(tenantId: number, year?: number) {
+export async function getDocuments(tenantId: number, year?: number, docType?: string) {
   const db = await getDb();
   if (!db) return [];
   const conditions = [eq(documents.tenantId, tenantId)];
   if (year !== undefined) conditions.push(eq(documents.year, year));
+  if (docType && docType !== "All Types") conditions.push(eq(documents.docType, docType));
   return db.select().from(documents).where(and(...conditions)).orderBy(desc(documents.createdAt));
 }
 

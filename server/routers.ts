@@ -23,6 +23,9 @@ import {
   getTimeLogsByYear as getTimeLogsByYearDb,
   insertTimeLog as insertTimeLogDb,
   deleteTimeLog as deleteTimeLogDb,
+  getDocuments as getDocumentsDb,
+  insertDocument as insertDocumentDb,
+  deleteDocument as deleteDocumentDb,
 } from "./db";
 import {
   getAllPortalTenants,
@@ -215,35 +218,47 @@ export const appRouter = router({
 
   documents: router({
     list: protectedProcedure
-      .input(z.object({ year: z.number().optional(), tenantSlug: z.string().optional() }))
-      .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getDocuments(slug, input.year);
-      }),
-    upload: protectedProcedure
       .input(z.object({
-        tenantSlug: z.string().optional(),
-        name: z.string(), fileBase64: z.string(), mimeType: z.string(),
-        docType: z.string().optional(), description: z.string().optional(), year: z.number().optional(),
+        year: z.number().optional(),
+        docType: z.string().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        return getDocumentsDb(ctx.user.id, input.year, input.docType);
+      }),
+    upload: adminProcedure
+      .input(z.object({
+        name: z.string(),
+        fileBase64: z.string(),
+        mimeType: z.string(),
+        fileName: z.string().optional(),
+        fileSize: z.number().optional(),
+        docType: z.string().default("Other"),
+        description: z.string().optional(),
+        year: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const buffer = Buffer.from(input.fileBase64, "base64");
-        const ext = input.mimeType.split("/")[1] || "bin";
-        const fileKey = `${slug}/docs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const ext = input.mimeType.split("/")[1]?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx").replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
+        const fileKey = `docs/${ctx.user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
-        await insertDocument(slug, {
-          name: input.name, file_url: url, file_key: fileKey,
-          doc_type: input.docType || "general",
+        await insertDocumentDb({
+          tenantId: ctx.user.id,
+          name: input.name,
           description: input.description || null,
-          year: input.year || null, mime_type: input.mimeType,
+          docType: input.docType,
+          fileKey,
+          fileUrl: url,
+          fileName: input.fileName || null,
+          fileSize: input.fileSize || null,
+          mimeType: input.mimeType,
+          year: input.year,
         });
         return { success: true, url };
       }),
     delete: adminProcedure
-      .input(z.object({ id: z.number(), tenantSlug: z.string() }))
+      .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        await deleteDocument(input.tenantSlug, input.id);
+        await deleteDocumentDb(input.id);
         return { success: true };
       }),
   }),
