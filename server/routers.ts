@@ -225,7 +225,7 @@ export const appRouter = router({
       .query(async ({ ctx, input }) => {
         return getDocumentsDb(ctx.user.id, input.year, input.docType);
       }),
-    upload: adminProcedure
+    upload: protectedProcedure
       .input(z.object({
         name: z.string(),
         fileBase64: z.string(),
@@ -238,22 +238,46 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const buffer = Buffer.from(input.fileBase64, "base64");
-        const ext = input.mimeType.split("/")[1]?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx").replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
-        const fileKey = `docs/${ctx.user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-        const { url } = await storagePut(fileKey, buffer, input.mimeType);
+        const ext = input.mimeType.split("/")[1]
+          ?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+          .replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
+        const tenantSlug = ctx.user.tenant_slug || `tenant-${ctx.user.id}`;
+        const safeDocType = input.docType.toLowerCase().replace(/[^a-z0-9]/g, "-");
+        const timestamp = Date.now();
+        const rand = Math.random().toString(36).slice(2);
+        const originalFileName = input.fileName || `document-${timestamp}.${ext}`;
+        // Upload to Supabase Storage: documents/{tenantSlug}/{docType}/{timestamp}-{rand}-{filename}
+        const supabasePath = `${tenantSlug}/${safeDocType}/${timestamp}-${rand}-${originalFileName}`;
+        const { error: sbError } = await supabase.storage
+          .from("documents")
+          .upload(supabasePath, buffer, { contentType: input.mimeType, upsert: false });
+        let fileUrl: string;
+        let fileKey: string;
+        if (sbError) {
+          // Fallback to S3 if Supabase upload fails
+          console.warn("Supabase upload failed, falling back to S3:", sbError.message);
+          const s3Key = `docs/${tenantSlug}/${safeDocType}/${timestamp}-${rand}.${ext}`;
+          const s3Result = await storagePut(s3Key, buffer, input.mimeType);
+          fileUrl = s3Result.url;
+          fileKey = s3Key;
+        } else {
+          const { data: urlData } = supabase.storage.from("documents").getPublicUrl(supabasePath);
+          fileUrl = urlData.publicUrl;
+          fileKey = supabasePath;
+        }
         await insertDocumentDb({
           tenantId: ctx.user.id,
           name: input.name,
           description: input.description || null,
           docType: input.docType,
           fileKey,
-          fileUrl: url,
+          fileUrl,
           fileName: input.fileName || null,
           fileSize: input.fileSize || null,
           mimeType: input.mimeType,
           year: input.year,
         });
-        return { success: true, url };
+        return { success: true, url: fileUrl };
       }),
     delete: adminProcedure
       .input(z.object({ id: z.number() }))

@@ -77,6 +77,16 @@ export default function Documents() {
   const [uploadName, setUploadName] = useState("");
   const [uploadDesc, setUploadDesc] = useState("");
   const [uploadDocType, setUploadDocType] = useState("Financials");
+
+  function openUploadDialog() {
+    // Pre-fill type from active tab (if not "All Types")
+    if (selectedType !== "All Types") {
+      setUploadDocType(selectedType);
+    } else {
+      setUploadDocType("Financials");
+    }
+    setShowUpload(true);
+  }
   const [uploadYear, setUploadYear] = useState(String(CURRENT_YEAR));
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -166,15 +176,13 @@ export default function Documents() {
             Financial statements, tax documents, and reports — all in one place.
           </p>
         </div>
-        {isAdmin && (
-          <Button
-            onClick={() => setShowUpload(true)}
-            className="bg-emerald-500 hover:bg-emerald-600 text-black font-semibold gap-2"
-          >
-            <Upload className="w-4 h-4" />
-            Add Document
-          </Button>
-        )}
+        <Button
+          onClick={openUploadDialog}
+          className="bg-emerald-500 hover:bg-emerald-600 text-black font-semibold gap-2"
+        >
+          <Upload className="w-4 h-4" />
+          Add Document
+        </Button>
       </div>
 
       {/* Filters */}
