@@ -135,10 +135,11 @@ export default function Reports() {
       // If margin stored as decimal (e.g. 0.193), multiply by 100; if already >1, use as-is
       const margin = rawMargin > 1 ? rawMargin : rawMargin * 100;
       const variance = rev - bud;
-      // Determine label: if month is in the future (no data yet), show "Projection"; if has data, "Actual"
-      const isFuture = (year > nowYear) || (year === nowYear && m > nowMonth);
+      // Actual = strictly before current month; Projection = current month and all future months
+      const isPast = (year < nowYear) || (year === nowYear && m < nowMonth);
+      const isFuture = !isPast;
       const hasData = rev > 0 || exp > 0;
-      const label = hasData ? "Actual" : (bud > 0 ? "Projection" : "—");
+      const label = isPast ? "Actual" : "Projection";
       return { m, rev, bud, exp, np, margin, variance, label, isFuture, hasData };
     });
   }, [yearlyData, activeMonths, year]);
