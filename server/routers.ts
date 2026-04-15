@@ -220,10 +220,11 @@ export const appRouter = router({
     list: protectedProcedure
       .input(z.object({
         year: z.number().optional(),
+        month: z.number().optional(),
         docType: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
-        return getDocumentsDb(ctx.user.id, input.year, input.docType);
+        return getDocumentsDb(ctx.user.id, input.year, input.docType, input.month);
       }),
     upload: protectedProcedure
       .input(z.object({
@@ -235,6 +236,7 @@ export const appRouter = router({
         docType: z.string().default("Other"),
         description: z.string().optional(),
         year: z.number(),
+        month: z.number().optional(), // 1–12
       }))
       .mutation(async ({ ctx, input }) => {
         const buffer = Buffer.from(input.fileBase64, "base64");
@@ -276,6 +278,7 @@ export const appRouter = router({
           fileSize: input.fileSize || null,
           mimeType: input.mimeType,
           year: input.year,
+          month: input.month ?? null,
         });
         return { success: true, url: fileUrl };
       }),

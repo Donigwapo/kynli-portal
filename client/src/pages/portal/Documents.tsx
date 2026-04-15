@@ -43,6 +43,11 @@ const DOC_TYPE_COLORS: Record<string, string> = {
   Other: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
 };
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
 function formatBytes(bytes: number | null | undefined): string {
   if (!bytes) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -62,32 +67,26 @@ function truncateFileName(name: string, max = 22): string {
 }
 
 const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_MONTH = new Date().getMonth() + 1;
 const YEAR_OPTIONS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - i);
 
 export default function Documents() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
+  // Filters
   const [selectedType, setSelectedType] = useState<DocType>("All Types");
   const [selectedYear, setSelectedYear] = useState<string>("All Years");
-  const [showUpload, setShowUpload] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState<string>("All Months");
 
-  // Upload form state
+  // Upload dialog
+  const [showUpload, setShowUpload] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadName, setUploadName] = useState("");
   const [uploadDesc, setUploadDesc] = useState("");
   const [uploadDocType, setUploadDocType] = useState("Financials");
-
-  function openUploadDialog() {
-    // Pre-fill type from active tab (if not "All Types")
-    if (selectedType !== "All Types") {
-      setUploadDocType(selectedType);
-    } else {
-      setUploadDocType("Financials");
-    }
-    setShowUpload(true);
-  }
   const [uploadYear, setUploadYear] = useState(String(CURRENT_YEAR));
+  const [uploadMonth, setUploadMonth] = useState(String(CURRENT_MONTH));
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -95,6 +94,7 @@ export default function Documents() {
 
   const { data: docs = [], isLoading } = trpc.documents.list.useQuery({
     year: selectedYear !== "All Years" ? Number(selectedYear) : undefined,
+    month: selectedMonth !== "All Months" ? Number(selectedMonth) : undefined,
     docType: selectedType !== "All Types" ? selectedType : undefined,
   });
 
@@ -105,9 +105,7 @@ export default function Documents() {
       resetUploadForm();
       toast.success("Document uploaded successfully");
     },
-    onError: (e) =>
-      toast.error(`Upload failed: ${e.message}`),
-
+    onError: (e) => toast.error(`Upload failed: ${e.message}`),
   });
 
   const deleteMutation = trpc.documents.delete.useMutation({
@@ -115,9 +113,7 @@ export default function Documents() {
       utils.documents.list.invalidate();
       toast.success("Document deleted");
     },
-    onError: (e) =>
-      toast.error(`Delete failed: ${e.message}`),
-
+    onError: (e) => toast.error(`Delete failed: ${e.message}`),
   });
 
   function resetUploadForm() {
@@ -126,6 +122,16 @@ export default function Documents() {
     setUploadDesc("");
     setUploadDocType("Financials");
     setUploadYear(String(CURRENT_YEAR));
+    setUploadMonth(String(CURRENT_MONTH));
+  }
+
+  function openUploadDialog() {
+    if (selectedType !== "All Types") {
+      setUploadDocType(selectedType);
+    } else {
+      setUploadDocType("Financials");
+    }
+    setShowUpload(true);
   }
 
   async function handleUpload() {
@@ -146,22 +152,25 @@ export default function Documents() {
         fileSize: uploadFile.size,
         docType: uploadDocType,
         year: Number(uploadYear),
+        month: Number(uploadMonth),
       });
     } finally {
       setUploading(false);
     }
   }
 
-  // Group docs by year
-  const docsByYear = docs.reduce<Record<number, typeof docs>>((acc, doc) => {
+  // Group docs by year → month
+  type DocRow = (typeof docs)[0];
+  const docsByYearMonth = docs.reduce<Record<number, Record<number, DocRow[]>>>((acc, doc) => {
     const y = doc.year ?? 0;
-    if (!acc[y]) acc[y] = [];
-    acc[y].push(doc);
+    const m = (doc as DocRow & { month?: number | null }).month ?? 0;
+    if (!acc[y]) acc[y] = {};
+    if (!acc[y][m]) acc[y][m] = [];
+    acc[y][m].push(doc);
     return acc;
   }, {});
-  const sortedYears = Object.keys(docsByYear)
-    .map(Number)
-    .sort((a, b) => b - a);
+
+  const sortedYears = Object.keys(docsByYearMonth).map(Number).sort((a, b) => b - a);
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -219,6 +228,21 @@ export default function Documents() {
           </SelectContent>
         </Select>
 
+        {/* Month filter */}
+        <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+          <SelectTrigger className="w-40 bg-zinc-900 border-zinc-700">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="All Months">All Months</SelectItem>
+            {MONTH_NAMES.map((name, i) => (
+              <SelectItem key={i + 1} value={String(i + 1)}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         {/* Doc count */}
         <span className="ml-auto text-sm text-muted-foreground">
           {docs.length} document{docs.length !== 1 ? "s" : ""}
@@ -229,125 +253,146 @@ export default function Documents() {
       {isLoading ? (
         <div className="text-center py-16 text-muted-foreground">Loading documents...</div>
       ) : docs.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          <FileText className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="font-medium">No documents found</p>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 py-20 text-center text-muted-foreground">
+          <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No documents found.</p>
           <p className="text-sm mt-1">
-            {selectedType !== "All Types" || selectedYear !== "All Years"
-              ? "Try adjusting your filters."
-              : isAdmin
-              ? "Click 'Add Document' to upload the first one."
-              : "Documents will appear here when uploaded."}
+            {selectedType !== "All Types" || selectedYear !== "All Years" || selectedMonth !== "All Months"
+              ? "Try adjusting the filters or add a new document."
+              : "Click 'Add Document' to upload the first one."}
           </p>
         </div>
       ) : (
         <div className="space-y-8">
-          {sortedYears.map((year) => (
-            <div key={year}>
-              {/* Year group header */}
-              <div className="flex items-center gap-2 mb-4">
-                <Calendar className="w-4 h-4 text-muted-foreground" />
-                <span className="font-semibold text-foreground">{year}</span>
-                <span className="text-sm text-muted-foreground">
-                  — {docsByYear[year].length} document
-                  {docsByYear[year].length !== 1 ? "s" : ""}
-                </span>
-              </div>
+          {sortedYears.map((year) => {
+            const monthsInYear = Object.keys(docsByYearMonth[year]).map(Number).sort((a, b) => b - a);
+            const totalInYear = monthsInYear.reduce((s, m) => s + docsByYearMonth[year][m].length, 0);
+            return (
+              <div key={year}>
+                {/* Year group header */}
+                <div className="flex items-center gap-2 mb-4">
+                  <Calendar className="w-4 h-4 text-muted-foreground" />
+                  <span className="font-semibold text-foreground">{year}</span>
+                  <span className="text-sm text-muted-foreground">
+                    — {totalInYear} document{totalInYear !== 1 ? "s" : ""}
+                  </span>
+                </div>
 
-              {/* Document cards grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {docsByYear[year].map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors"
-                  >
-                    {/* Card top: icon + type badge */}
-                    <div className="flex items-start justify-between">
-                      <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                        <FileText className="w-5 h-5 text-emerald-400" />
+                {/* Month sub-groups */}
+                <div className="space-y-6">
+                  {monthsInYear.map((month) => (
+                    <div key={month}>
+                      {/* Month header */}
+                      <div className="flex items-center gap-2 mb-3 pl-1">
+                        <span className="text-sm font-medium text-emerald-400/80">
+                          {month === 0 ? "No Month" : MONTH_NAMES[month - 1]}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          · {docsByYearMonth[year][month].length} doc
+                          {docsByYearMonth[year][month].length !== 1 ? "s" : ""}
+                        </span>
                       </div>
-                      <Badge
-                        variant="outline"
-                        className={`text-xs font-medium ${
-                          DOC_TYPE_COLORS[doc.docType] ?? DOC_TYPE_COLORS.Other
-                        }`}
-                      >
-                        {doc.docType}
-                      </Badge>
-                    </div>
 
-                    {/* Name + description */}
-                    <div>
-                      <h3 className="font-semibold text-sm leading-snug">{doc.name}</h3>
-                      {doc.description && (
-                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                          {doc.description}
-                        </p>
-                      )}
-                    </div>
+                      {/* Document cards grid */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {docsByYearMonth[year][month].map((doc) => (
+                          <div
+                            key={doc.id}
+                            className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors"
+                          >
+                            {/* Card top: icon + type badge */}
+                            <div className="flex items-start justify-between">
+                              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                                <FileText className="w-5 h-5 text-emerald-400" />
+                              </div>
+                              <Badge
+                                variant="outline"
+                                className={`text-xs font-medium ${
+                                  DOC_TYPE_COLORS[doc.docType ?? "Other"] ?? DOC_TYPE_COLORS.Other
+                                }`}
+                              >
+                                {doc.docType}
+                              </Badge>
+                            </div>
 
-                    {/* Meta row */}
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground border-t border-zinc-800 pt-2">
-                      <Calendar className="w-3 h-3 shrink-0" />
-                      <span>{doc.year}</span>
-                      {doc.fileSize != null && doc.fileSize > 0 && (
-                        <>
-                          <span className="text-zinc-700">·</span>
-                          <HardDrive className="w-3 h-3 shrink-0" />
-                          <span>{formatBytes(doc.fileSize)}</span>
-                        </>
-                      )}
-                      {doc.fileName && (
-                        <>
-                          <span className="text-zinc-700">·</span>
-                          <span className="truncate">{truncateFileName(doc.fileName)}</span>
-                        </>
-                      )}
-                    </div>
+                            {/* Name + description */}
+                            <div>
+                              <h3 className="font-semibold text-sm leading-snug">{doc.name}</h3>
+                              {doc.description && (
+                                <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                                  {doc.description}
+                                </p>
+                              )}
+                            </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        className="flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 gap-1.5 text-xs"
-                        onClick={() => window.open(doc.fileUrl, "_blank")}
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        Open PDF
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="px-2.5 border-zinc-700 hover:bg-zinc-800"
-                        onClick={() => {
-                          const a = document.createElement("a");
-                          a.href = doc.fileUrl;
-                          a.download = doc.fileName || doc.name;
-                          a.click();
-                        }}
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                      </Button>
-                      {isAdmin && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="px-2.5 border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30"
-                          onClick={() => {
-                            if (confirm(`Delete "${doc.name}"?`)) {
-                              deleteMutation.mutate({ id: doc.id });
-                            }
-                          }}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      )}
+                            {/* Meta row */}
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground border-t border-zinc-800 pt-2">
+                              <Calendar className="w-3 h-3 shrink-0" />
+                              <span>
+                                {month > 0 ? `${MONTH_NAMES[month - 1].slice(0, 3)} ` : ""}{year}
+                              </span>
+                              {doc.fileSize != null && doc.fileSize > 0 && (
+                                <>
+                                  <span className="text-zinc-700">·</span>
+                                  <HardDrive className="w-3 h-3 shrink-0" />
+                                  <span>{formatBytes(doc.fileSize)}</span>
+                                </>
+                              )}
+                              {doc.fileName && (
+                                <>
+                                  <span className="text-zinc-700">·</span>
+                                  <span className="truncate">{truncateFileName(doc.fileName)}</span>
+                                </>
+                              )}
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 gap-1.5 text-xs"
+                                onClick={() => window.open(doc.fileUrl, "_blank")}
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                Open PDF
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="px-2.5 border-zinc-700 hover:bg-zinc-800"
+                                onClick={() => {
+                                  const a = document.createElement("a");
+                                  a.href = doc.fileUrl;
+                                  a.download = doc.fileName || doc.name;
+                                  a.click();
+                                }}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </Button>
+                              {isAdmin && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="px-2.5 border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30"
+                                  onClick={() => {
+                                    if (confirm(`Delete "${doc.name}"?`)) {
+                                      deleteMutation.mutate({ id: doc.id });
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -434,23 +479,25 @@ export default function Documents() {
               />
             </div>
 
-            {/* Type + Year row */}
+            {/* Type row */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Type</Label>
+              <Select value={uploadDocType} onValueChange={setUploadDocType}>
+                <SelectTrigger className="bg-zinc-900 border-zinc-700">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DOC_TYPES.filter((t) => t !== "All Types").map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Year + Month row */}
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">Type</Label>
-                <Select value={uploadDocType} onValueChange={setUploadDocType}>
-                  <SelectTrigger className="bg-zinc-900 border-zinc-700">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DOC_TYPES.filter((t) => t !== "All Types").map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Year</Label>
                 <Select value={uploadYear} onValueChange={setUploadYear}>
@@ -461,6 +508,21 @@ export default function Documents() {
                     {YEAR_OPTIONS.map((y) => (
                       <SelectItem key={y} value={String(y)}>
                         {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Month</Label>
+                <Select value={uploadMonth} onValueChange={setUploadMonth}>
+                  <SelectTrigger className="bg-zinc-900 border-zinc-700">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MONTH_NAMES.map((name, i) => (
+                      <SelectItem key={i + 1} value={String(i + 1)}>
+                        {name}
                       </SelectItem>
                     ))}
                   </SelectContent>

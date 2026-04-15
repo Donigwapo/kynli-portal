@@ -102,6 +102,7 @@ export const documents = mysqlTable("documents", {
   fileSize: bigint("fileSize", { mode: "number" }),
   mimeType: varchar("mimeType", { length: 128 }),
   year: int("year").notNull(),
+  month: int("month"), // 1–12, optional (null = full-year document)
   uploadedBy: int("uploadedBy"), // FK → users.id (admin who uploaded)
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
