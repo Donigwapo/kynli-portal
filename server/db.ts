@@ -10,6 +10,7 @@ import {
   kpiMetrics,
   lineItems,
   salesTracker,
+  taskCategories,
   teamMembers,
   tenants,
   timeLogs,
@@ -332,4 +333,23 @@ export async function upsertAiSummary(data: typeof aiSummaries.$inferInsert) {
   const db = await getDb();
   if (!db) return;
   await db.insert(aiSummaries).values(data).onDuplicateKeyUpdate({ set: data });
+}
+
+// ─── Task Categories ─────────────────────────────────────────────────────────
+export async function getTaskCategoriesDb(tenantId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(taskCategories).where(eq(taskCategories.tenantId, tenantId)).orderBy(taskCategories.label);
+}
+
+export async function addTaskCategoryDb(tenantId: number, label: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(taskCategories).values({ tenantId, label });
+}
+
+export async function deleteTaskCategoryDb(tenantId: number, id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(taskCategories).where(and(eq(taskCategories.id, id), eq(taskCategories.tenantId, tenantId)));
 }

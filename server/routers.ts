@@ -13,6 +13,9 @@ import {
   getFocusAreasDb,
   addFocusAreaDb,
   deleteFocusAreaDb,
+  getTaskCategoriesDb,
+  addTaskCategoryDb,
+  deleteTaskCategoryDb,
   getTimeLogs as getTimeLogsDb,
   getTimeLogsByYear as getTimeLogsByYearDb,
   insertTimeLog as insertTimeLogDb,
@@ -407,6 +410,40 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
         await deleteFocusAreaDb(ctx.user.id, input.id);
+        return { success: true };
+      }),
+    seedFocusAreas: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        const existing = await getFocusAreasDb(ctx.user.id);
+        if (existing.length > 0) return { seeded: false };
+        const defaults = [
+          "Sales", "Marketing", "Consulting", "Strategy & Analysis",
+          "Training & Leadership", "Operations", "Fulfillment",
+          "Coaching", "Strategic Partner", "Other",
+        ];
+        for (const label of defaults) {
+          await addFocusAreaDb(ctx.user.id, label);
+        }
+        return { seeded: true };
+      }),
+    getTaskCategories: protectedProcedure
+      .query(async ({ ctx }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        return getTaskCategoriesDb(ctx.user.id);
+      }),
+    addTaskCategory: protectedProcedure
+      .input(z.object({ label: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await addTaskCategoryDb(ctx.user.id, input.label);
+        return { success: true };
+      }),
+    deleteTaskCategory: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await deleteTaskCategoryDb(ctx.user.id, input.id);
         return { success: true };
       }),
   }),

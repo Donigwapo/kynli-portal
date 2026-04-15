@@ -160,6 +160,17 @@ export const focusAreas = mysqlTable("focus_areas", {
 export type FocusArea = typeof focusAreas.$inferSelect;
 export type InsertFocusArea = typeof focusAreas.$inferInsert;
 
+// ─── Task Categories ────────────────────────────────────────────────────────
+export const taskCategories = mysqlTable("task_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type TaskCategory = typeof taskCategories.$inferSelect;
+export type InsertTaskCategory = typeof taskCategories.$inferInsert;
+
 // ─── Time Logs (Time Intelligence) ───────────────────────────────────────────
 export const timeLogs = mysqlTable("time_logs", {
   id: int("id").autoincrement().primaryKey(),

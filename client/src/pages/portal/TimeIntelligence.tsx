@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -18,6 +18,7 @@ type TimeLog = {
 };
 type TeamMember = { id: number; tenantId: number; name: string; createdAt?: Date | null };
 type FocusArea = { id: number; tenantId: number; label: string; createdAt?: Date | null };
+type TaskCategory = { id: number; tenantId: number; label: string; createdAt?: Date | null };
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -41,7 +42,7 @@ function totalDecimalHours(hours: string | number, minutes: number | null): numb
 
 // ─── Add Entry Modal ──────────────────────────────────────────────────────────
 function AddEntryModal({
-  onClose, onSave, teamMembers, focusAreas,
+  onClose, onSave, teamMembers, focusAreas, taskCategories,
 }: {
   onClose: () => void;
   onSave: (data: {
@@ -51,6 +52,7 @@ function AddEntryModal({
   }) => void;
   teamMembers: TeamMember[];
   focusAreas: FocusArea[];
+  taskCategories: TaskCategory[];
 }) {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -58,11 +60,14 @@ function AddEntryModal({
 
   const [logDate, setLogDate] = useState(defaultDate);
   const [teamMember, setTeamMember] = useState(teamMembers[0]?.name ?? "");
-  const [taskCategory, setTaskCategory] = useState("");
+  const [taskCategory, setTaskCategory] = useState(taskCategories[0]?.label ?? "");
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [newCategoryLabel, setNewCategoryLabel] = useState("");
   const [focusArea, setFocusArea] = useState(focusAreas[0]?.label ?? "");
   const [showAddFocus, setShowAddFocus] = useState(false);
   const [newFocusLabel, setNewFocusLabel] = useState("");
   const addFocusMutation = trpc.time.addFocusArea.useMutation();
+  const addCategoryMutation = trpc.time.addTaskCategory.useMutation();
   const utils = trpc.useUtils();
 
   const handleAddFocus = () => {
@@ -75,6 +80,21 @@ function AddEntryModal({
           setFocusArea(newFocusLabel.trim());
           setNewFocusLabel("");
           setShowAddFocus(false);
+        },
+      }
+    );
+  };
+
+  const handleAddCategory = () => {
+    if (!newCategoryLabel.trim()) return;
+    addCategoryMutation.mutate(
+      { label: newCategoryLabel.trim() },
+      {
+        onSuccess: () => {
+          utils.time.getTaskCategories.invalidate();
+          setTaskCategory(newCategoryLabel.trim());
+          setNewCategoryLabel("");
+          setShowAddCategory(false);
         },
       }
     );
@@ -186,13 +206,45 @@ function AddEntryModal({
           {/* Task Category */}
           <div>
             <label className={labelCls}>Task Category</label>
-            <input
-              type="text"
-              value={taskCategory}
-              onChange={e => setTaskCategory(e.target.value)}
-              placeholder="e.g. Sales Activities"
-              className={inputCls}
-            />
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <select
+                  value={taskCategory}
+                  onChange={e => setTaskCategory(e.target.value)}
+                  className={`${inputCls} appearance-none pr-8`}
+                >
+                  {taskCategories.length === 0 && <option value="">— No categories yet —</option>}
+                  {taskCategories.map(c => <option key={c.id} value={c.label}>{c.label}</option>)}
+                </select>
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              </div>
+              <button
+                onClick={() => setShowAddCategory(v => !v)}
+                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                title="Add new task category"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+            {showAddCategory && (
+              <div className="flex gap-2 mt-2">
+                <input
+                  type="text"
+                  value={newCategoryLabel}
+                  onChange={e => setNewCategoryLabel(e.target.value)}
+                  placeholder="e.g. Sales Activities"
+                  className={`${inputCls} flex-1`}
+                  onKeyDown={e => e.key === "Enter" && handleAddCategory()}
+                />
+                <button
+                  onClick={handleAddCategory}
+                  disabled={addCategoryMutation.isPending}
+                  className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  {addCategoryMutation.isPending ? "…" : "Add"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Focus Area */}
@@ -414,6 +466,22 @@ export default function TimeIntelligence() {
     undefined,
     { staleTime: 60_000 }
   );
+  const { data: taskCategories = [] } = trpc.time.getTaskCategories.useQuery(
+    undefined,
+    { staleTime: 60_000 }
+  );
+
+  // Seed default focus areas on first load
+  const seedFocusMutation = trpc.time.seedFocusAreas.useMutation();
+  const utils = trpc.useUtils();
+  useEffect(() => {
+    if (focusAreas.length === 0) {
+      seedFocusMutation.mutate(undefined, {
+        onSuccess: () => utils.time.getFocusAreas.invalidate(),
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusAreas.length]);
 
   const addMutation = trpc.time.add.useMutation({ onSuccess: () => refetch() });
   const addBulkMutation = trpc.time.addBulk.useMutation({ onSuccess: () => refetch() });
@@ -773,6 +841,7 @@ export default function TimeIntelligence() {
           onSave={handleAddEntry}
           teamMembers={teamMembers as TeamMember[]}
           focusAreas={focusAreas as FocusArea[]}
+          taskCategories={taskCategories as TaskCategory[]}
         />
       )}
       {showTeamModal && (
