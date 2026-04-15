@@ -22,6 +22,9 @@ import {
   getTeamMembers,
   addTeamMember,
   deleteTeamMember,
+  getFocusAreas,
+  addFocusArea,
+  deleteFocusArea,
   upsertClientRosterEntry,
   deleteClientRosterEntry,
   insertCoachingItem,
@@ -370,6 +373,24 @@ export const appRouter = router({
       .input(z.object({ tenantSlug: z.string(), id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteTeamMember(input.tenantSlug, input.id);
+        return { success: true };
+      }),
+    getFocusAreas: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getFocusAreas(slug);
+      }),
+    addFocusArea: protectedProcedure
+      .input(z.object({ tenantSlug: z.string(), label: z.string() }))
+      .mutation(async ({ input }) => {
+        await addFocusArea(input.tenantSlug, input.label);
+        return { success: true };
+      }),
+    deleteFocusArea: protectedProcedure
+      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteFocusArea(input.tenantSlug, input.id);
         return { success: true };
       }),
   }),

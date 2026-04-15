@@ -19,6 +19,7 @@ type TimeLog = {
   delegation_note: string | null; created_at?: string;
 };
 type TeamMember = { id: number; slug: string; name: string };
+type FocusArea = { id: number; slug: string; label: string };
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -43,7 +44,7 @@ function totalDecimalHours(hours: number, minutes: number | null): number {
 
 // ─── Add Entry Modal ──────────────────────────────────────────────────────────
 function AddEntryModal({
-  onClose, onSave, teamMembers, tslug,
+  onClose, onSave, teamMembers, focusAreas, tslug,
 }: {
   onClose: () => void;
   onSave: (data: {
@@ -52,6 +53,7 @@ function AddEntryModal({
     year: number; month: number;
   }) => void;
   teamMembers: TeamMember[];
+  focusAreas: FocusArea[];
   tslug: string;
 }) {
   const now = new Date();
@@ -61,7 +63,25 @@ function AddEntryModal({
   const [logDate, setLogDate] = useState(defaultDate);
   const [teamMember, setTeamMember] = useState(teamMembers[0]?.name ?? "");
   const [taskCategory, setTaskCategory] = useState("");
-  const [focusArea, setFocusArea] = useState("Consulting");
+  const [focusArea, setFocusArea] = useState(focusAreas[0]?.label ?? "Consulting");
+  const [showAddFocus, setShowAddFocus] = useState(false);
+  const [newFocusLabel, setNewFocusLabel] = useState("");
+  const addFocusMutation = trpc.time.addFocusArea.useMutation();
+  const utils = trpc.useUtils();
+  const handleAddFocus = () => {
+    if (!newFocusLabel.trim()) return;
+    addFocusMutation.mutate(
+      { tenantSlug: tslug, label: newFocusLabel.trim() },
+      {
+        onSuccess: () => {
+          utils.time.getFocusAreas.invalidate();
+          setFocusArea(newFocusLabel.trim());
+          setNewFocusLabel("");
+          setShowAddFocus(false);
+        },
+      }
+    );
+  };
   const [hours, setHours] = useState(0);
   const [minutes, setMinutes] = useState(0);
   const [delegationNote, setDelegationNote] = useState("");
@@ -69,8 +89,6 @@ function AddEntryModal({
   const [showAddMember, setShowAddMember] = useState(false);
 
   const addMemberMutation = trpc.time.addTeamMember.useMutation();
-  const utils = trpc.useUtils();
-
   function handleAddMember() {
     if (!newMemberName.trim()) return;
     addMemberMutation.mutate(
@@ -182,16 +200,45 @@ function AddEntryModal({
           {/* Focus Area */}
           <div>
             <label className={labelCls}>Focus Area</label>
-            <div className="relative">
-              <select
-                value={focusArea}
-                onChange={e => setFocusArea(e.target.value)}
-                className={`${inputCls} appearance-none pr-8`}
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <select
+                  value={focusArea}
+                  onChange={e => setFocusArea(e.target.value)}
+                  className={`${inputCls} appearance-none pr-8`}
+                >
+                  {focusAreas.length === 0 && <option value="">— No focus areas yet —</option>}
+                  {focusAreas.map(a => <option key={a.id} value={a.label}>{a.label}</option>)}
+                </select>
+                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              </div>
+              <button
+                onClick={() => setShowAddFocus(v => !v)}
+                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                title="Add new focus area"
               >
-                {FOCUS_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
-              </select>
-              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                <Plus size={16} />
+              </button>
             </div>
+            {showAddFocus && (
+              <div className="flex gap-2 mt-2">
+                <input
+                  type="text"
+                  value={newFocusLabel}
+                  onChange={e => setNewFocusLabel(e.target.value)}
+                  placeholder="e.g. Product Development"
+                  className={`${inputCls} flex-1`}
+                  onKeyDown={e => e.key === "Enter" && handleAddFocus()}
+                />
+                <button
+                  onClick={handleAddFocus}
+                  disabled={addFocusMutation.isPending}
+                  className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Duration */}
@@ -368,6 +415,10 @@ export default function TimeIntelligence() {
   );
 
   const { data: teamMembers = [], refetch: refetchMembers } = trpc.time.getTeamMembers.useQuery(
+    { tenantSlug: tslug ?? undefined },
+    { enabled: !!tslug, staleTime: 60_000 }
+  );
+  const { data: focusAreas = [] } = trpc.time.getFocusAreas.useQuery(
     { tenantSlug: tslug ?? undefined },
     { enabled: !!tslug, staleTime: 60_000 }
   );
@@ -734,6 +785,7 @@ export default function TimeIntelligence() {
           onClose={() => setShowAddModal(false)}
           onSave={handleAddEntry}
           teamMembers={teamMembers}
+          focusAreas={focusAreas}
           tslug={tslug}
         />
       )}

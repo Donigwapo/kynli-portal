@@ -522,3 +522,30 @@ export async function getTimeLogsByYear(slug: string, year: number): Promise<Tim
   if (error) return [];
   return (data || []).map((r: Record<string, unknown>) => ({ ...r, hours: parseFloat(r.hours as string) })) as TimeLog[];
 }
+
+// ─── Focus Areas ──────────────────────────────────────────────────────────────
+export type FocusArea = {
+  id: number;
+  slug: string;
+  label: string;
+};
+
+export async function getFocusAreas(slug: string): Promise<FocusArea[]> {
+  const { data, error } = await supabase
+    .from("focus_areas")
+    .select("*")
+    .eq("slug", slug)
+    .order("label");
+  if (error) return [];
+  return (data || []) as FocusArea[];
+}
+
+export async function addFocusArea(slug: string, label: string): Promise<void> {
+  const { error } = await supabase.from("focus_areas").insert({ slug, label });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteFocusArea(slug: string, id: number): Promise<void> {
+  const { error } = await supabase.from("focus_areas").delete().eq("id", id).eq("slug", slug);
+  if (error) throw new Error(error.message);
+}
