@@ -194,7 +194,7 @@ export default function Clients() {
 
   const handleSave = () => {
     const payload = {
-      tenantSlug,
+      tenantSlug: tenantSlug || undefined,
       clientName: form.clientName,
       package: form.package,
       monthlyAmount: Number(form.monthlyAmount) || 0,
@@ -383,7 +383,7 @@ export default function Clients() {
                       <Button
                         variant="ghost" size="icon"
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug, id: c.id }); }}
+                        onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug: tenantSlug || undefined, id: c.id }); }}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>

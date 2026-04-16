@@ -711,9 +711,9 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getClientRoster(slug);
       }),
-    add: adminProcedure
+    add: protectedProcedure
       .input(z.object({
-        tenantSlug: z.string(),
+        tenantSlug: z.string().optional(),
         clientName: z.string(),
         package: z.string(),
         monthlyAmount: z.number(),
@@ -724,8 +724,10 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         totalIncome: z.number().optional(),
         notes: z.string().nullable().optional(),
       }))
-      .mutation(async ({ input }) => {
-        await upsertClientRosterEntry(input.tenantSlug, {
+      .mutation(async ({ ctx, input }) => {
+        // Resolve tenant slug: admin can pass explicit slug, regular users use their own
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        await upsertClientRosterEntry(slug, {
           client_name: input.clientName,
           package: input.package,
           monthly_amount: input.monthlyAmount,
@@ -738,9 +740,9 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         });
         return { success: true };
       }),
-    update: adminProcedure
+    update: protectedProcedure
       .input(z.object({
-        tenantSlug: z.string(),
+        tenantSlug: z.string().optional(),
         id: z.number(),
         clientName: z.string().optional(),
         package: z.string().optional(),
@@ -752,11 +754,11 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         totalIncome: z.number().optional(),
         notes: z.string().nullable().optional(),
       }))
-      .mutation(async ({ input }) => {
-        const { tenantSlug, id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, notes, package: pkg, status } = input;
-        // Use upsert with id to update existing record
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const { id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, notes, package: pkg, status } = input;
         await supabase
-          .from(`${tenantSlug}_client_roster`)
+          .from(`${slug}_client_roster`)
           .update({
             ...(clientName !== undefined && { client_name: clientName }),
             ...(pkg !== undefined && { package: pkg }),
@@ -771,10 +773,11 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
           .eq('id', id);
         return { success: true };
       }),
-    delete: adminProcedure
-      .input(z.object({ tenantSlug: z.string(), id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteClientRosterEntry(input.tenantSlug, input.id);
+    delete: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional(), id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        await deleteClientRosterEntry(slug, input.id);
         return { success: true };
       }),
   }),
