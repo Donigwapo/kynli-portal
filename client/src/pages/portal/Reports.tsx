@@ -717,74 +717,139 @@ export default function Reports() {
       })()}
 
       {/* ── Sales Tab ── */}
-      {tab === "sales" && (
-        <div className="space-y-6">
-          {salesChartData.length === 0 ? (
-            <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
-              No sales data for this period.
+      {tab === "sales" && (() => {
+        // Build 12-month (or active-month) rows from salesData, always showing all months
+        const salesByMonth: Record<number, any> = {};
+        ;(salesData as any[]).forEach(r => { if (r.month) salesByMonth[r.month] = r; });
+
+        const salesTableRows = activeMonths.map(m => {
+          const r = salesByMonth[m];
+          const goal = r?.goal_clients ?? 0;
+          const closed = r?.signed_clients ?? 0;
+          const totalCalls = (r?.referral_count ?? 0) + (r?.outbound_count ?? 0);
+          const closeRate = totalCalls > 0 ? (closed / totalCalls) * 100 : null;
+          const vsTarget = closed - goal;
+          return { m, goal, closed, totalCalls, closeRate, vsTarget };
+        });
+
+        const totalGoal = salesTableRows.reduce((s, r) => s + r.goal, 0);
+        const totalClosed = salesTableRows.reduce((s, r) => s + r.closed, 0);
+        const totalCalls = salesTableRows.reduce((s, r) => s + r.totalCalls, 0);
+        const overallCloseRate = totalCalls > 0 ? (totalClosed / totalCalls) * 100 : 0;
+        const goalAchievement = totalGoal > 0 ? (totalClosed / totalGoal) * 100 : 0;
+
+        // Closed vs Target chart — always all active months
+        const closedVsTargetData = salesTableRows.map(r => ({
+          month: MONTHS_SHORT[r.m - 1],
+          Closed: r.closed,
+          Target: r.goal,
+        }));
+
+        return (
+          <div className="space-y-6">
+            {/* KPI Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Clients Closed</span>
+                  <Activity size={16} className="text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{totalClosed}</div>
+                <div className="text-xs text-muted-foreground">Target: {totalGoal}</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Total Calls</span>
+                  <Users size={16} className="text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{totalCalls}</div>
+                <div className="text-xs text-muted-foreground">Discovery calls</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Close Rate</span>
+                  <TrendingUp size={16} className="text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{overallCloseRate.toFixed(1)}%</div>
+                <div className="text-xs text-muted-foreground">Calls to closes</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Goal Achievement</span>
+                  <BarChart2 size={16} className="text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{goalAchievement.toFixed(0)}%</div>
+                <div className="text-xs text-muted-foreground">{totalClosed} of {totalGoal}</div>
+                <div className="flex items-center gap-1 text-xs font-medium" style={{ color: goalAchievement >= 100 ? GREEN : RED }}>
+                  <TrendingDown size={12} />
+                  {(goalAchievement - 100).toFixed(1)}% vs target
+                </div>
+              </div>
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard label="Goal Clients" value={String(salesChartData.reduce((s: number, r: any) => s + r.Goal, 0))} icon={Users} />
-                <KpiCard label="Signed Clients" value={String(salesChartData.reduce((s: number, r: any) => s + r.Signed, 0))} icon={TrendingUp} />
-                <KpiCard label="Referrals" value={String(salesChartData.reduce((s: number, r: any) => s + r.Referrals, 0))} icon={Activity} />
-                <KpiCard label="Outbound" value={String(salesChartData.reduce((s: number, r: any) => s + r.Outbound, 0))} icon={ShoppingBag} />
+
+            {/* Monthly Sales Detail Table */}
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-border">
+                <h3 className="font-bold text-foreground text-base">Monthly Sales Detail</h3>
               </div>
-              <div className="bg-card border border-border rounded-xl p-5">
-                <h3 className="font-semibold text-foreground mb-4">Sales Activity</h3>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={salesChartData} barGap={4}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                    <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }} labelStyle={{ color: "oklch(0.85 0.008 240)" }} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Bar dataKey="Goal" fill="oklch(0.40 0.008 240)" radius={[4,4,0,0]} />
-                    <Bar dataKey="Signed" fill={TEAL} radius={[4,4,0,0]} />
-                    <Bar dataKey="Referrals" fill={GREEN} radius={[4,4,0,0]} />
-                    <Bar dataKey="Outbound" fill={AMBER} radius={[4,4,0,0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-border">
-                  <h3 className="font-semibold text-foreground">Monthly Sales Breakdown</h3>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left px-5 py-3 text-muted-foreground font-medium">Month</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Goal</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Signed</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Attainment</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Referrals</th>
-                        <th className="text-right px-5 py-3 text-muted-foreground font-medium">Outbound</th>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left px-5 py-3 text-muted-foreground font-medium">Month</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Target</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Closed</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Total Calls</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Close Rate</th>
+                      <th className="text-right px-5 py-3 text-muted-foreground font-medium">vs Target</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesTableRows.map(r => (
+                      <tr key={r.m} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-3 font-medium text-foreground">{MONTHS_SHORT[r.m - 1]} {year}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{r.goal}</td>
+                        <td className="px-4 py-3 text-right font-bold text-foreground">{r.closed}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{r.totalCalls}</td>
+                        <td className="px-4 py-3 text-right text-foreground">
+                          {r.closeRate !== null ? `${r.closeRate.toFixed(1)}%` : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="px-5 py-3 text-right font-bold" style={{ color: r.vsTarget > 0 ? GREEN : r.vsTarget < 0 ? RED : "oklch(0.70 0.008 240)" }}>
+                          {r.vsTarget > 0 ? `+${r.vsTarget}` : r.vsTarget}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {salesChartData.map((r: any, i: number) => {
-                        const attainment = r.Goal > 0 ? (r.Signed / r.Goal) * 100 : 0;
-                        return (
-                          <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                            <td className="px-5 py-3 font-medium text-foreground">{r.month} {year}</td>
-                            <td className="px-4 py-3 text-right text-muted-foreground">{r.Goal}</td>
-                            <td className="px-4 py-3 text-right font-bold" style={{ color: TEAL }}>{r.Signed}</td>
-                            <td className="px-4 py-3 text-right font-semibold" style={{ color: attainment >= 100 ? GREEN : attainment >= 70 ? AMBER : RED }}>{attainment.toFixed(0)}%</td>
-                            <td className="px-4 py-3 text-right text-foreground">{r.Referrals}</td>
-                            <td className="px-5 py-3 text-right text-foreground">{r.Outbound}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </>
-          )}
-        </div>
-      )}
+            </div>
+
+            {/* Closed vs Target Chart */}
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="font-bold text-foreground text-base mb-4">Closed vs Target</h3>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={closedVsTargetData} barCategoryGap="20%" barGap={3}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
+                  <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                    labelStyle={{ color: "oklch(0.85 0.008 240)" }}
+                  />
+                  <Legend
+                    wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
+                    formatter={(value) => (
+                      <span style={{ color: value === "Closed" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
+                    )}
+                  />
+                  <Bar dataKey="Closed" fill={RED} radius={[4,4,0,0]} />
+                  <Bar dataKey="Target" fill="oklch(0.32 0.008 240)" radius={[4,4,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Time Tab ── */}
       {tab === "time" && (() => {
