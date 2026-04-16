@@ -4,6 +4,7 @@ import { usePortal } from "@/contexts/PortalContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, Legend, Cell,
+  PieChart, Pie,
 } from "recharts";
 import {
   DollarSign, TrendingDown, TrendingUp, BarChart2,
@@ -533,59 +534,187 @@ export default function Reports() {
       )}
 
       {/* ── Client Analytics Tab ── */}
-      {tab === "clients" && (
-        <div className="space-y-6">
-          {rosterData.length === 0 ? (
-            <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
-              No client data available. Add clients in the Clients section.
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard label="Active Clients" value={String(rosterData.filter((c: any) => c.status === "active").length)} icon={Users} />
-                <KpiCard label="Total MRR" value={fmtDFull(rosterData.filter((c: any) => c.status === "active").reduce((s: number, c: any) => s + (c.monthly_amount ?? 0), 0))} icon={DollarSign} />
-                <KpiCard label="Avg LTV" value={fmtDFull(rosterData.length > 0 ? rosterData.reduce((s: number, c: any) => s + (c.ltv ?? 0), 0) / rosterData.length : 0)} icon={TrendingUp} />
-                <KpiCard label="Churned" value={String(rosterData.filter((c: any) => c.status === "churned").length)} icon={TrendingDown} />
+      {tab === "clients" && (() => {
+        const activeClients = (rosterData as any[]).filter(c => c.status === "active");
+        const churnedClients = (rosterData as any[]).filter(c => c.status === "churned");
+
+        // New clients: signed_date falls within the active period
+        const newClients = (rosterData as any[]).filter(c => {
+          if (!c.signed_date) return false;
+          const d = new Date(c.signed_date);
+          const cy = d.getFullYear();
+          const cm = d.getMonth() + 1;
+          if (cy !== year) return false;
+          return activeMonths.includes(cm);
+        });
+
+        const netGrowth = newClients.length - churnedClients.length;
+
+        // Package Tier LTV Analysis — group all clients by package
+        const tierMap: Record<string, { count: number; totalMonthly: number; totalTenure: number; totalLtv: number }> = {};
+        ;(rosterData as any[]).forEach(c => {
+          const pkg = c.package || "Unknown";
+          if (!tierMap[pkg]) tierMap[pkg] = { count: 0, totalMonthly: 0, totalTenure: 0, totalLtv: 0 };
+          tierMap[pkg].count++;
+          tierMap[pkg].totalMonthly += fmtN(c.monthly_amount);
+          tierMap[pkg].totalTenure += fmtN(c.tenure_months);
+          tierMap[pkg].totalLtv += fmtN(c.ltv);
+        });
+        const tierRows = Object.entries(tierMap)
+          .map(([pkg, d]) => ({
+            pkg,
+            count: d.count,
+            avgMonthly: d.count > 0 ? d.totalMonthly / d.count : 0,
+            avgTenure: d.count > 0 ? d.totalTenure / d.count : 0,
+            avgLtv: d.count > 0 ? d.totalLtv / d.count : 0,
+          }))
+          .sort((a, b) => b.avgLtv - a.avgLtv);
+
+        // Active client distribution by package (for pie chart)
+        const activeByTier: Record<string, number> = {};
+        activeClients.forEach((c: any) => {
+          const pkg = c.package || "Unknown";
+          activeByTier[pkg] = (activeByTier[pkg] ?? 0) + 1;
+        });
+        const pieData = Object.entries(activeByTier)
+          .map(([name, value]) => ({ name, value }))
+          .sort((a, b) => b.value - a.value);
+
+        const PIE_COLORS = [RED, "oklch(0.52 0.18 25)", "oklch(0.42 0.14 25)", "oklch(0.35 0.10 25)", "oklch(0.28 0.06 25)", "oklch(0.22 0.04 25)"];
+
+        // LTV by Tier bar chart data
+        const ltvBarData = tierRows.map(r => ({ name: r.pkg, LTV: Math.round(r.avgLtv) }));
+
+        return (
+          <div className="space-y-6">
+            {rosterData.length === 0 ? (
+              <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
+                No client data available. Add clients in the Clients section.
               </div>
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-border">
-                  <h3 className="font-semibold text-foreground">Client Roster</h3>
+            ) : (
+              <>
+                {/* KPI Cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Total Active</span>
+                      <Users size={16} className="text-muted-foreground" />
+                    </div>
+                    <div className="text-3xl font-bold text-foreground">{activeClients.length}</div>
+                    <div className="text-xs text-muted-foreground">Current roster</div>
+                  </div>
+                  <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">New Clients</span>
+                      <TrendingUp size={16} className="text-muted-foreground" />
+                    </div>
+                    <div className="text-3xl font-bold text-foreground">{newClients.length}</div>
+                    <div className="text-xs text-muted-foreground">Signed in {period === "Year" ? `Full Year ${year}` : period === "Quarter" ? `Q${quarter} ${year}` : `${MONTHS_SHORT[month - 1]} ${year}`}</div>
+                  </div>
+                  <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Churned</span>
+                      <TrendingDown size={16} className="text-muted-foreground" />
+                    </div>
+                    <div className="text-3xl font-bold text-foreground">{churnedClients.length}</div>
+                    <div className="text-xs text-muted-foreground">Left in {period === "Year" ? `Full Year ${year}` : period === "Quarter" ? `Q${quarter} ${year}` : `${MONTHS_SHORT[month - 1]} ${year}`}</div>
+                  </div>
+                  <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Net Growth</span>
+                      <BarChart2 size={16} className="text-muted-foreground" />
+                    </div>
+                    <div className="text-3xl font-bold" style={{ color: netGrowth >= 0 ? GREEN : RED }}>{netGrowth >= 0 ? `+${netGrowth}` : netGrowth}</div>
+                    <div className="text-xs text-muted-foreground">New minus churned</div>
+                  </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left px-5 py-3 text-muted-foreground font-medium">Client</th>
-                        <th className="text-left px-4 py-3 text-muted-foreground font-medium">Package</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Monthly</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">LTV</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Tenure</th>
-                        <th className="text-right px-5 py-3 text-muted-foreground font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rosterData.map((c: any) => (
-                        <tr key={c.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                          <td className="px-5 py-3 font-medium text-foreground">{c.client_name}</td>
-                          <td className="px-4 py-3 text-muted-foreground">{c.package}</td>
-                          <td className="px-4 py-3 text-right text-foreground">{fmtDFull(c.monthly_amount)}</td>
-                          <td className="px-4 py-3 text-right text-foreground">{fmtDFull(c.ltv)}</td>
-                          <td className="px-4 py-3 text-right text-muted-foreground">{c.tenure_months}mo</td>
-                          <td className="px-5 py-3 text-right">
-                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${c.status === "active" ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"}`}>
-                              {c.status === "active" ? "Active" : "Churned"}
-                            </span>
-                          </td>
+
+                {/* Package Tier LTV Analysis */}
+                <div className="bg-card border border-border rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-border">
+                    <h3 className="font-bold text-foreground text-base">Package Tier LTV Analysis</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">Across all clients (active + churned)</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left px-5 py-3 text-muted-foreground font-medium">Package Tier</th>
+                          <th className="text-right px-4 py-3 text-muted-foreground font-medium">Total Clients</th>
+                          <th className="text-right px-4 py-3 text-muted-foreground font-medium">Avg Monthly Price</th>
+                          <th className="text-right px-4 py-3 text-muted-foreground font-medium">Avg Tenure</th>
+                          <th className="text-right px-5 py-3 text-muted-foreground font-medium">Avg LTV</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {tierRows.map(r => (
+                          <tr key={r.pkg} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                            <td className="px-5 py-3">
+                              <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-muted/40 text-foreground border border-border/60">{r.pkg}</span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-foreground">{r.count}</td>
+                            <td className="px-4 py-3 text-right text-foreground">{fmtDFull(r.avgMonthly)}</td>
+                            <td className="px-4 py-3 text-right text-muted-foreground">{r.avgTenure.toFixed(1)} mo</td>
+                            <td className="px-5 py-3 text-right font-bold" style={{ color: TEAL }}>{fmtDFull(r.avgLtv)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+
+                {/* Active Client Distribution + LTV by Tier */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  {/* Pie Chart */}
+                  <div className="bg-card border border-border rounded-xl p-5">
+                    <h3 className="font-bold text-foreground text-base mb-4">Active Client Distribution</h3>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <PieChart>
+                        <Pie
+                          data={pieData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={110}
+                          paddingAngle={2}
+                          dataKey="value"
+                          label={({ name, value }: { name: string; value: number }) => `${name}: ${value}`}
+                          labelLine={false}
+                        >
+                          {pieData.map((_, i) => (
+                            <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                          formatter={(v: number, name: string) => [v, name]}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* LTV by Tier bar chart */}
+                  <div className="bg-card border border-border rounded-xl p-5">
+                    <h3 className="font-bold text-foreground text-base mb-4">LTV by Tier</h3>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <BarChart data={ltvBarData} layout="vertical" margin={{ left: 16, right: 24 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
+                        <YAxis type="category" dataKey="name" tick={{ fill: "oklch(0.70 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} width={80} />
+                        <Tooltip
+                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                          formatter={(v: number) => [`$${v.toLocaleString()}`, "Avg LTV"]}
+                        />
+                        <Bar dataKey="LTV" fill={RED} radius={[0,4,4,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Sales Tab ── */}
       {tab === "sales" && (
