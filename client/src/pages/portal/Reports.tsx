@@ -853,75 +853,160 @@ export default function Reports() {
 
       {/* ── Time Tab ── */}
       {tab === "time" && (() => {
-        const filtered = timeData.filter((r: any) => activeMonths.includes(r.month ?? 0));
-        const totalHours = filtered.reduce((s: number, r: any) => s + fmtN(r.hours), 0);
-        const byMember: Record<string, number> = {};
+        const filtered = (timeData as any[]).filter(r => activeMonths.includes(r.month ?? 0));
+        const totalHours = filtered.reduce((s, r) => s + fmtN(r.hours), 0);
+
+        // Hours by focus area
         const byFocus: Record<string, number> = {};
-        filtered.forEach((r: any) => {
-          const m = r.teamMember ?? "Unknown";
-          byMember[m] = (byMember[m] ?? 0) + fmtN(r.hours);
+        filtered.forEach(r => {
           const f = r.focusArea ?? "Other";
           byFocus[f] = (byFocus[f] ?? 0) + fmtN(r.hours);
         });
-        const topMember = Object.entries(byMember).sort((a, b) => b[1] - a[1])[0];
-        const topFocus = Object.entries(byFocus).sort((a, b) => b[1] - a[1])[0];
+
+        // Identify Sales hours and Consulting hours by focus area label match
+        const salesHours = Object.entries(byFocus)
+          .filter(([k]) => k.toLowerCase().includes("sales"))
+          .reduce((s, [, v]) => s + v, 0);
+        const consultingHours = Object.entries(byFocus)
+          .filter(([k]) => k.toLowerCase().includes("consult") || k.toLowerCase().includes("delivery") || k.toLowerCase().includes("client"))
+          .reduce((s, [, v]) => s + v, 0);
+
+        // Focus area target percentages (hardcoded based on reference design; can be made configurable)
+        const FOCUS_TARGETS: Record<string, number> = {
+          "Sales": 40,
+          "Strategy & Analysis": 20,
+          "Operations": 5,
+          "Training & Leadership": 10,
+        };
+
+        // Build focus area rows sorted by hours desc
+        const focusRows = Object.entries(byFocus)
+          .map(([label, hrs]) => ({
+            label,
+            hrs,
+            pct: totalHours > 0 ? (hrs / totalHours) * 100 : 0,
+            target: FOCUS_TARGETS[label] ?? null,
+          }))
+          .sort((a, b) => b.hrs - a.hrs);
+
+        // Actual vs Target chart data
+        const actualVsTargetData = focusRows
+          .filter(r => r.target !== null)
+          .map(r => ({ name: r.label, "Actual %": Math.round(r.pct), "Target %": r.target as number }));
+
+        const periodDesc = period === "Year" ? `Full Year ${year}` : period === "Quarter" ? `Q${quarter} ${year}` : `${MONTHS_SHORT[(month ?? 1) - 1]} ${year}`;
+
         return (
           <div className="space-y-6">
+            {/* KPI Cards — 3 wide */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Total Hours</span>
+                  <Clock size={16} className="text-muted-foreground" style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{totalHours.toFixed(1)}h</div>
+                <div className="text-xs text-muted-foreground">{periodDesc}</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Sales Hours</span>
+                  <Activity size={16} style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{salesHours.toFixed(1)}h</div>
+                <div className="text-xs text-muted-foreground">Target: 20% of total</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Consulting Hours</span>
+                  <Users size={16} className="text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{consultingHours.toFixed(1)}h</div>
+                <div className="text-xs text-muted-foreground">Billable delivery</div>
+              </div>
+            </div>
+
             {filtered.length === 0 ? (
               <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
                 No time data for this period.
               </div>
             ) : (
-              <>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <KpiCard label="Total Hours" value={`${totalHours.toFixed(1)}h`} icon={Clock} />
-                  <KpiCard label="Team Members" value={String(Object.keys(byMember).length)} icon={Users} />
-                  <KpiCard label="Top Member" value={topMember?.[0] ?? "—"} budget={topMember ? `${topMember[1].toFixed(1)}h` : undefined} icon={Activity} />
-                  <KpiCard label="Top Focus Area" value={topFocus?.[0] ?? "—"} budget={topFocus ? `${topFocus[1].toFixed(1)}h` : undefined} icon={BarChart2} />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {/* Focus Area Allocation */}
+                <div className="bg-card border border-border rounded-xl p-5">
+                  <h3 className="font-bold text-foreground text-base mb-5">Focus Area Allocation</h3>
+                  <div className="space-y-5">
+                    {focusRows.map(r => (
+                      <div key={r.label}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-medium text-foreground">{r.label}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {r.hrs.toFixed(1)}h ({r.pct.toFixed(1)}%){r.target !== null ? ` — Target: ${r.target}%` : ""}
+                          </span>
+                        </div>
+                        {/* Progress bar with white target marker */}
+                        <div className="relative h-2 rounded-full bg-muted/30 overflow-visible">
+                          <div
+                            className="h-2 rounded-full"
+                            style={{ width: `${Math.min(r.pct, 100)}%`, background: RED }}
+                          />
+                          {r.target !== null && (
+                            <div
+                              className="absolute top-1/2 -translate-y-1/2 w-0.5 h-4 bg-white rounded-full"
+                              style={{ left: `${Math.min(r.target, 100)}%` }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-4">White line = target allocation</p>
                 </div>
-                {timeChartData.data.length > 0 && (
-                  <div className="bg-card border border-border rounded-xl p-5">
-                    <h3 className="font-semibold text-foreground mb-4">Hours by Focus Area</h3>
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart data={timeChartData.data} barGap={4}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                        <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                        <Tooltip contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }} labelStyle={{ color: "oklch(0.85 0.008 240)" }} />
-                        <Legend wrapperStyle={{ fontSize: 12 }} />
-                        {timeChartData.focusAreas.slice(0, 6).map((fa, i) => (
-                          <Bar key={fa} dataKey={fa} stackId="a" fill={FOCUS_COLORS[i % 6]} radius={i === timeChartData.focusAreas.length - 1 ? [4,4,0,0] : [0,0,0,0]} />
-                        ))}
+
+                {/* Actual vs Target % bar chart */}
+                <div className="bg-card border border-border rounded-xl p-5">
+                  <h3 className="font-bold text-foreground text-base mb-4">Actual vs Target (%)</h3>
+                  {actualVsTargetData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={280}>
+                      <BarChart data={actualVsTargetData} layout="vertical" margin={{ left: 16, right: 24 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" horizontal={false} />
+                        <XAxis
+                          type="number"
+                          tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          tickFormatter={v => `${v}%`}
+                          domain={[0, 80]}
+                        />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          tick={{ fill: "oklch(0.70 0.008 240)", fontSize: 12 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={110}
+                        />
+                        <Tooltip
+                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                          formatter={(v: number, name: string) => [`${v}%`, name]}
+                        />
+                        <Legend
+                          wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
+                          formatter={(value) => (
+                            <span style={{ color: value === "Actual %" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
+                          )}
+                        />
+                        <Bar dataKey="Actual %" fill={RED} radius={[0,4,4,0]} />
+                        <Bar dataKey="Target %" fill="oklch(0.35 0.008 240)" radius={[0,4,4,0]} />
                       </BarChart>
                     </ResponsiveContainer>
-                  </div>
-                )}
-                <div className="bg-card border border-border rounded-xl overflow-hidden">
-                  <div className="px-5 py-4 border-b border-border">
-                    <h3 className="font-semibold text-foreground">Team Member Hours</h3>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border">
-                          <th className="text-left px-5 py-3 text-muted-foreground font-medium">Member</th>
-                          <th className="text-right px-4 py-3 text-muted-foreground font-medium">Hours</th>
-                          <th className="text-right px-5 py-3 text-muted-foreground font-medium">% of Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {Object.entries(byMember).sort((a, b) => b[1] - a[1]).map(([name, hrs]) => (
-                          <tr key={name} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                            <td className="px-5 py-3 font-medium text-foreground">{name}</td>
-                            <td className="px-4 py-3 text-right font-bold" style={{ color: TEAL }}>{hrs.toFixed(1)}h</td>
-                            <td className="px-5 py-3 text-right text-muted-foreground">{totalHours > 0 ? ((hrs / totalHours) * 100).toFixed(1) : 0}%</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  ) : (
+                    <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
+                      No focus area targets configured.
+                    </div>
+                  )}
                 </div>
-              </>
+              </div>
             )}
           </div>
         );
