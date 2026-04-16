@@ -113,6 +113,12 @@ export default function Reports() {
     { staleTime: 30_000 }
   );
 
+  // Fetch line items for the year (income + expense breakdown)
+  const { data: lineItemsData = [] } = trpc.financials.lineItemsByYear.useQuery(
+    { year, tenantSlug: tslug },
+    { staleTime: 30_000 }
+  );
+
   // Filter financial data by active months
   const filteredFin = useMemo(
     () => yearlyData.filter(r => activeMonths.includes(r.month ?? 0)),
@@ -167,6 +173,24 @@ export default function Reports() {
   const profitVsBudget = (totals.budgetRevenue - totals.budgetExpenses) > 0
     ? ((totals.netProfit / (totals.budgetRevenue - totals.budgetExpenses)) - 1) * 100 : 0;
   const marginVsTarget = netMargin - targetMargin;
+
+  // Aggregate line items by label for the active months
+  const { topIncome, topExpense } = useMemo(() => {
+    const filteredItems = (lineItemsData as any[]).filter(r => activeMonths.includes(r.month ?? 0));
+    const incomeMap: Record<string, number> = {};
+    const expenseMap: Record<string, number> = {};
+    filteredItems.forEach((r: any) => {
+      const amt = typeof r.amount === 'number' ? r.amount : parseFloat(r.amount ?? '0') || 0;
+      if (r.type === 'income') {
+        incomeMap[r.label] = (incomeMap[r.label] ?? 0) + amt;
+      } else {
+        expenseMap[r.label] = (expenseMap[r.label] ?? 0) + amt;
+      }
+    });
+    const sortDesc = (map: Record<string, number>) =>
+      Object.entries(map).sort((a, b) => b[1] - a[1]);
+    return { topIncome: sortDesc(incomeMap), topExpense: sortDesc(expenseMap) };
+  }, [lineItemsData, activeMonths]);
 
   // Revenue vs Budget chart: always all active months, Actual=red for past months, Budget=grey for all
   const revBudgetChartData = useMemo(() => {
@@ -429,6 +453,80 @@ export default function Reports() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+              {/* Top Income Sources & Top Expense Categories */}
+              {(topIncome.length > 0 || topExpense.length > 0) && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  {/* Top Income Sources */}
+                  <div className="bg-card border border-border rounded-xl p-5">
+                    <h3 className="font-bold text-foreground text-base mb-4">Top Income Sources</h3>
+                    {topIncome.length === 0 ? (
+                      <p className="text-muted-foreground text-sm">No income data for this period.</p>
+                    ) : (() => {
+                      const maxIncome = topIncome[0]?.[1] ?? 1;
+                      const totalIncome = topIncome.reduce((s, [, v]) => s + v, 0);
+                      return (
+                        <div className="space-y-3">
+                          {topIncome.map(([label, amount]) => {
+                            const pct = totalIncome > 0 ? (amount / totalIncome) * 100 : 0;
+                            const barWidth = maxIncome > 0 ? (amount / maxIncome) * 100 : 0;
+                            const isTop = amount === maxIncome;
+                            return (
+                              <div key={label}>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm text-foreground">{label}</span>
+                                  <span className="text-sm font-bold text-foreground">{fmtDFull(amount)}</span>
+                                </div>
+                                <div className="w-full bg-muted/30 rounded-full h-1.5">
+                                  <div
+                                    className="h-1.5 rounded-full transition-all"
+                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : 'oklch(0.45 0.008 240)' }}
+                                  />
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-0.5">{pct.toFixed(1)}%</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Top Expense Categories */}
+                  <div className="bg-card border border-border rounded-xl p-5">
+                    <h3 className="font-bold text-foreground text-base mb-4">Top Expense Categories</h3>
+                    {topExpense.length === 0 ? (
+                      <p className="text-muted-foreground text-sm">No expense data for this period.</p>
+                    ) : (() => {
+                      const maxExpense = topExpense[0]?.[1] ?? 1;
+                      const totalExpense = topExpense.reduce((s, [, v]) => s + v, 0);
+                      return (
+                        <div className="space-y-3">
+                          {topExpense.map(([label, amount]) => {
+                            const pct = totalExpense > 0 ? (amount / totalExpense) * 100 : 0;
+                            const barWidth = maxExpense > 0 ? (amount / maxExpense) * 100 : 0;
+                            const isTop = amount === maxExpense;
+                            return (
+                              <div key={label}>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm text-foreground">{label}</span>
+                                  <span className="text-sm font-bold text-foreground">{fmtDFull(amount)}</span>
+                                </div>
+                                <div className="w-full bg-muted/30 rounded-full h-1.5">
+                                  <div
+                                    className="h-1.5 rounded-full transition-all"
+                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : 'oklch(0.45 0.008 240)' }}
+                                  />
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-0.5">{pct.toFixed(1)}%</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

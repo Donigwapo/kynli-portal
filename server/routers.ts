@@ -63,6 +63,7 @@ import {
   upsertSalesTracker,
   getCoachingNote,
   upsertCoachingNote,
+  getLineItemsByYear,
   type PortalUser,
 } from "./supabase";
 
@@ -169,6 +170,12 @@ export const appRouter = router({
       .query(async ({ ctx, input }) => {
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getLineItems(slug, input.year, input.month);
+      }),
+    lineItemsByYear: protectedProcedure
+      .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getLineItemsByYear(slug, input.year);
       }),
     upsert: adminProcedure
       .input(z.object({
