@@ -1013,82 +1013,205 @@ export default function Reports() {
       })()}
 
       {/* ── Profitability Tab ── */}
-      {tab === "profitability" && (
-        <div className="space-y-6">
-          {filteredFin.length === 0 ? (
-            <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
-              No financial data for this period.
+      {tab === "profitability" && (() => {
+        const activeClients = (rosterData as any[]).filter(c => c.status === "active");
+        const allClients = rosterData as any[];
+
+        // Active MRR = sum of monthly_amount for active clients
+        const activeMrr = activeClients.reduce((s, c) => s + fmtN(c.monthly_amount), 0);
+        const annualRunRate = activeMrr * 12;
+
+        // Avg LTV across all clients (active + churned)
+        const avgLtv = allClients.length > 0
+          ? allClients.reduce((s, c) => s + fmtN(c.ltv), 0) / allClients.length
+          : 0;
+
+        // Avg Margin = net margin from financials
+        const avgMargin = netMargin;
+
+        // LTV by Package Tier
+        const tierMap: Record<string, { active: number; churned: number; totalMonthly: number; totalTenure: number; totalLtv: number; count: number }> = {};
+        allClients.forEach(c => {
+          const pkg = c.package || "Unknown";
+          if (!tierMap[pkg]) tierMap[pkg] = { active: 0, churned: 0, totalMonthly: 0, totalTenure: 0, totalLtv: 0, count: 0 };
+          tierMap[pkg].count++;
+          tierMap[pkg].totalMonthly += fmtN(c.monthly_amount);
+          tierMap[pkg].totalTenure += fmtN(c.tenure_months);
+          tierMap[pkg].totalLtv += fmtN(c.ltv);
+          if (c.status === "active") tierMap[pkg].active++;
+          else tierMap[pkg].churned++;
+        });
+        const tierRows = Object.entries(tierMap)
+          .map(([tier, d]) => ({
+            tier,
+            active: d.active,
+            churned: d.churned,
+            avgMonthly: d.count > 0 ? d.totalMonthly / d.count : 0,
+            avgTenure: d.count > 0 ? d.totalTenure / d.count : 0,
+            avgLtv: d.count > 0 ? d.totalLtv / d.count : 0,
+          }))
+          .sort((a, b) => b.avgLtv - a.avgLtv);
+
+        // Per-client rows sorted: active first (by monthly desc), then churned
+        const clientRows = [...allClients].sort((a, b) => {
+          if (a.status === b.status) return fmtN(b.monthly_amount) - fmtN(a.monthly_amount);
+          return a.status === "active" ? -1 : 1;
+        });
+
+        // Tier badge colors
+        const TIER_COLORS: Record<string, string> = {
+          "Momentum": TEAL,
+          "Growth 1": TEAL,
+          "Growth 2": TEAL,
+          "Legacy": "oklch(0.70 0.12 280)",
+          "CFO": AMBER,
+          "Accelerate/CFO": AMBER,
+        };
+        function tierColor(t: string) {
+          return TIER_COLORS[t] ?? TEAL;
+        }
+
+        const totalActiveMrr = activeClients.reduce((s, c) => s + fmtN(c.monthly_amount), 0);
+
+        return (
+          <div className="space-y-6">
+            {/* KPI Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Active MRR</span>
+                  <DollarSign size={16} style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{fmtDFull(activeMrr)}</div>
+                <div className="text-xs text-muted-foreground">{activeClients.length} active clients</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Annual Run Rate</span>
+                  <TrendingUp size={16} style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{fmtDFull(annualRunRate)}</div>
+                <div className="text-xs text-muted-foreground">MRR × 12</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Avg LTV</span>
+                  <BarChart2 size={16} style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{fmtDFull(avgLtv)}</div>
+                <div className="text-xs text-muted-foreground">Across all tiers</div>
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Avg Margin</span>
+                  <Activity size={16} style={{ color: TEAL }} />
+                </div>
+                <div className="text-3xl font-bold text-foreground">{avgMargin.toFixed(1)}%</div>
+                <div className="text-xs text-muted-foreground">Active clients</div>
+              </div>
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard label="Net Margin" value={`${netMargin.toFixed(1)}%`} budget={`Target: ${targetMargin.toFixed(0)}%`} vsTarget={{ pct: marginVsTarget }} icon={BarChart2} />
-                <KpiCard label="Gross Profit" value={fmtDFull(totals.netProfit)} icon={TrendingUp} />
-                <KpiCard label="Expense Ratio" value={totals.revenue > 0 ? `${((totals.expenses / totals.revenue) * 100).toFixed(1)}%` : "—"} icon={TrendingDown} />
-                <KpiCard
-                  label="Revenue/Client"
-                  value={rosterData.filter((c: any) => c.status === "active").length > 0
-                    ? fmtDFull(totals.revenue / rosterData.filter((c: any) => c.status === "active").length)
-                    : "—"}
-                  icon={DollarSign}
-                />
+
+            {/* LTV by Package Tier */}
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-border">
+                <h3 className="font-bold text-foreground text-base">LTV by Package Tier</h3>
               </div>
-              {chartData.length > 1 && (
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <h3 className="font-semibold text-foreground mb-4">Net Profit Trend</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
-                      <Tooltip contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }} labelStyle={{ color: "oklch(0.85 0.008 240)" }} formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Line type="monotone" dataKey="Revenue" stroke={TEAL} strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="Expenses" stroke={RED} strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="Net Profit" stroke={GREEN} strokeWidth={2.5} dot={{ fill: GREEN, r: 3 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-border">
-                  <h3 className="font-semibold text-foreground">Monthly Profitability</h3>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left px-5 py-3 text-muted-foreground font-medium">Month</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Revenue</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Expenses</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Net Profit</th>
-                        <th className="text-right px-5 py-3 text-muted-foreground font-medium">Margin</th>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left px-5 py-3 text-muted-foreground font-medium">Tier</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Active</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Churned</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Avg Price/Mo</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Avg Tenure</th>
+                      <th className="text-right px-5 py-3 text-muted-foreground font-medium">Avg LTV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tierRows.map(r => (
+                      <tr key={r.tier} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-3 font-bold text-foreground">{r.tier}</td>
+                        <td className="px-4 py-3 text-right font-bold" style={{ color: TEAL }}>{r.active}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{r.churned}</td>
+                        <td className="px-4 py-3 text-right text-foreground">{fmtDFull(r.avgMonthly)}</td>
+                        <td className="px-4 py-3 text-right text-muted-foreground">{r.avgTenure.toFixed(1)} mo</td>
+                        <td className="px-5 py-3 text-right font-bold" style={{ color: TEAL }}>{fmtDFull(r.avgLtv)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {filteredFin.map(row => {
-                        const rev = fmtN(row.revenue);
-                        const exp = fmtN(row.expenses);
-                        const np = fmtN(row.net_profit);
-                        const margin = fmtN(row.net_profit_margin) * 100;
-                        return (
-                          <tr key={row.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                            <td className="px-5 py-3 font-medium text-foreground">{MONTHS_SHORT[(row.month ?? 1) - 1]} {row.year}</td>
-                            <td className="px-4 py-3 text-right text-foreground">{fmtDFull(rev)}</td>
-                            <td className="px-4 py-3 text-right text-foreground">{fmtDFull(exp)}</td>
-                            <td className="px-4 py-3 text-right font-bold" style={{ color: np >= 0 ? TEAL : RED }}>{fmtDFull(np)}</td>
-                            <td className="px-5 py-3 text-right font-semibold" style={{ color: margin >= 30 ? TEAL : margin >= 15 ? AMBER : RED }}>{margin.toFixed(1)}%</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Per-Client Breakdown */}
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-foreground text-base">Client Profitability Breakdown</h3>
                 </div>
               </div>
-            </>
-          )}
-        </div>
-      )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left px-5 py-3 text-muted-foreground font-medium">Client</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Tier</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Status</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Monthly</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Total Income</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Margin</th>
+                      <th className="text-right px-4 py-3 text-muted-foreground font-medium">Tenure</th>
+                      <th className="text-right px-5 py-3 text-muted-foreground font-medium">LTV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clientRows.map(c => {
+                      const monthly = fmtN(c.monthly_amount);
+                      const income = fmtN(c.total_income);
+                      const ltv = fmtN(c.ltv);
+                      const tenure = fmtN(c.tenure_months);
+                      // Margin = (income - estimated expenses) / income; approximate as net margin
+                      const marginPct = income > 0 ? (ltv / income) * 100 : 0;
+                      const isActive = c.status === "active";
+                      return (
+                        <tr key={c.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                          <td className="px-5 py-3 font-medium text-foreground">{c.client_name}</td>
+                          <td className="px-4 py-3 text-right">
+                            <span className="text-xs font-semibold" style={{ color: tierColor(c.package) }}>{c.package}</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <span
+                              className="text-xs font-semibold px-2 py-0.5 rounded-full border"
+                              style={isActive
+                                ? { color: TEAL, borderColor: TEAL, background: "oklch(0.75 0.15 192 / 0.12)" }
+                                : { color: RED, borderColor: RED, background: "oklch(0.62 0.22 25 / 0.12)" }
+                              }
+                            >
+                              {c.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right text-foreground">{monthly > 0 ? fmtDFull(monthly) : "$0"}</td>
+                          <td className="px-4 py-3 text-right text-foreground">{income > 0 ? fmtDFull(income) : "$0"}</td>
+                          <td className="px-4 py-3 text-right font-semibold" style={{ color: marginPct > 0 ? TEAL : RED }}>{marginPct.toFixed(1)}%</td>
+                          <td className="px-4 py-3 text-right text-muted-foreground">{tenure > 0 ? `${tenure} mo` : "—"}</td>
+                          <td className="px-5 py-3 text-right font-bold" style={{ color: ltv > 0 ? TEAL : RED }}>{fmtDFull(ltv)}</td>
+                        </tr>
+                      );
+                    })}
+                    {/* Total Active MRR footer */}
+                    <tr className="border-t-2 border-border bg-muted/10">
+                      <td className="px-5 py-3 font-bold text-foreground" colSpan={3}>Total (Active)</td>
+                      <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totalActiveMrr)}</td>
+                      <td colSpan={4} />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
