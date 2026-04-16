@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, LineChart, Line, Legend,
+  ResponsiveContainer, LineChart, Line, Legend, Cell,
 } from "recharts";
 import {
   DollarSign, TrendingDown, TrendingUp, BarChart2,
@@ -167,6 +167,24 @@ export default function Reports() {
   const profitVsBudget = (totals.budgetRevenue - totals.budgetExpenses) > 0
     ? ((totals.netProfit / (totals.budgetRevenue - totals.budgetExpenses)) - 1) * 100 : 0;
   const marginVsTarget = netMargin - targetMargin;
+
+  // Revenue vs Budget chart: always all active months, Actual=red for past months, Budget=grey for all
+  const revBudgetChartData = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const nowMonth = new Date().getMonth() + 1;
+    const dbByMonth: Record<number, typeof yearlyData[0]> = {};
+    yearlyData.forEach(r => { if (r.month) dbByMonth[r.month] = r; });
+    return activeMonths.map(m => {
+      const row = dbByMonth[m];
+      const isPast = (year < nowYear) || (year === nowYear && m < nowMonth);
+      return {
+        month: MONTHS_SHORT[m - 1],
+        Actual: isPast ? fmtN(row?.revenue) : 0,
+        Budget: fmtN(row?.budget_revenue),
+        isPast,
+      };
+    });
+  }, [yearlyData, activeMonths, year]);
 
   // Chart data for P&L
   const chartData = useMemo(() => filteredFin.map(row => ({
@@ -383,24 +401,34 @@ export default function Reports() {
                 </div>
               </div>
 
-              {/* Revenue vs Budget Chart */}
-              {chartData.length > 1 && (
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <h3 className="font-semibold text-foreground mb-4">Revenue vs Budget vs Expenses</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={chartData} barGap={4}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                      <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
-                      <Tooltip contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }} labelStyle={{ color: "oklch(0.85 0.008 240)" }} formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]} />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="Revenue" fill={TEAL} radius={[4,4,0,0]} />
-                      <Bar dataKey="Budget" fill="oklch(0.40 0.008 240)" radius={[4,4,0,0]} />
-                      <Bar dataKey="Expenses" fill={RED} radius={[4,4,0,0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
+              {/* Revenue vs Budget Chart — 12 months, red=Actual (past), grey=Budget (all) */}
+              <div className="bg-card border border-border rounded-xl p-5">
+                <h3 className="font-semibold text-foreground mb-4">Revenue vs Budget</h3>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={revBudgetChartData} barCategoryGap="20%" barGap={3}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
+                    <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
+                    <Tooltip
+                      contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                      labelStyle={{ color: "oklch(0.85 0.008 240)" }}
+                      formatter={(v: number, name: string) => [`$${v.toLocaleString()}`, name]}
+                    />
+                    <Legend
+                      wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
+                      formatter={(value) => (
+                        <span style={{ color: value === "Actual" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
+                      )}
+                    />
+                    <Bar dataKey="Actual" radius={[4,4,0,0]}>
+                      {revBudgetChartData.map((entry, index) => (
+                        <Cell key={`actual-${index}`} fill={entry.isPast && entry.Actual > 0 ? RED : "transparent"} />
+                      ))}
+                    </Bar>
+                    <Bar dataKey="Budget" fill="oklch(0.32 0.008 240)" radius={[4,4,0,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </>
           )}
         </div>
