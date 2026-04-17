@@ -26,6 +26,9 @@ import {
   getDocuments as getDocumentsDb,
   insertDocument as insertDocumentDb,
   deleteDocument as deleteDocumentDb,
+  getChatMessages,
+  insertChatMessage,
+  deleteChatMessage,
 } from "./db";
 import {
   getAllPortalTenants,
@@ -808,11 +811,135 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           ],
         });
         const rawContent = response.choices[0]?.message?.content;
-        const content = typeof rawContent === "string" ? rawContent : "Summary unavailable.";
+         const content = typeof rawContent === "string" ? rawContent : "Summary unavailable.";
         await upsertAiSummary(input.tenantSlug, input.year, input.month, content);
         return { success: true, content };
       }),
   }),
-});
 
+  // ─── Chat ─────────────────────────────────────────────────────────────────
+  chat: router({
+    // List recent messages for the tenant's room
+    list: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        limit: z.number().min(1).max(200).default(100),
+        beforeId: z.number().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        return getChatMessages(tenant.id, input.limit, input.beforeId);
+      }),
+
+    // Send a text message
+    send: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        body: z.string().min(1).max(4000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const now = new Date();
+        const msg = await insertChatMessage({
+          tenantId: tenant.id,
+          senderUserId: ctx.user.id ?? null,
+          senderName: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          senderRole: ctx.user.role === "admin" ? "admin" : "client",
+          body: input.body,
+          archiveYear: now.getFullYear(),
+          archiveMonth: now.getMonth() + 1,
+        });
+        return msg;
+      }),
+
+    // Upload a file attachment — saves to S3, archives to documents table, and records in chat
+    sendFile: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        body: z.string().optional(), // optional caption
+        fileBase64: z.string(), // base64-encoded file content
+        fileName: z.string(),
+        mimeType: z.string(),
+        fileSize: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+
+        const now = new Date();
+        const archiveYear = now.getFullYear();
+        const archiveMonth = now.getMonth() + 1;
+
+        // Upload file bytes to S3
+        const suffix = Math.random().toString(36).slice(2, 8);
+        const fileKey = `${slug}/chat/${archiveYear}-${String(archiveMonth).padStart(2, "0")}/${suffix}-${input.fileName}`;
+        const fileBuffer = Buffer.from(input.fileBase64, "base64");
+        const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
+
+        // Auto-archive to portal documents table
+        const docData = {
+          tenantId: tenant.id,
+          name: input.fileName,
+          description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
+          docType: "Chat Attachment",
+          fileKey,
+          fileUrl,
+          fileName: input.fileName,
+          fileSize: input.fileSize,
+          mimeType: input.mimeType,
+          year: archiveYear,
+          month: archiveMonth,
+          uploadedBy: ctx.user.id ?? null,
+        };
+        const insertedDoc = await insertDocumentDb(docData);
+
+        // Record in chat_messages
+        const msg = await insertChatMessage({
+          tenantId: tenant.id,
+          senderUserId: ctx.user.id ?? null,
+          senderName: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          senderRole: ctx.user.role === "admin" ? "admin" : "client",
+          body: input.body ?? null,
+          fileKey,
+          fileUrl,
+          fileName: input.fileName,
+          fileSize: input.fileSize,
+          mimeType: input.mimeType,
+          archiveYear,
+          archiveMonth,
+          portalDocumentId: insertedDoc?.id ?? null,
+        });
+
+        // Notify admin if sender is a client
+        if (ctx.user.role !== "admin") {
+          const { notifyOwner } = await import("./_core/notification");
+          await notifyOwner({
+            title: `New file shared in chat — ${slug}`,
+            content: `${ctx.user.name ?? ctx.user.email ?? "A client"} shared "${input.fileName}" in the ${slug} chat room. It has been auto-archived to the Portal vault under ${archiveMonth}/${archiveYear}.`,
+          }).catch(() => {}); // non-blocking
+        }
+
+        return msg;
+      }),
+
+    // Delete a message (admin or own message only)
+    delete: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        id: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        await deleteChatMessage(tenant.id, input.id);
+        return { success: true };
+      }),
+  }),
+});
 export type AppRouter = typeof appRouter;

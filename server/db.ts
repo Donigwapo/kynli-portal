@@ -4,6 +4,7 @@ import {
   InsertUser,
   aiSummaries,
   categoryIntelligence,
+  chatMessages,
   coachingItems,
   documents,
   financials,
@@ -160,8 +161,10 @@ export async function getDocuments(tenantId: number, year?: number, docType?: st
 
 export async function insertDocument(data: typeof documents.$inferInsert) {
   const db = await getDb();
-  if (!db) return;
-  await db.insert(documents).values(data);
+  if (!db) return null;
+  const result = await db.insert(documents).values(data);
+  const rows = await db.select().from(documents).where(eq(documents.id, (result as any).insertId)).limit(1);
+  return rows[0] ?? null;
 }
 
 export async function deleteDocument(id: number) {
@@ -396,4 +399,42 @@ export async function upsertCategoryIntelligenceDb(
     .insert(categoryIntelligence)
     .values(data)
     .onDuplicateKeyUpdate({ set: data });
+}
+
+// ─── Chat Messages ────────────────────────────────────────────────────────────
+export async function getChatMessages(tenantId: number, limit = 100, beforeId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions = [eq(chatMessages.tenantId, tenantId)];
+  if (beforeId !== undefined) {
+    const { lt } = await import("drizzle-orm");
+    conditions.push(lt(chatMessages.id, beforeId));
+  }
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(and(...conditions))
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(limit);
+  // Return oldest-first for display
+  return rows.reverse();
+}
+
+export async function insertChatMessage(data: typeof chatMessages.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  const result = await db.insert(chatMessages).values(data);
+  // Fetch the inserted row
+  const rows = await db
+    .select()
+    .from(chatMessages)
+    .where(eq(chatMessages.id, (result as any).insertId))
+    .limit(1);
+  return rows[0];
+}
+
+export async function deleteChatMessage(tenantId: number, id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(chatMessages).where(and(eq(chatMessages.id, id), eq(chatMessages.tenantId, tenantId)));
 }

@@ -244,6 +244,30 @@ export const salesTracker = mysqlTable("sales_tracker", {
 export type SalesTracker = typeof salesTracker.$inferSelect;
 export type InsertSalesTracker = typeof salesTracker.$inferInsert;
 
+// ─── Chat Messages ──────────────────────────────────────────────────────────
+export const chatMessages = mysqlTable("chat_messages", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull(),
+  senderUserId: int("senderUserId"), // FK → users.id (null = system)
+  senderName: varchar("senderName", { length: 255 }).notNull(),
+  senderRole: mysqlEnum("senderRole", ["admin", "client"]).default("client").notNull(),
+  body: text("body"), // null if message is file-only
+  fileKey: varchar("fileKey", { length: 512 }), // S3 key if file attached
+  fileUrl: text("fileUrl"), // public S3 URL
+  fileName: varchar("fileName", { length: 512 }),
+  fileSize: bigint("fileSize", { mode: "number" }),
+  mimeType: varchar("mimeType", { length: 128 }),
+  // Auto-archive fields: set from sent timestamp
+  archiveYear: int("archiveYear"),
+  archiveMonth: int("archiveMonth"), // 1–12
+  // If this message triggered a portal document save, link it
+  portalDocumentId: int("portalDocumentId"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type InsertChatMessage = typeof chatMessages.$inferInsert;
+
 // ─── AI Summaries ────────────────────────────────────────────────────────────
 export const aiSummaries = mysqlTable("ai_summaries", {
   id: int("id").autoincrement().primaryKey(),

@@ -7,6 +7,7 @@ import {
   FolderOpen,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   TrendingUp,
   Users,
   ShoppingCart,
@@ -33,6 +34,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "coaching",          label: "Coaching",         icon: <BookOpen size={16} />,        href: "/portal/coaching" },
   { id: "documents",         label: "Portal",           icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",          icon: <TrendingUp size={16} />,      href: "/portal/reports" },
+  { id: "chat",              label: "Chat",             icon: <MessageSquare size={16} />,   href: "/portal/chat" },
 ];
 
 const ADMIN_NAV: NavItem[] = [
