@@ -323,15 +323,25 @@ export default function Chat() {
           </div>
         ) : (
           messages.map((msg) => {
-            const isMine = msg.senderUserId === (user as any)?.id;
+            // Map Supabase snake_case fields → Msg camelCase shape
+            const normalized: Msg = {
+              id: msg.id,
+              senderName: msg.sender_name,
+              senderRole: msg.sender_role,
+              senderUserId: msg.sender_user_id,
+              body: msg.message,
+              fileUrl: msg.file_url,
+              fileName: msg.file_name,
+              fileSize: msg.file_size,
+              mimeType: msg.mime_type,
+              createdAt: msg.created_at,
+            };
+            const isMine = normalized.senderUserId === (user as any)?.id;
             const canDelete = isMine || user?.role === "admin";
             return (
               <MessageBubble
                 key={msg.id}
-                msg={{
-                  ...msg,
-                  createdAt: msg.createdAt instanceof Date ? msg.createdAt.toISOString() : String(msg.createdAt),
-                }}
+                msg={normalized}
                 isMine={isMine}
                 canDelete={canDelete}
                 onDelete={(id) => {

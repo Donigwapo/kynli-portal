@@ -26,9 +26,6 @@ import {
   getDocuments as getDocumentsDb,
   insertDocument as insertDocumentDb,
   deleteDocument as deleteDocumentDb,
-  getChatMessages,
-  insertChatMessage,
-  deleteChatMessage,
 } from "./db";
 import {
   getAllPortalTenants,
@@ -67,6 +64,9 @@ import {
   getCoachingNote,
   upsertCoachingNote,
   getLineItemsByYear,
+  getChatMessages,
+  insertChatMessageSupabase,
+  deleteChatMessageSupabase,
   type PortalUser,
 } from "./supabase";
 
@@ -830,7 +830,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        return getChatMessages(tenant.id, input.limit, input.beforeId);
+        return getChatMessages(slug, input.limit, input.beforeId);
       }),
 
     // Send a text message
@@ -844,14 +844,20 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
         const now = new Date();
-        const msg = await insertChatMessage({
-          tenantId: tenant.id,
-          senderUserId: ctx.user.id ?? null,
-          senderName: ctx.user.name ?? ctx.user.email ?? "Unknown",
-          senderRole: ctx.user.role === "admin" ? "admin" : "client",
-          body: input.body,
-          archiveYear: now.getFullYear(),
-          archiveMonth: now.getMonth() + 1,
+        const msg = await insertChatMessageSupabase(slug, {
+          sender_user_id: ctx.user.id ?? null,
+          sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          sender_role: ctx.user.role === "admin" ? "admin" : "client",
+          message: input.body,
+          read: false,
+          file_key: null,
+          file_url: null,
+          file_name: null,
+          file_size: null,
+          mime_type: null,
+          archive_year: now.getFullYear(),
+          archive_month: now.getMonth() + 1,
+          portal_document_id: null,
         });
         return msg;
       }),
@@ -898,21 +904,21 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         };
         const insertedDoc = await insertDocumentDb(docData);
 
-        // Record in chat_messages
-        const msg = await insertChatMessage({
-          tenantId: tenant.id,
-          senderUserId: ctx.user.id ?? null,
-          senderName: ctx.user.name ?? ctx.user.email ?? "Unknown",
-          senderRole: ctx.user.role === "admin" ? "admin" : "client",
-          body: input.body ?? null,
-          fileKey,
-          fileUrl,
-          fileName: input.fileName,
-          fileSize: input.fileSize,
-          mimeType: input.mimeType,
-          archiveYear,
-          archiveMonth,
-          portalDocumentId: insertedDoc?.id ?? null,
+        // Record in chat (Supabase)
+        const msg = await insertChatMessageSupabase(slug, {
+          sender_user_id: ctx.user.id ?? null,
+          sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          sender_role: ctx.user.role === "admin" ? "admin" : "client",
+          message: input.body ?? null,
+          read: false,
+          file_key: fileKey,
+          file_url: fileUrl,
+          file_name: input.fileName,
+          file_size: input.fileSize,
+          mime_type: input.mimeType,
+          archive_year: archiveYear,
+          archive_month: archiveMonth,
+          portal_document_id: insertedDoc?.id ?? null,
         });
 
         // Notify admin if sender is a client
@@ -937,7 +943,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        await deleteChatMessage(tenant.id, input.id);
+        await deleteChatMessageSupabase(slug, input.id);
         return { success: true };
       }),
   }),

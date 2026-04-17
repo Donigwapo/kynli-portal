@@ -120,10 +120,21 @@ export type SalesTracker = {
 
 export type ChatMessage = {
   id: number;
+  sender_user_id: number | null;
   sender_role: "client" | "admin";
   sender_name: string;
-  message: string;
+  message: string | null;       // null if file-only message
   read: boolean;
+  // File attachment fields (null if text-only)
+  file_key: string | null;
+  file_url: string | null;
+  file_name: string | null;
+  file_size: number | null;
+  mime_type: string | null;
+  // Auto-archive classification
+  archive_year: number | null;
+  archive_month: number | null; // 1–12
+  portal_document_id: number | null;
   created_at: string;
 };
 
@@ -429,18 +440,43 @@ export async function upsertSalesTracker(slug: string, data: Omit<SalesTracker, 
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
-export async function getChatMessages(slug: string, limit = 50): Promise<ChatMessage[]> {
-  const { data, error } = await supabase
+export async function getChatMessages(
+  slug: string,
+  limit = 100,
+  beforeId?: number
+): Promise<ChatMessage[]> {
+  let query = supabase
     .from(`${slug}_chat`)
     .select("*")
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(limit);
+  if (beforeId !== undefined) {
+    query = query.lt("id", beforeId);
+  }
+  const { data, error } = await query;
   if (error) return [];
-  return (data || []) as ChatMessage[];
+  // Return oldest-first for display
+  return ((data || []) as ChatMessage[]).reverse();
 }
 
-export async function insertChatMessage(slug: string, msg: Omit<ChatMessage, "id" | "created_at">): Promise<void> {
-  const { error } = await supabase.from(`${slug}_chat`).insert(msg);
+export async function insertChatMessageSupabase(
+  slug: string,
+  msg: Omit<ChatMessage, "id" | "created_at">
+): Promise<ChatMessage> {
+  const { data, error } = await supabase
+    .from(`${slug}_chat`)
+    .insert(msg)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as ChatMessage;
+}
+
+export async function deleteChatMessageSupabase(
+  slug: string,
+  id: number
+): Promise<void> {
+  const { error } = await supabase.from(`${slug}_chat`).delete().eq("id", id);
   if (error) throw new Error(error.message);
 }
 

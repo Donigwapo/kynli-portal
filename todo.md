@@ -132,3 +132,23 @@
 - [x] Frontend: AI analysis table — Category, What It Means, Focus Area (color-coded), Owner/Delegate badge, Hours %
 - [x] Frontend: Expert's Trap and Delegatable flags from AI
 - [x] Frontend: Team Member Hours horizontal bar chart (computed from logs, no AI needed)
+
+## Phase 16: Chat Section
+- [x] Add chat_messages table to drizzle schema (tenantId, senderUserId, senderName, senderRole, body, fileKey, fileUrl, fileName, fileSize, mimeType, archiveYear, archiveMonth, portalDocumentId)
+- [x] Push DB migration (pnpm db:push)
+- [x] Add getChatMessages, insertChatMessage, deleteChatMessage helpers to server/db.ts
+- [x] Fix insertDocument to return inserted row (needed for portalDocumentId linking)
+- [x] Add chat.list, chat.send, chat.sendFile, chat.delete tRPC procedures to routers.ts
+- [x] sendFile: uploads to S3, auto-archives to portal documents table (correct month/year), notifies admin
+- [x] Build Chat.tsx page: message bubbles (own=right/teal, others=left/dark), file attachments, image preview, polling every 3s
+- [x] Add Chat nav item to PortalLayout sidebar (MessageSquare icon)
+- [x] Register /portal/chat route in App.tsx
+- [x] TypeScript: 0 errors
+
+## Phase 17: Migrate Chat to Supabase
+- [x] Extend ChatMessage type in supabase.ts to include file fields (file_url, file_name, file_size, mime_type, archive_year, archive_month, portal_document_id, sender_user_id)
+- [x] Update getChatMessages, insertChatMessage, deleteChatMessage in supabase.ts to use {slug}_chat table with extended schema
+- [x] Add SQL DDL comment for extending existing {slug}_chat tables in Supabase (ALTER TABLE)
+- [x] Rewire chat.list, chat.send, chat.sendFile, chat.delete in routers.ts to use Supabase helpers
+- [x] Remove dependency on Drizzle chat helpers (getChatMessages/insertChatMessage/deleteChatMessage from db.ts) for chat procedures
+- [x] TypeScript: 0 errors
