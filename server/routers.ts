@@ -887,22 +887,26 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
         const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
 
-        // Auto-archive to portal documents table
+        // Auto-archive to portal documents table (Supabase {slug}_documents)
         const docData = {
-          tenantId: tenant.id,
           name: input.fileName,
           description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
-          docType: "Chat Attachment",
-          fileKey,
-          fileUrl,
-          fileName: input.fileName,
-          fileSize: input.fileSize,
-          mimeType: input.mimeType,
+          doc_type: "Chat Attachment",
+          file_key: fileKey,
+          file_url: fileUrl,
+          mime_type: input.mimeType,
           year: archiveYear,
-          month: archiveMonth,
-          uploadedBy: ctx.user.id ?? null,
         };
-        const insertedDoc = await insertDocumentDb(docData);
+        // Insert and retrieve the new document ID for cross-linking
+        let insertedDocId: number | null = null;
+        try {
+          const { data: docRows, error: docErr } = await supabase
+            .from(`${slug}_documents`)
+            .insert(docData)
+            .select("id")
+            .single();
+          if (!docErr && docRows) insertedDocId = docRows.id;
+        } catch (_) { /* non-blocking */ }
 
         // Record in chat (Supabase)
         const msg = await insertChatMessageSupabase(slug, {
@@ -918,7 +922,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           mime_type: input.mimeType,
           archive_year: archiveYear,
           archive_month: archiveMonth,
-          portal_document_id: insertedDoc?.id ?? null,
+          portal_document_id: insertedDocId,
         });
 
         // Notify admin if sender is a client
