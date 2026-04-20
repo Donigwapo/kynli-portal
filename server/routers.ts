@@ -66,6 +66,8 @@ import {
   upsertCoachingNote,
   getLineItemsByYear,
   getChatMessages,
+  getThreadReplies,
+  incrementReplyCount,
   insertChatMessageSupabase,
   deleteChatMessageSupabase,
   type PortalUser,
@@ -848,18 +850,30 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
   // ─── Chat ─────────────────────────────────────────────────────────────────
   chat: router({
-    // List recent messages for the tenant's room
+    // List recent messages for the tenant's room (top-level only)
     list: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
-        limit: z.number().min(1).max(200).default(100),
+        limit: z.number().min(1).max(500).default(200),
         beforeId: z.number().optional(),
+        search: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        return getChatMessages(slug, input.limit, input.beforeId);
+        return getChatMessages(slug, input.limit, input.beforeId, input.search);
+      }),
+
+    // Fetch all replies for a thread (parent message)
+    getThread: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        parentId: z.number(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getThreadReplies(slug, input.parentId);
       }),
 
     // Send a text message
@@ -887,8 +901,44 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           archive_year: now.getFullYear(),
           archive_month: now.getMonth() + 1,
           portal_document_id: null,
+          thread_id: null,
+          reply_count: 0,
         });
         return msg;
+      }),
+
+    // Reply to a thread (sets thread_id to parent message id)
+    sendReply: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        parentId: z.number(),
+        body: z.string().min(1).max(4000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const now = new Date();
+        const reply = await insertChatMessageSupabase(slug, {
+          sender_user_id: ctx.user.id ?? null,
+          sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          sender_role: ctx.user.role === "admin" ? "admin" : "client",
+          message: input.body,
+          read: false,
+          file_key: null,
+          file_url: null,
+          file_name: null,
+          file_size: null,
+          mime_type: null,
+          archive_year: now.getFullYear(),
+          archive_month: now.getMonth() + 1,
+          portal_document_id: null,
+          thread_id: input.parentId,
+          reply_count: 0,
+        });
+        // Increment reply count on parent (non-blocking)
+        await incrementReplyCount(slug, input.parentId).catch(() => {});
+        return reply;
       }),
 
     // Upload a file attachment — saves to S3, archives to documents table, and records in chat
@@ -952,6 +1002,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           archive_year: archiveYear,
           archive_month: archiveMonth,
           portal_document_id: insertedDocId,
+          thread_id: null,
+          reply_count: 0,
         });
 
         // Notify admin if sender is a client

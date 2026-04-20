@@ -161,3 +161,23 @@
 - [x] Add assertTierAccess() helper to routers.ts (admin bypass + tier check)
 - [x] Backend tier guards added: coaching.list/toggle/getNote/saveNote, kpi.get, time.getByYear, sales.get/getByYear, roster.list/add/update/delete
 - [x] TypeScript: 0 errors
+
+## Phase 19: Chat Upgrades — Persistent History, Search, Timestamps, Threaded Replies
+- [x] Supabase SQL migration: add thread_id (parent message FK), reply_count, search index to {slug}_chat tables
+- [x] Extend ChatMessage type with thread_id, reply_count fields
+- [x] Update getChatMessages to support search query filter (ilike on message field)
+- [x] Add chat.sendReply tRPC procedure (reply to a thread, sets thread_id)
+- [x] Add chat.getThread tRPC procedure (fetch all replies for a parent message)
+- [x] Fix persistent history: increase default limit to 200 (no polling during search), messages always fetched from Supabase
+- [x] Chat.tsx: Slack-style date dividers (Today / Yesterday / Apr 15, 2026)
+- [x] Chat.tsx: Full timestamp on hover (exact date + time tooltip on bubble header)
+- [x] Chat.tsx: Search bar in header — debounced server-side ilike search, result count shown
+- [x] Chat.tsx: Reply button on hover → opens thread panel (right-side panel)
+- [x] Chat.tsx: Thread panel shows parent message (quoted) + all replies, reply input at bottom, 3s polling
+- [x] Chat.tsx: Reply count badge on parent messages that have replies (clickable to open thread)
+- [x] TypeScript: 0 errors
+
+## Phase 19b: Chat — Load More Pagination
+- [x] Chat.tsx: "Load earlier messages" button at top of feed (fetches beforeId = oldest message id)
+- [x] Append older messages above current list without losing scroll position (scroll preserved via scrollHeight delta)
+- [x] TypeScript: 0 errors

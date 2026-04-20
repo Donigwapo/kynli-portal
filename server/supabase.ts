@@ -135,6 +135,9 @@ export type ChatMessage = {
   archive_year: number | null;
   archive_month: number | null; // 1–12
   portal_document_id: number | null;
+  // Thread support
+  thread_id: number | null;    // null = top-level message; set = reply to thread_id
+  reply_count: number;         // denormalized count of direct replies
   created_at: string;
 };
 
@@ -442,21 +445,57 @@ export async function upsertSalesTracker(slug: string, data: Omit<SalesTracker, 
 
 export async function getChatMessages(
   slug: string,
-  limit = 100,
-  beforeId?: number
+  limit = 200,
+  beforeId?: number,
+  search?: string
 ): Promise<ChatMessage[]> {
+  // Only fetch top-level messages (thread_id IS NULL) in the main feed
   let query = supabase
     .from(`${slug}_chat`)
     .select("*")
+    .is("thread_id", null)
     .order("created_at", { ascending: false })
     .limit(limit);
   if (beforeId !== undefined) {
     query = query.lt("id", beforeId);
   }
+  if (search && search.trim()) {
+    query = query.ilike("message", `%${search.trim()}%`);
+  }
   const { data, error } = await query;
   if (error) return [];
   // Return oldest-first for display
   return ((data || []) as ChatMessage[]).reverse();
+}
+
+export async function getThreadReplies(
+  slug: string,
+  parentId: number
+): Promise<ChatMessage[]> {
+  const { data, error } = await supabase
+    .from(`${slug}_chat`)
+    .select("*")
+    .eq("thread_id", parentId)
+    .order("created_at", { ascending: true });
+  if (error) return [];
+  return (data || []) as ChatMessage[];
+}
+
+export async function incrementReplyCount(
+  slug: string,
+  parentId: number
+): Promise<void> {
+  // Use raw SQL RPC or a simple read-increment-write (Supabase doesn't support atomic increment natively via JS client without RPC)
+  const { data: row } = await supabase
+    .from(`${slug}_chat`)
+    .select("reply_count")
+    .eq("id", parentId)
+    .single();
+  const current = (row as any)?.reply_count ?? 0;
+  await supabase
+    .from(`${slug}_chat`)
+    .update({ reply_count: current + 1 })
+    .eq("id", parentId);
 }
 
 export async function insertChatMessageSupabase(
