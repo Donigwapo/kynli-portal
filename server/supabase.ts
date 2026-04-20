@@ -164,6 +164,8 @@ export type Document = {
   doc_type: string;
   description: string | null;
   year: number | null;
+  month: number | null;
+  file_size: number | null;
   mime_type: string | null;
   created_at: string;
 };

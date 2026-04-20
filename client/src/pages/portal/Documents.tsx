@@ -11,6 +11,9 @@ import {
   Calendar,
   HardDrive,
   X,
+  Image as ImageIcon,
+  FileSpreadsheet,
+  File,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,8 +43,36 @@ const DOC_TYPE_COLORS: Record<string, string> = {
   Financials: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
   "Tax Returns": "bg-blue-500/20 text-blue-400 border-blue-500/30",
   "W-2 / 1099": "bg-purple-500/20 text-purple-400 border-purple-500/30",
+  "Chat Attachment": "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
   Other: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
 };
+
+function getMimeCategory(mimeType?: string | null): "image" | "pdf" | "spreadsheet" | "other" {
+  if (!mimeType) return "other";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType === "application/pdf") return "pdf";
+  if (
+    mimeType.includes("spreadsheet") ||
+    mimeType.includes("excel") ||
+    mimeType === "text/csv"
+  ) return "spreadsheet";
+  return "other";
+}
+
+function DocIcon({ mimeType }: { mimeType?: string | null }) {
+  const cat = getMimeCategory(mimeType);
+  if (cat === "image") return <ImageIcon className="w-5 h-5 text-cyan-400" />;
+  if (cat === "spreadsheet") return <FileSpreadsheet className="w-5 h-5 text-emerald-400" />;
+  if (cat === "pdf") return <FileText className="w-5 h-5 text-red-400" />;
+  return <File className="w-5 h-5 text-zinc-400" />;
+}
+
+function openButtonLabel(mimeType?: string | null): string {
+  const cat = getMimeCategory(mimeType);
+  if (cat === "image") return "Open Image";
+  if (cat === "pdf") return "Open PDF";
+  return "Open File";
+}
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -300,10 +331,26 @@ export default function Documents() {
                             key={doc.id}
                             className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors"
                           >
+                            {/* Image thumbnail (for image MIME types) */}
+                            {getMimeCategory((doc as any).mimeType) === "image" && (doc as any).fileUrl && (
+                              <a
+                                href={(doc as any).fileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-zinc-800"
+                              >
+                                <img
+                                  src={(doc as any).fileUrl}
+                                  alt={doc.name}
+                                  className="w-full h-32 object-cover hover:opacity-90 transition-opacity"
+                                />
+                              </a>
+                            )}
+
                             {/* Card top: icon + type badge */}
                             <div className="flex items-start justify-between">
-                              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                                <FileText className="w-5 h-5 text-emerald-400" />
+                              <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                                <DocIcon mimeType={(doc as any).mimeType} />
                               </div>
                               <Badge
                                 variant="outline"
@@ -354,7 +401,7 @@ export default function Documents() {
                                 onClick={() => window.open(doc.fileUrl, "_blank")}
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
-                                Open PDF
+                                {openButtonLabel((doc as any).mimeType)}
                               </Button>
                               <Button
                                 size="sm"

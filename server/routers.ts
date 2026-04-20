@@ -974,7 +974,9 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           file_key: fileKey,
           file_url: fileUrl,
           mime_type: input.mimeType,
+          file_size: input.fileSize,
           year: archiveYear,
+          month: archiveMonth,
         };
         // Insert and retrieve the new document ID for cross-linking
         let insertedDocId: number | null = null;
@@ -984,8 +986,14 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             .insert(docData)
             .select("id")
             .single();
-          if (!docErr && docRows) insertedDocId = docRows.id;
-        } catch (_) { /* non-blocking */ }
+          if (docErr) {
+            console.error(`[chat.sendFile] Failed to archive to ${slug}_documents:`, docErr.message);
+          } else if (docRows) {
+            insertedDocId = docRows.id;
+          }
+        } catch (archiveErr) {
+          console.error(`[chat.sendFile] Exception archiving doc:`, archiveErr);
+        }
 
         // Record in chat (Supabase)
         const msg = await insertChatMessageSupabase(slug, {

@@ -181,3 +181,15 @@
 - [x] Chat.tsx: "Load earlier messages" button at top of feed (fetches beforeId = oldest message id)
 - [x] Append older messages above current list without losing scroll position (scroll preserved via scrollHeight delta)
 - [x] TypeScript: 0 errors
+
+## Phase 20: Document Portal — MIME-aware display + chat archive fix
+- [x] Fix document card: show "Open Image" for images, "Open File" for non-PDF/non-image, "Open PDF" only for PDFs
+- [x] Show inline image thumbnail on document cards for image MIME types
+- [x] Add "Chat Attachment" type color (cyan) to DOC_TYPE_COLORS
+- [x] Fix chat.sendFile: docData was missing month and file_size — files were never saved to {slug}_documents
+- [x] Add month and file_size fields to Document type in supabase.ts
+- [x] Improve error logging in sendFile archive block (was silently swallowing errors)
+- [x] TypeScript: 0 errors
+
+## Phase 20b: Supabase — documents table migration
+- [ ] Run migration to add month and file_size columns to {slug}_documents tables
