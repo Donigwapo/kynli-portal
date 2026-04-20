@@ -16,25 +16,28 @@ import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
+import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 
 interface NavItem {
   id: string;
   label: string;
   icon: ReactNode;
   href: string;
+  /** key into TAB_ACCESS — omit for items always visible (admin nav) */
+  featureKey?: string;
 }
 
 // Nav order matches reference dashboard exactly
 const CLIENT_NAV: NavItem[] = [
-  { id: "overview",          label: "Overview",         icon: <LayoutDashboard size={16} />, href: "/portal" },
-  { id: "clients",           label: "Clients",          icon: <Users size={16} />,           href: "/portal/clients" },
-  { id: "sales_tracker",     label: "Sales Tracker",    icon: <ShoppingCart size={16} />,    href: "/portal/sales" },
-  { id: "financials",        label: "Financials",       icon: <BarChart3 size={16} />,       href: "/portal/financials" },
-  { id: "time_intelligence", label: "Time Intelligence",icon: <Clock size={16} />,           href: "/portal/time" },
-  { id: "coaching",          label: "Coaching",         icon: <BookOpen size={16} />,        href: "/portal/coaching" },
-  { id: "documents",         label: "Portal",           icon: <FolderOpen size={16} />,      href: "/portal/documents" },
-  { id: "reports",           label: "Reports",          icon: <TrendingUp size={16} />,      href: "/portal/reports" },
-  { id: "chat",              label: "Chat",             icon: <MessageSquare size={16} />,   href: "/portal/chat" },
+  { id: "overview",          label: "Overview",          featureKey: "overview",          icon: <LayoutDashboard size={16} />, href: "/portal" },
+  { id: "clients",           label: "Clients",           featureKey: "clients",           icon: <Users size={16} />,           href: "/portal/clients" },
+  { id: "sales_tracker",     label: "Sales Tracker",     featureKey: "sales_tracker",     icon: <ShoppingCart size={16} />,    href: "/portal/sales" },
+  { id: "financials",        label: "Financials",        featureKey: "financials",        icon: <BarChart3 size={16} />,       href: "/portal/financials" },
+  { id: "time_intelligence", label: "Time Intelligence", featureKey: "time_intelligence", icon: <Clock size={16} />,           href: "/portal/time" },
+  { id: "coaching",          label: "Coaching",          featureKey: "coaching",          icon: <BookOpen size={16} />,        href: "/portal/coaching" },
+  { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
+  { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
+  { id: "chat",              label: "Chat",              featureKey: "chat",              icon: <MessageSquare size={16} />,   href: "/portal/chat" },
 ];
 
 const ADMIN_NAV: NavItem[] = [
@@ -56,10 +59,20 @@ interface PortalLayoutProps {
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
-  const { impersonatingTenantSlug, setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
   const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !isAdmin && !impersonatingTenantSlug });
 
-  const navItems = isAdmin ? ADMIN_NAV : CLIENT_NAV;
+  // Determine the active tier: impersonated tenant uses effectiveTier set by admin;
+  // real client uses their own tenant's package_tier; admin sees all nav items.
+  const activeTier: PackageTier = isAdmin
+    ? "cfo" // admins see all items
+    : (impersonatingTenantSlug ? effectiveTier : (tenant?.package_tier ?? "legacy")) as PackageTier;
+
+  const navItems = isAdmin
+    ? ADMIN_NAV
+    : CLIENT_NAV.filter(item =>
+        !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy")
+      );
 
   const initials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)

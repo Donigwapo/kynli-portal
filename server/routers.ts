@@ -6,6 +6,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
+import { PACKAGE_TIERS, TAB_ACCESS, type PackageTier } from "../shared/tiers";
 import {
   getTeamMembersDb,
   addTeamMemberDb,
@@ -83,6 +84,22 @@ async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Pr
   if (user.role === "admin" && impersonateSlug) return impersonateSlug;
   if (user.tenant_slug) return user.tenant_slug;
   throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
+}
+
+/**
+ * Tier guard — throws FORBIDDEN if the resolved tenant's package tier
+ * does not include the given feature. Admins bypass all tier checks.
+ */
+async function assertTierAccess(user: PortalUser, featureKey: string, impersonateSlug?: string): Promise<void> {
+  if (user.role === "admin") return; // admins always have access
+  const slug = await resolveTenantSlug(user, impersonateSlug);
+  const tenant = await getTenantBySlug(slug);
+  if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+  const tenantTierIdx = PACKAGE_TIERS.indexOf(tenant.package_tier as PackageTier);
+  const requiredTierIdx = PACKAGE_TIERS.indexOf((TAB_ACCESS[featureKey] ?? "legacy") as PackageTier);
+  if (tenantTierIdx < requiredTierIdx) {
+    throw new TRPCError({ code: "FORBIDDEN", message: `This feature requires the ${TAB_ACCESS[featureKey]} tier or above.` });
+  }
 }
 
 // ─── AI Summary helpers ───────────────────────────────────────────────────────
@@ -304,6 +321,7 @@ export const appRouter = router({
     list: protectedProcedure
       .input(z.object({ year: z.number().optional(), quarter: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getCoachingItems(slug, input.year, input.quarter);
       }),
@@ -322,6 +340,7 @@ export const appRouter = router({
     toggle: protectedProcedure
       .input(z.object({ id: z.number(), completed: z.boolean(), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         await toggleCoachingItem(slug, input.id, input.completed);
         return { success: true };
@@ -335,12 +354,14 @@ export const appRouter = router({
     getNote: protectedProcedure
       .input(z.object({ year: z.number(), quarter: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getCoachingNote(slug, input.year, input.quarter);
       }),
     saveNote: protectedProcedure
       .input(z.object({ year: z.number(), quarter: z.number(), content: z.string(), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         await upsertCoachingNote(slug, input.year, input.quarter, input.content);
         return { success: true };
@@ -351,6 +372,7 @@ export const appRouter = router({
     get: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "kpi_dashboard", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getKpiMetrics(slug, input.year);
       }),
@@ -379,6 +401,7 @@ export const appRouter = router({
       .input(z.object({ year: z.number() }))
       .query(async ({ ctx, input }) => {
         if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await assertTierAccess(ctx.user, "time_intelligence");
         return getTimeLogsByYearDb(ctx.user.id, input.year);
       }),
     add: protectedProcedure
@@ -682,12 +705,14 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "sales_tracker", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getSalesTracker(slug, input.year, input.month);
       }),
     getByYear: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "sales_tracker", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getSalesTrackerByYear(slug, input.year);
       }),
@@ -711,6 +736,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     list: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getClientRoster(slug);
       }),
@@ -728,6 +754,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         notes: z.string().nullable().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         // Resolve tenant slug: admin can pass explicit slug, regular users use their own
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         await upsertClientRosterEntry(slug, {
@@ -758,6 +785,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         notes: z.string().nullable().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const { id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, notes, package: pkg, status } = input;
         await supabase
@@ -779,6 +807,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     delete: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional(), id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         await deleteClientRosterEntry(slug, input.id);
         return { success: true };

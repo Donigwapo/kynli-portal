@@ -21,16 +21,23 @@ import TimeIntelligence from "./pages/portal/TimeIntelligence";
 import SalesTracker from "./pages/portal/SalesTracker";
 import Clients from "./pages/portal/Clients";
 import Chat from "./pages/portal/Chat";
+import TierGate from "./components/TierGate";
 
 // Admin pages
 import AdminClients from "./pages/admin/AdminClients";
 import AdminDataEntry from "./pages/admin/AdminDataEntry";
 
-function PortalRoute({ component: Component }: { component: React.ComponentType }) {
+function PortalRoute({ component: Component, featureKey }: { component: React.ComponentType; featureKey?: string }) {
   return (
     <RouteGuard>
       <PortalLayout>
-        <Component />
+        {featureKey ? (
+          <TierGate featureKey={featureKey}>
+            <Component />
+          </TierGate>
+        ) : (
+          <Component />
+        )}
       </PortalLayout>
     </RouteGuard>
   );
@@ -53,17 +60,17 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/login" component={Login} />
 
-      {/* Client Portal — protected */}
-      <Route path="/portal" component={() => <PortalRoute component={Overview} />} />
-      <Route path="/portal/clients" component={() => <PortalRoute component={Clients} />} />
-      <Route path="/portal/financials" component={() => <PortalRoute component={Financials} />} />
-      <Route path="/portal/reports" component={() => <PortalRoute component={Reports} />} />
-      <Route path="/portal/documents" component={() => <PortalRoute component={Documents} />} />
-      <Route path="/portal/coaching" component={() => <PortalRoute component={Coaching} />} />
-      <Route path="/portal/kpi" component={() => <PortalRoute component={KpiDashboard} />} />
-      <Route path="/portal/time" component={() => <PortalRoute component={TimeIntelligence} />} />
-      <Route path="/portal/sales" component={() => <PortalRoute component={SalesTracker} />} />
-      <Route path="/portal/chat" component={() => <PortalRoute component={Chat} />} />
+      {/* Client Portal — protected, tier-gated */}
+      <Route path="/portal"              component={() => <PortalRoute component={Overview}         featureKey="overview" />} />
+      <Route path="/portal/clients"      component={() => <PortalRoute component={Clients}          featureKey="clients" />} />
+      <Route path="/portal/financials"   component={() => <PortalRoute component={Financials}       featureKey="financials" />} />
+      <Route path="/portal/reports"      component={() => <PortalRoute component={Reports}          featureKey="reports" />} />
+      <Route path="/portal/documents"    component={() => <PortalRoute component={Documents}        featureKey="documents" />} />
+      <Route path="/portal/coaching"     component={() => <PortalRoute component={Coaching}         featureKey="coaching" />} />
+      <Route path="/portal/kpi"          component={() => <PortalRoute component={KpiDashboard}     featureKey="kpi_dashboard" />} />
+      <Route path="/portal/time"         component={() => <PortalRoute component={TimeIntelligence} featureKey="time_intelligence" />} />
+      <Route path="/portal/sales"        component={() => <PortalRoute component={SalesTracker}     featureKey="sales_tracker" />} />
+      <Route path="/portal/chat"         component={() => <PortalRoute component={Chat}             featureKey="chat" />} />
 
       {/* Admin Portal — protected + admin-only */}
       <Route path="/admin" component={() => <AdminRoute component={AdminClients} />} />

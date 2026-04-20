@@ -152,3 +152,12 @@
 - [x] Rewire chat.list, chat.send, chat.sendFile, chat.delete in routers.ts to use Supabase helpers
 - [x] Remove dependency on Drizzle chat helpers (getChatMessages/insertChatMessage/deleteChatMessage from db.ts) for chat procedures
 - [x] TypeScript: 0 errors
+
+## Phase 18: Package Tier Feature Gating
+- [x] Create shared/tiers.ts with PACKAGE_TIERS, TAB_ACCESS feature matrix, PackageTier type, hasAccess() helper
+- [x] Update PortalLayout sidebar nav to hide/show items based on user's packageTier
+- [x] Add TierGate route guard component that shows upgrade message for unauthorized tier access
+- [x] Wrap all restricted routes in App.tsx with TierGate using featureKey props
+- [x] Add assertTierAccess() helper to routers.ts (admin bypass + tier check)
+- [x] Backend tier guards added: coaching.list/toggle/getNote/saveNote, kpi.get, time.getByYear, sales.get/getByYear, roster.list/add/update/delete
+- [x] TypeScript: 0 errors

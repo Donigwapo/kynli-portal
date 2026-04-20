@@ -31,16 +31,24 @@ export function hasAccess(tenantTier: PackageTier, requiredTier: PackageTier): b
   return PACKAGE_TIERS.indexOf(tenantTier) >= PACKAGE_TIERS.indexOf(requiredTier);
 }
 
-/** Tab visibility rules — minimum tier required per tab */
+/** Tab visibility rules — minimum tier required per tab.
+ * Tiers in order: legacy < momentum < growth_1 < growth_2 < cfo
+ * Confirmed feature matrix:
+ *   legacy:    overview, financials, documents, chat
+ *   momentum:  + sales_tracker
+ *   growth_1:  + coaching, time_intelligence, reports
+ *   growth_2:  + clients, kpi_dashboard
+ *   cfo:       all
+ */
 export const TAB_ACCESS: Record<string, PackageTier> = {
-  overview: "legacy",
-  clients: "legacy",
-  financials: "legacy",
-  documents: "legacy",
-  reports: "legacy",
-  ai_summaries: "momentum",
-  coaching: "growth_1",
-  kpi_dashboard: "growth_2",
-  time_intelligence: "cfo",
-  sales_tracker: "cfo",
+  overview:          "legacy",
+  financials:        "legacy",
+  documents:         "legacy",
+  chat:              "legacy",
+  sales_tracker:     "momentum",
+  coaching:          "growth_1",
+  time_intelligence: "growth_1",
+  reports:           "growth_1",
+  clients:           "growth_2",
+  kpi_dashboard:     "growth_2",
 };
