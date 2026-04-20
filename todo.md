@@ -192,4 +192,15 @@
 - [x] TypeScript: 0 errors
 
 ## Phase 20b: Supabase — documents table migration
-- [ ] Run migration to add month and file_size columns to {slug}_documents tables
+- [x] Migration SQL written: supabase-migrations/extend_documents_table.sql (not required anymore — archive now writes to MySQL)
+
+## Phase 20c: Fix chat.sendFile archive target
+- [x] Root cause: sendFile was writing to Supabase {slug}_documents, but Document Portal reads from MySQL documents table
+- [x] Fixed: sendFile now calls insertDocumentDb() to write to MySQL documents table (same store portal reads)
+- [x] tenant.id used as tenantId (correct FK) instead of ctx.user.id
+- [x] TypeScript: 0 errors
+
+## Phase 20d: Chat archive UX — accurate vault confirmation
+- [x] Add portalDocId to Msg type and normalizeMsg (maps portal_document_id from Supabase chat row)
+- [x] "Saved to Portal vault" badge now only renders when msg.portalDocId is non-null (archive confirmed)
+- [x] TypeScript: 0 errors

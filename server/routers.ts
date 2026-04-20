@@ -966,33 +966,25 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
         const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
 
-        // Auto-archive to portal documents table (Supabase {slug}_documents)
-        const docData = {
-          name: input.fileName,
-          description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
-          doc_type: "Chat Attachment",
-          file_key: fileKey,
-          file_url: fileUrl,
-          mime_type: input.mimeType,
-          file_size: input.fileSize,
-          year: archiveYear,
-          month: archiveMonth,
-        };
-        // Insert and retrieve the new document ID for cross-linking
+        // Auto-archive to MySQL documents table (same store the Document Portal reads from)
         let insertedDocId: number | null = null;
         try {
-          const { data: docRows, error: docErr } = await supabase
-            .from(`${slug}_documents`)
-            .insert(docData)
-            .select("id")
-            .single();
-          if (docErr) {
-            console.error(`[chat.sendFile] Failed to archive to ${slug}_documents:`, docErr.message);
-          } else if (docRows) {
-            insertedDocId = docRows.id;
-          }
+          const inserted = await insertDocumentDb({
+            tenantId: tenant.id,
+            name: input.fileName,
+            description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
+            docType: "Chat Attachment",
+            fileKey,
+            fileUrl,
+            fileName: input.fileName,
+            fileSize: input.fileSize,
+            mimeType: input.mimeType,
+            year: archiveYear,
+            month: archiveMonth,
+          });
+          if (inserted) insertedDocId = inserted.id;
         } catch (archiveErr) {
-          console.error(`[chat.sendFile] Exception archiving doc:`, archiveErr);
+          console.error(`[chat.sendFile] Exception archiving doc to MySQL:`, archiveErr);
         }
 
         // Record in chat (Supabase)

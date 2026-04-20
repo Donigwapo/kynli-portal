@@ -96,6 +96,7 @@ type Msg = {
   mimeType?: string | null;
   replyCount: number;
   threadId?: number | null;
+  portalDocId?: number | null; // set when archive to MySQL documents succeeded
   createdAt: string | Date;
 };
 
@@ -112,6 +113,7 @@ function normalizeMsg(raw: any): Msg {
     mimeType: raw.mime_type,
     replyCount: raw.reply_count ?? 0,
     threadId: raw.thread_id ?? null,
+    portalDocId: raw.portal_document_id ?? null,
     createdAt: raw.created_at,
   };
 }
@@ -208,8 +210,8 @@ function MessageBubble({
           {/* Text body */}
           {msg.body && <p className="whitespace-pre-wrap break-words">{msg.body}</p>}
 
-          {/* File archive note */}
-          {msg.fileUrl && (
+          {/* File archive note — only show when portal_document_id confirms archive succeeded */}
+          {msg.fileUrl && msg.portalDocId && (
             <p className={`text-[10px] mt-1 ${isMine ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
               ✓ Saved to Portal vault
             </p>
