@@ -204,3 +204,17 @@
 - [x] Add portalDocId to Msg type and normalizeMsg (maps portal_document_id from Supabase chat row)
 - [x] "Saved to Portal vault" badge now only renders when msg.portalDocId is non-null (archive confirmed)
 - [x] TypeScript: 0 errors
+
+## Phase 21: Migrate all document storage to Supabase {slug}_documents
+- [x] Write Supabase SQL migration: supabase-migrations/create_documents_table.sql (template, replace {slug})
+- [x] Updated Document type in supabase.ts: added file_name, uploaded_by_name; year is now non-nullable
+- [x] getDocuments() now supports year, month, docType filters
+- [x] insertDocument() now returns the inserted Document row
+- [x] documents.list procedure: reads from Supabase {slug}_documents via getDocuments()
+- [x] documents.upload procedure: writes to Supabase {slug}_documents via insertDocument()
+- [x] documents.delete procedure: deletes from Supabase {slug}_documents via deleteDocument(); now requires tenantSlug param
+- [x] chat.sendFile: archives to Supabase {slug}_documents via insertDocument()
+- [x] Documents.tsx: all field refs updated to snake_case (doc_type, file_url, file_name, file_size, mime_type)
+- [x] Documents.tsx: grouping logic uses doc.month directly (no more cast)
+- [x] Documents.tsx: delete mutation passes tenantSlug from user session
+- [x] TypeScript: 0 errors

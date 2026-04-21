@@ -127,6 +127,7 @@ export default function Documents() {
     year: selectedYear !== "All Years" ? Number(selectedYear) : undefined,
     month: selectedMonth !== "All Months" ? Number(selectedMonth) : undefined,
     docType: selectedType !== "All Types" ? selectedType : undefined,
+    tenantSlug: undefined, // resolved server-side from session
   });
 
   const uploadMutation = trpc.documents.upload.useMutation({
@@ -194,7 +195,7 @@ export default function Documents() {
   type DocRow = (typeof docs)[0];
   const docsByYearMonth = docs.reduce<Record<number, Record<number, DocRow[]>>>((acc, doc) => {
     const y = doc.year ?? 0;
-    const m = (doc as DocRow & { month?: number | null }).month ?? 0;
+    const m = doc.month ?? 0;
     if (!acc[y]) acc[y] = {};
     if (!acc[y][m]) acc[y][m] = [];
     acc[y][m].push(doc);
@@ -332,15 +333,15 @@ export default function Documents() {
                             className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors"
                           >
                             {/* Image thumbnail (for image MIME types) */}
-                            {getMimeCategory((doc as any).mimeType) === "image" && (doc as any).fileUrl && (
+                            {getMimeCategory(doc.mime_type) === "image" && doc.file_url && (
                               <a
-                                href={(doc as any).fileUrl}
+                                href={doc.file_url}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="block -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-zinc-800"
                               >
                                 <img
-                                  src={(doc as any).fileUrl}
+                                  src={doc.file_url}
                                   alt={doc.name}
                                   className="w-full h-32 object-cover hover:opacity-90 transition-opacity"
                                 />
@@ -350,15 +351,15 @@ export default function Documents() {
                             {/* Card top: icon + type badge */}
                             <div className="flex items-start justify-between">
                               <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center">
-                                <DocIcon mimeType={(doc as any).mimeType} />
+                                <DocIcon mimeType={doc.mime_type} />
                               </div>
                               <Badge
                                 variant="outline"
                                 className={`text-xs font-medium ${
-                                  DOC_TYPE_COLORS[doc.docType ?? "Other"] ?? DOC_TYPE_COLORS.Other
+                                  DOC_TYPE_COLORS[doc.doc_type ?? "Other"] ?? DOC_TYPE_COLORS.Other
                                 }`}
                               >
-                                {doc.docType}
+                                {doc.doc_type}
                               </Badge>
                             </div>
 
@@ -378,17 +379,17 @@ export default function Documents() {
                               <span>
                                 {month > 0 ? `${MONTH_NAMES[month - 1].slice(0, 3)} ` : ""}{year}
                               </span>
-                              {doc.fileSize != null && doc.fileSize > 0 && (
+                              {doc.file_size != null && doc.file_size > 0 && (
                                 <>
                                   <span className="text-zinc-700">·</span>
                                   <HardDrive className="w-3 h-3 shrink-0" />
-                                  <span>{formatBytes(doc.fileSize)}</span>
+                                  <span>{formatBytes(doc.file_size)}</span>
                                 </>
                               )}
-                              {doc.fileName && (
+                              {doc.file_name && (
                                 <>
                                   <span className="text-zinc-700">·</span>
-                                  <span className="truncate">{truncateFileName(doc.fileName)}</span>
+                                  <span className="truncate">{truncateFileName(doc.file_name)}</span>
                                 </>
                               )}
                             </div>
@@ -398,10 +399,9 @@ export default function Documents() {
                               <Button
                                 size="sm"
                                 className="flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 gap-1.5 text-xs"
-                                onClick={() => window.open(doc.fileUrl, "_blank")}
-                              >
+                                                        onClick={() => window.open(doc.file_url, "_blank")}>
                                 <ExternalLink className="w-3.5 h-3.5" />
-                                {openButtonLabel((doc as any).mimeType)}
+                                {openButtonLabel(doc.mime_type)}
                               </Button>
                               <Button
                                 size="sm"
@@ -409,8 +409,8 @@ export default function Documents() {
                                 className="px-2.5 border-zinc-700 hover:bg-zinc-800"
                                 onClick={() => {
                                   const a = document.createElement("a");
-                                  a.href = doc.fileUrl;
-                                  a.download = doc.fileName || doc.name;
+                                  a.href = doc.file_url;
+                                  a.download = doc.file_name || doc.name;
                                   a.click();
                                 }}
                               >

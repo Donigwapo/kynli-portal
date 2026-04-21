@@ -159,14 +159,16 @@ export type ClientRosterEntry = {
 export type Document = {
   id: number;
   name: string;
-  file_url: string;
-  file_key: string;
-  doc_type: string;
   description: string | null;
-  year: number | null;
-  month: number | null;
+  doc_type: string;
+  file_key: string;
+  file_url: string;
+  file_name: string | null;
   file_size: number | null;
   mime_type: string | null;
+  year: number;
+  month: number | null;       // 1–12
+  uploaded_by_name: string | null;
   created_at: string;
 };
 
@@ -316,22 +318,38 @@ export async function insertLineItem(slug: string, item: Omit<LineItem, "id" | "
 
 // ─── Documents ────────────────────────────────────────────────────────────────
 
-export async function getDocuments(slug: string, year?: number): Promise<Document[]> {
+export async function getDocuments(
+  slug: string,
+  year?: number,
+  month?: number,
+  docType?: string,
+): Promise<Document[]> {
   let query = supabase
     .from(`${slug}_documents`)
     .select("*")
     .order("created_at", { ascending: false });
-  if (year !== undefined) {
-    query = query.eq("year", year);
-  }
+  if (year !== undefined) query = query.eq("year", year);
+  if (month !== undefined) query = query.eq("month", month);
+  if (docType && docType !== "All Types") query = query.eq("doc_type", docType);
   const { data, error } = await query;
-  if (error) return [];
+  if (error) {
+    console.error(`[getDocuments] ${slug}:`, error.message);
+    return [];
+  }
   return (data || []) as Document[];
 }
 
-export async function insertDocument(slug: string, doc: Omit<Document, "id" | "created_at">): Promise<void> {
-  const { error } = await supabase.from(`${slug}_documents`).insert(doc);
+export async function insertDocument(
+  slug: string,
+  doc: Omit<Document, "id" | "created_at">,
+): Promise<Document> {
+  const { data, error } = await supabase
+    .from(`${slug}_documents`)
+    .insert(doc)
+    .select()
+    .single();
   if (error) throw new Error(error.message);
+  return data as Document;
 }
 
 export async function deleteDocument(slug: string, id: number): Promise<void> {

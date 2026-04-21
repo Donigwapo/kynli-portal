@@ -24,15 +24,14 @@ import {
   getTimeLogsByYear as getTimeLogsByYearDb,
   insertTimeLog as insertTimeLogDb,
   deleteTimeLog as deleteTimeLogDb,
-  getDocuments as getDocumentsDb,
-  insertDocument as insertDocumentDb,
-  deleteDocument as deleteDocumentDb,
 } from "./db";
 import {
   getAllPortalTenants,
   getClientRoster,
   getCoachingItems,
   getDocuments,
+  insertDocument,
+  deleteDocument,
   getFinancials,
   getKpiMetrics,
   getLineItems,
@@ -50,13 +49,11 @@ import {
   upsertClientRosterEntry,
   deleteClientRosterEntry,
   insertCoachingItem,
-  insertDocument,
   insertLineItem,
   insertTimeLog,
   supabase,
   toggleCoachingItem,
   deleteCoachingItem,
-  deleteDocument,
   upsertFinancial,
   updateFinancialSummary,
   upsertKpiMetric,
@@ -251,9 +248,11 @@ export const appRouter = router({
         year: z.number().optional(),
         month: z.number().optional(),
         docType: z.string().optional(),
+        tenantSlug: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
-        return getDocumentsDb(ctx.user.id, input.year, input.docType, input.month);
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        return getDocuments(slug, input.year, input.month, input.docType);
       }),
     upload: protectedProcedure
       .input(z.object({
@@ -296,25 +295,26 @@ export const appRouter = router({
           fileUrl = urlData.publicUrl;
           fileKey = supabasePath;
         }
-        await insertDocumentDb({
-          tenantId: ctx.user.id,
+        await insertDocument(tenantSlug, {
           name: input.name,
           description: input.description || null,
-          docType: input.docType,
-          fileKey,
-          fileUrl,
-          fileName: input.fileName || null,
-          fileSize: input.fileSize || null,
-          mimeType: input.mimeType,
+          doc_type: input.docType,
+          file_key: fileKey,
+          file_url: fileUrl,
+          file_name: input.fileName || null,
+          file_size: input.fileSize || null,
+          mime_type: input.mimeType,
           year: input.year,
           month: input.month ?? null,
+          uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
         });
         return { success: true, url: fileUrl };
       }),
     delete: adminProcedure
-      .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteDocumentDb(input.id);
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        await deleteDocument(slug, input.id);
         return { success: true };
       }),
   }),
@@ -966,25 +966,25 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
         const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
 
-        // Auto-archive to MySQL documents table (same store the Document Portal reads from)
+        // Auto-archive to Supabase {slug}_documents (same store the Document Portal reads from)
         let insertedDocId: number | null = null;
         try {
-          const inserted = await insertDocumentDb({
-            tenantId: tenant.id,
+          const inserted = await insertDocument(slug, {
             name: input.fileName,
             description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
-            docType: "Chat Attachment",
-            fileKey,
-            fileUrl,
-            fileName: input.fileName,
-            fileSize: input.fileSize,
-            mimeType: input.mimeType,
+            doc_type: "Chat Attachment",
+            file_key: fileKey,
+            file_url: fileUrl,
+            file_name: input.fileName,
+            file_size: input.fileSize,
+            mime_type: input.mimeType,
             year: archiveYear,
             month: archiveMonth,
+            uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
           });
           if (inserted) insertedDocId = inserted.id;
         } catch (archiveErr) {
-          console.error(`[chat.sendFile] Exception archiving doc to MySQL:`, archiveErr);
+          console.error(`[chat.sendFile] Exception archiving doc to Supabase:`, archiveErr);
         }
 
         // Record in chat (Supabase)
