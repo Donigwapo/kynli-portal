@@ -58,6 +58,7 @@ import {
   updateFinancialSummary,
   upsertKpiMetric,
   upsertPortalTenant,
+  provisionTenant,
   upsertSalesTracker,
   getCoachingNote,
   upsertCoachingNote,
@@ -167,7 +168,15 @@ export const appRouter = router({
           is_active: input.isActive ?? true,
           ghl_notes: input.ghlNotes,
         });
-        return { success: true };
+        // Auto-provision all Supabase tables for this tenant
+        const provision = await provisionTenant(input.slug);
+        return { success: true, provision };
+      }),
+    provision: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        const result = await provisionTenant(input.slug);
+        return result;
       }),
     updateGhlNotes: adminProcedure
       .input(z.object({ slug: z.string(), notes: z.string() }))

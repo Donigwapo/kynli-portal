@@ -218,3 +218,32 @@
 - [x] Documents.tsx: grouping logic uses doc.month directly (no more cast)
 - [x] Documents.tsx: delete mutation passes tenantSlug from user session
 - [x] TypeScript: 0 errors
+
+## Phase 22: Admin Portal — Automated Provisioning + Full Admin UI
+
+### 22a: Automated Tenant Provisioning
+- [x] provisionTenant(slug) helper in supabase.ts: creates all required {slug}_* tables via raw SQL using service role key
+- [x] tenant.upsert procedure calls provisionTenant(slug) after upsert, returns provisioning status
+- [x] AddClientDialog: shows provisioning result (success/error) after client creation
+- [x] tenant.provision procedure (admin-only) for re-provisioning existing clients
+
+### 22b: Admin Client Detail Page
+- [x] AdminClientDetail.tsx: full client profile page (company, contact, email, tier, status, slug, created date)
+- [x] Edit client fields inline: company name, contact, email, package tier, active status
+- [x] Re-provision button: runs provisionTenant() for missing tables
+- [x] Route /admin/clients/:slug registered in App.tsx
+- [x] "Details" button on each client row in AdminClients.tsx
+
+### 22c: Admin Chat
+- [x] AdminChat.tsx: admin selects any client from sidebar, joins their chat room
+- [x] Full Slack-style UI: date dividers, timestamps, thread replies, search, file upload
+- [x] Route /admin/chat registered in App.tsx and added to admin sidebar
+
+### 22d: Admin Dashboard
+- [x] AdminDashboard.tsx: stats cards (total, active, inactive, CFO count), tier breakdown bars, quick actions, recent clients list
+- [x] Route /admin (default) now shows AdminDashboard
+
+### 22e: Admin Layout Improvements
+- [x] ADMIN_NAV updated: Dashboard, Clients, Chat, Data Entry
+- [x] /admin default route shows AdminDashboard
+- [x] TypeScript: 0 errors

@@ -26,6 +26,9 @@ import TierGate from "./components/TierGate";
 // Admin pages
 import AdminClients from "./pages/admin/AdminClients";
 import AdminDataEntry from "./pages/admin/AdminDataEntry";
+import AdminClientDetail from "./pages/admin/AdminClientDetail";
+import AdminChat from "./pages/admin/AdminChat";
+import AdminDashboard from "./pages/admin/AdminDashboard";
 
 function PortalRoute({ component: Component, featureKey }: { component: React.ComponentType; featureKey?: string }) {
   return (
@@ -73,7 +76,10 @@ function Router() {
       <Route path="/portal/chat"         component={() => <PortalRoute component={Chat}             featureKey="chat" />} />
 
       {/* Admin Portal — protected + admin-only */}
-      <Route path="/admin" component={() => <AdminRoute component={AdminClients} />} />
+      <Route path="/admin" component={() => <AdminRoute component={AdminDashboard} />} />
+      <Route path="/admin/clients" component={() => <AdminRoute component={AdminClients} />} />
+      <Route path="/admin/clients/:slug" component={() => <AdminRoute component={AdminClientDetail} />} />
+      <Route path="/admin/chat" component={() => <AdminRoute component={AdminChat} />} />
       <Route path="/admin/data-entry" component={() => <AdminRoute component={AdminDataEntry} />} />
 
       {/* 404 */}

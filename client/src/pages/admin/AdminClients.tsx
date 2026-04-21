@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Eye, Plus, Search, StickyNote, Users } from "lucide-react";
+import { Eye, ExternalLink, Plus, Search, StickyNote, Users } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { PACKAGE_COLORS, PACKAGE_LABELS, PackageTier } from "../../../../shared/tiers";
@@ -164,6 +164,15 @@ export default function AdminClients() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            className="h-8 px-2 text-xs text-muted-foreground hover:text-cyan-400 gap-1"
+                            onClick={() => navigate(`/admin/clients/${tenant.slug}`)}
+                          >
+                            <ExternalLink size={13} />
+                            Details
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="h-8 px-2 text-xs text-muted-foreground hover:text-primary gap-1"
                             onClick={() => handleImpersonate(tenant)}
                           >
@@ -241,9 +250,18 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
     email: "",
     packageTier: "legacy" as PackageTier,
   });
+  const [provisionResult, setProvisionResult] = useState<{ tables_created: string[]; tables_existed: string[]; errors: { table: string; error: string }[] } | null>(null);
 
   const upsert = trpc.tenant.upsert.useMutation({
-    onSuccess: () => { toast.success("Client added successfully"); onSuccess(); },
+    onSuccess: (data) => {
+      setProvisionResult(data.provision);
+      if (data.provision.errors.length === 0) {
+        toast.success(`Client added — ${data.provision.tables_created.length} tables provisioned`);
+      } else {
+        toast.warning(`Client added, but ${data.provision.errors.length} table(s) failed to provision. Check details.`);
+      }
+      onSuccess();
+    },
     onError: (e) => toast.error(e.message),
   });
 

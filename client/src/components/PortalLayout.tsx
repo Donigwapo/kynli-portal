@@ -41,14 +41,10 @@ const CLIENT_NAV: NavItem[] = [
 ];
 
 const ADMIN_NAV: NavItem[] = [
-  { id: "admin_clients",     label: "Clients",          icon: <Users size={16} />,           href: "/admin" },
-  { id: "admin_overview",    label: "Overview",         icon: <LayoutDashboard size={16} />, href: "/admin/overview" },
-  { id: "admin_sales",       label: "Sales Tracker",    icon: <ShoppingCart size={16} />,    href: "/admin/sales" },
-  { id: "admin_financials",  label: "Financials",       icon: <BarChart3 size={16} />,       href: "/admin/financials" },
-  { id: "admin_time",        label: "Time Intelligence",icon: <Clock size={16} />,           href: "/admin/time" },
-  { id: "admin_coaching",    label: "Coaching",         icon: <BookOpen size={16} />,        href: "/admin/coaching" },
-  { id: "admin_portal",      label: "Portal",           icon: <FolderOpen size={16} />,      href: "/admin/data-entry" },
-  { id: "admin_reports",     label: "Reports",          icon: <TrendingUp size={16} />,      href: "/admin/reports" },
+  { id: "admin_dashboard",   label: "Dashboard",        icon: <LayoutDashboard size={16} />, href: "/admin" },
+  { id: "admin_clients",     label: "Clients",          icon: <Users size={16} />,           href: "/admin/clients" },
+  { id: "admin_chat",        label: "Chat",             icon: <MessageSquare size={16} />,   href: "/admin/chat" },
+  { id: "admin_data_entry",  label: "Data Entry",       icon: <FolderOpen size={16} />,      href: "/admin/data-entry" },
 ];
 
 interface PortalLayoutProps {

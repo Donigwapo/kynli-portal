@@ -673,3 +673,254 @@ export async function upsertCoachingNote(slug: string, year: number, quarter: nu
     .upsert({ year, quarter, content, updated_at: new Date().toISOString() }, { onConflict: "year,quarter" });
   if (error) throw new Error(error.message);
 }
+
+// ─── Tenant Provisioning ──────────────────────────────────────────────────────
+
+export type ProvisionResult = {
+  success: boolean;
+  tables_created: string[];
+  tables_existed: string[];
+  errors: { table: string; error: string }[];
+};
+
+/**
+ * Provisions all required Supabase tables for a new tenant.
+ * Uses raw SQL via the service role client so it can CREATE TABLE IF NOT EXISTS.
+ * Safe to call multiple times — idempotent.
+ */
+export async function provisionTenant(slug: string): Promise<ProvisionResult> {
+  // Validate slug — only allow alphanumeric + underscores to prevent SQL injection
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error(`Invalid slug: "${slug}". Only lowercase letters, numbers, and underscores are allowed.`);
+  }
+
+  const result: ProvisionResult = { success: true, tables_created: [], tables_existed: [], errors: [] };
+
+  const tableDefs: { name: string; sql: string }[] = [
+    {
+      name: `${slug}_chat`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_chat (
+          id              BIGSERIAL PRIMARY KEY,
+          sender          TEXT NOT NULL,
+          message         TEXT,
+          role            TEXT NOT NULL DEFAULT 'client',
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          sender_user_id  INTEGER,
+          file_key        TEXT,
+          file_url        TEXT,
+          file_name       TEXT,
+          file_size       BIGINT,
+          mime_type       TEXT,
+          archive_year    INTEGER,
+          archive_month   INTEGER,
+          portal_document_id INTEGER,
+          thread_id       BIGINT REFERENCES ${slug}_chat(id) ON DELETE CASCADE,
+          reply_count     INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_chat_created_at ON ${slug}_chat(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_${slug}_chat_thread_id ON ${slug}_chat(thread_id) WHERE thread_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_${slug}_chat_fts ON ${slug}_chat USING gin(to_tsvector('english', coalesce(message, '')));
+      `,
+    },
+    {
+      name: `${slug}_documents`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_documents (
+          id               BIGSERIAL PRIMARY KEY,
+          name             TEXT NOT NULL,
+          description      TEXT,
+          doc_type         TEXT NOT NULL DEFAULT 'Other',
+          file_key         TEXT NOT NULL,
+          file_url         TEXT NOT NULL,
+          file_name        TEXT,
+          file_size        BIGINT,
+          mime_type        TEXT,
+          year             INTEGER NOT NULL,
+          month            INTEGER,
+          uploaded_by_name TEXT,
+          created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_documents_year_month ON ${slug}_documents(year, month);
+        CREATE INDEX IF NOT EXISTS idx_${slug}_documents_doc_type ON ${slug}_documents(doc_type);
+      `,
+    },
+    {
+      name: `${slug}_financials`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_financials (
+          id                   BIGSERIAL PRIMARY KEY,
+          year                 INTEGER NOT NULL,
+          month                INTEGER NOT NULL,
+          revenue              NUMERIC(15,2) NOT NULL DEFAULT 0,
+          budget_revenue       NUMERIC(15,2) NOT NULL DEFAULT 0,
+          expenses             NUMERIC(15,2) NOT NULL DEFAULT 0,
+          budget_expenses      NUMERIC(15,2) NOT NULL DEFAULT 0,
+          net_profit           NUMERIC(15,2) NOT NULL DEFAULT 0,
+          net_profit_margin    NUMERIC(8,4) NOT NULL DEFAULT 0,
+          summary              TEXT,
+          created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(year, month)
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_financials_year_month ON ${slug}_financials(year, month);
+      `,
+    },
+    {
+      name: `${slug}_line_items`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_line_items (
+          id          BIGSERIAL PRIMARY KEY,
+          year        INTEGER NOT NULL,
+          month       INTEGER NOT NULL,
+          category    TEXT NOT NULL,
+          label       TEXT NOT NULL,
+          amount      NUMERIC(15,2) NOT NULL DEFAULT 0,
+          type        TEXT NOT NULL DEFAULT 'expense',
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_line_items_year_month ON ${slug}_line_items(year, month);
+      `,
+    },
+    {
+      name: `${slug}_coaching_notes`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_coaching_notes (
+          id          BIGSERIAL PRIMARY KEY,
+          year        INTEGER NOT NULL,
+          quarter     INTEGER NOT NULL,
+          content     TEXT NOT NULL DEFAULT '',
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(year, quarter)
+        );
+      `,
+    },
+    {
+      name: `${slug}_coaching_items`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_coaching_items (
+          id          BIGSERIAL PRIMARY KEY,
+          year        INTEGER NOT NULL,
+          quarter     INTEGER NOT NULL,
+          text        TEXT NOT NULL,
+          completed   BOOLEAN NOT NULL DEFAULT FALSE,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_coaching_items_year_quarter ON ${slug}_coaching_items(year, quarter);
+      `,
+    },
+    {
+      name: `${slug}_kpi_metrics`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_kpi_metrics (
+          id          BIGSERIAL PRIMARY KEY,
+          year        INTEGER NOT NULL,
+          month       INTEGER NOT NULL,
+          label       TEXT NOT NULL,
+          value       NUMERIC(15,2) NOT NULL DEFAULT 0,
+          target      NUMERIC(15,2),
+          unit        TEXT,
+          category    TEXT,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_kpi_metrics_year_month ON ${slug}_kpi_metrics(year, month);
+      `,
+    },
+    {
+      name: `${slug}_sales_tracker`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_sales_tracker (
+          id              BIGSERIAL PRIMARY KEY,
+          year            INTEGER NOT NULL,
+          month           INTEGER NOT NULL,
+          label           TEXT NOT NULL,
+          actual          NUMERIC(15,2) NOT NULL DEFAULT 0,
+          target          NUMERIC(15,2),
+          category        TEXT,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_sales_tracker_year_month ON ${slug}_sales_tracker(year, month);
+      `,
+    },
+    {
+      name: `${slug}_time_intelligence`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_time_intelligence (
+          id          BIGSERIAL PRIMARY KEY,
+          year        INTEGER NOT NULL,
+          month       INTEGER NOT NULL,
+          category    TEXT NOT NULL,
+          hours       NUMERIC(8,2) NOT NULL DEFAULT 0,
+          label       TEXT,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_${slug}_time_intelligence_year_month ON ${slug}_time_intelligence(year, month);
+      `,
+    },
+    {
+      name: `${slug}_ai_summaries`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_ai_summaries (
+          id            BIGSERIAL PRIMARY KEY,
+          year          INTEGER NOT NULL,
+          month         INTEGER NOT NULL,
+          content       TEXT NOT NULL DEFAULT '',
+          generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(year, month)
+        );
+      `,
+    },
+    {
+      name: `${slug}_client_roster`,
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${slug}_client_roster (
+          id              BIGSERIAL PRIMARY KEY,
+          name            TEXT NOT NULL,
+          service         TEXT,
+          tenure_months   INTEGER NOT NULL DEFAULT 0,
+          ltv             NUMERIC(15,2) NOT NULL DEFAULT 0,
+          status          TEXT NOT NULL DEFAULT 'active',
+          notes           TEXT,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `,
+    },
+  ];
+
+  for (const def of tableDefs) {
+    try {
+      // Check if table already exists
+      const { error: checkError } = await supabase
+        .from(def.name)
+        .select("id")
+        .limit(1);
+
+      if (!checkError) {
+        // Table exists (no error means it's accessible)
+        result.tables_existed.push(def.name);
+        continue;
+      }
+
+      // Table doesn't exist — create it using rpc exec_sql
+      const { error: createError } = await supabase.rpc("exec_sql", { sql: def.sql });
+      if (createError) {
+        result.errors.push({ table: def.name, error: createError.message });
+        result.success = false;
+      } else {
+        result.tables_created.push(def.name);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      result.errors.push({ table: def.name, error: msg });
+      result.success = false;
+    }
+  }
+
+  return result;
+}
