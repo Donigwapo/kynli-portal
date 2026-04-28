@@ -18,7 +18,8 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Eye, ExternalLink, Plus, Search, StickyNote, Users } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Eye, ExternalLink, Mail, Plus, Search, StickyNote, Users } from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { PACKAGE_COLORS, PACKAGE_LABELS, PackageTier } from "../../../../shared/tiers";
@@ -250,13 +251,15 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
     email: "",
     packageTier: "legacy" as PackageTier,
   });
+  const [sendInvite, setSendInvite] = useState(false);
   const [provisionResult, setProvisionResult] = useState<{ tables_created: string[]; tables_existed: string[]; errors: { table: string; error: string }[] } | null>(null);
 
   const upsert = trpc.tenant.upsert.useMutation({
     onSuccess: (data) => {
       setProvisionResult(data.provision);
       if (data.provision.errors.length === 0) {
-        toast.success(`Client added — ${data.provision.tables_created.length} tables provisioned`);
+        const inviteMsg = data.invite?.sent ? " Invite email sent." : data.invite?.error ? ` Invite failed: ${data.invite.error}` : "";
+        toast.success(`Client added — ${data.provision.tables_created.length} tables provisioned.${inviteMsg}`);
       } else {
         toast.warning(`Client added, but ${data.provision.errors.length} table(s) failed to provision. Check details.`);
       }
@@ -308,13 +311,35 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
             <Label className="text-xs text-muted-foreground mb-1.5 block">Email</Label>
             <Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="bg-background border-border text-foreground text-sm" />
           </div>
+          {/* Send invite checkbox — only shown when email is provided */}
+          {form.email && (
+            <div className="flex items-center gap-2 py-1">
+              <Checkbox
+                id="send-invite"
+                checked={sendInvite}
+                onCheckedChange={(v) => setSendInvite(!!v)}
+              />
+              <label htmlFor="send-invite" className="text-sm text-foreground cursor-pointer flex items-center gap-1.5">
+                <Mail size={13} className="text-muted-foreground" />
+                Send portal invite email to client
+              </label>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
             <Button
               size="sm"
               className="bg-primary text-primary-foreground"
               disabled={!form.slug || !form.companyName || upsert.isPending}
-              onClick={() => upsert.mutate({ slug: form.slug, companyName: form.companyName, contactName: form.contactName || undefined, email: form.email || undefined, packageTier: form.packageTier })}
+              onClick={() => upsert.mutate({
+                slug: form.slug,
+                companyName: form.companyName,
+                contactName: form.contactName || undefined,
+                email: form.email || undefined,
+                packageTier: form.packageTier,
+                sendInvite: sendInvite && !!form.email,
+                portalOrigin: window.location.origin,
+              })}
             >
               {upsert.isPending ? "Adding…" : "Add Client"}
             </Button>

@@ -51,6 +51,8 @@ export type PortalTenant = {
   package_tier: "legacy" | "momentum" | "growth_1" | "growth_2" | "cfo";
   is_active: boolean;
   ghl_notes: string | null;
+  invite_sent_at: string | null;
+  invite_accepted: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -253,6 +255,73 @@ export async function upsertPortalTenant(tenant: Partial<PortalTenant> & { slug:
     .single();
   if (error) throw new Error(error.message);
   return data as PortalTenant;
+}
+
+// ─── Client Invite ───────────────────────────────────────────────────────────
+
+/**
+ * Sends a Supabase magic-link invite to a client email.
+ * Creates the Supabase Auth user if they don't exist yet.
+ * Returns { sent: true } on success or throws.
+ */
+export async function inviteClientByEmail(
+  email: string,
+  name: string,
+  tenantSlug: string,
+  redirectTo: string,
+): Promise<{ sent: boolean; error?: string }> {
+  // 1. Send the invite via Supabase Auth Admin API
+  const { data: authData, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+    redirectTo,
+    data: { name, tenant_slug: tenantSlug },
+  });
+  if (authError) {
+    console.error(`[inviteClientByEmail] Auth invite failed for ${email}:`, authError.message);
+    return { sent: false, error: authError.message };
+  }
+
+  // 2. Upsert portal_users record linking supabase_uid → client role
+  const supabaseUid = authData?.user?.id ?? null;
+  await supabase.from("portal_users").upsert(
+    {
+      supabase_uid: supabaseUid,
+      email,
+      name,
+      role: "client",
+      tenant_slug: tenantSlug,
+      must_reset_password: false,
+      invite_sent_at: new Date().toISOString(),
+      invite_accepted: false,
+    },
+    { onConflict: "email" },
+  );
+
+  // 3. Stamp invite_sent_at on the tenant record
+  await supabase
+    .from("portal_tenants")
+    .update({ invite_sent_at: new Date().toISOString() })
+    .eq("slug", tenantSlug);
+
+  return { sent: true };
+}
+
+export async function markInviteAccepted(email: string): Promise<void> {
+  await supabase
+    .from("portal_users")
+    .update({ invite_accepted: true })
+    .eq("email", email);
+  // Also mark on tenant record (best-effort)
+  const { data: user } = await supabase
+    .from("portal_users")
+    .select("tenant_slug")
+    .eq("email", email)
+    .single();
+  if (user?.tenant_slug) {
+    await supabase
+      .from("portal_tenants")
+      .update({ invite_accepted: true })
+      .eq("slug", user.tenant_slug);
+  }
 }
 
 // ─── Financials ───────────────────────────────────────────────────────────────

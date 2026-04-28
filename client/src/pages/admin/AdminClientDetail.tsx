@@ -16,8 +16,10 @@ import {
   ArrowLeft,
   Building2,
   CheckCircle2,
+  Clock,
   Database,
   Eye,
+  Mail,
   RefreshCw,
   XCircle,
 } from "lucide-react";
@@ -74,6 +76,14 @@ export default function AdminClientDetail() {
       utils.tenant.list.invalidate();
     },
     onError: (e) => toast.error(e.message),
+  });
+
+  const sendInvite = trpc.tenant.sendInvite.useMutation({
+    onSuccess: () => {
+      toast.success("Invite email sent successfully");
+      refetch();
+    },
+    onError: (e) => toast.error(`Failed to send invite: ${e.message}`),
   });
 
   const provision = trpc.tenant.provision.useMutation({
@@ -228,6 +238,7 @@ export default function AdminClientDetail() {
                 </div>
               </>
             ) : (
+              <>
               <dl className="space-y-3 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-muted-foreground">Company</dt>
@@ -265,7 +276,45 @@ export default function AdminClientDetail() {
                   <dt className="text-muted-foreground">Created</dt>
                   <dd className="text-foreground text-xs">{new Date(tenant.created_at).toLocaleDateString()}</dd>
                 </div>
+                {/* Portal Invite Status */}
+                <div className="flex justify-between items-center">
+                  <dt className="text-muted-foreground">Portal Invite</dt>
+                  <dd>
+                    {tenant.invite_accepted ? (
+                      <span className="flex items-center gap-1 text-xs text-emerald-400">
+                        <CheckCircle2 size={11} /> Accepted
+                      </span>
+                    ) : tenant.invite_sent_at ? (
+                      <span className="flex items-center gap-1 text-xs text-amber-400">
+                        <Clock size={11} /> Sent {new Date(tenant.invite_sent_at).toLocaleDateString()}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Not sent</span>
+                    )}
+                  </dd>
+                </div>
               </dl>
+              {/* Send / Resend Invite button */}
+              {tenant.email && !tenant.invite_accepted && (
+                <div className="pt-3 border-t border-border/50">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full gap-2 border-border text-muted-foreground hover:text-primary hover:border-primary/50"
+                    disabled={sendInvite.isPending}
+                    onClick={() => sendInvite.mutate({
+                      slug: tenant.slug,
+                      email: tenant.email!,
+                      contactName: tenant.contact_name ?? undefined,
+                      portalOrigin: window.location.origin,
+                    })}
+                  >
+                    <Mail size={13} />
+                    {sendInvite.isPending ? "Sending…" : tenant.invite_sent_at ? "Resend Invite" : "Send Invite"}
+                  </Button>
+                </div>
+              )}
+              </>
             )}
           </CardContent>
         </Card>

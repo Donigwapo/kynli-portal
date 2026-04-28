@@ -21,6 +21,7 @@ import TimeIntelligence from "./pages/portal/TimeIntelligence";
 import SalesTracker from "./pages/portal/SalesTracker";
 import Clients from "./pages/portal/Clients";
 import Chat from "./pages/portal/Chat";
+import SetPassword from "./pages/portal/SetPassword";
 import TierGate from "./components/TierGate";
 
 // Admin pages
@@ -65,6 +66,8 @@ function Router() {
       <Route path="/login" component={Login} />
 
       {/* Client Portal — protected, tier-gated */}
+      {/* Set password page — shown after magic-link invite, no layout wrapper needed */}
+      <Route path="/portal/set-password" component={() => <RouteGuard><SetPassword /></RouteGuard>} />
       <Route path="/portal"              component={() => <PortalRoute component={Overview}         featureKey="overview" />} />
       <Route path="/portal/clients"      component={() => <PortalRoute component={Clients}          featureKey="clients" />} />
       <Route path="/portal/financials"   component={() => <PortalRoute component={Financials}       featureKey="financials" />} />

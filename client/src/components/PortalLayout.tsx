@@ -5,6 +5,7 @@ import {
   BookOpen,
   Clock,
   FolderOpen,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   MessageSquare,
@@ -13,11 +14,12 @@ import {
   ShoppingCart,
   UserCog,
 } from "lucide-react";
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
 import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
+import ChangePasswordDialog from "./ChangePasswordDialog";
 
 interface NavItem {
   id: string;
@@ -57,6 +59,7 @@ interface PortalLayoutProps {
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
   const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !isAdmin && !impersonatingTenantSlug });
 
@@ -159,6 +162,17 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               <p className="text-xs truncate leading-tight" style={{ color: "#555" }}>{user?.email ?? ""}</p>
             </div>
           </div>
+          {/* Change Password — only for client users (not admins, not impersonating) */}
+          {!isAdmin && !impersonatingTenantSlug && user?.role !== "admin" && (
+            <button
+              onClick={() => setChangePasswordOpen(true)}
+              className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80 mb-1.5"
+              style={{ color: "#555" }}
+            >
+              <KeyRound size={12} />
+              <span>Change Password</span>
+            </button>
+          )}
           <button
             onClick={logout}
             className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80"
@@ -169,6 +183,12 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           </button>
         </div>
       </aside>
+
+      {/* Change Password Dialog */}
+      <ChangePasswordDialog
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
+      />
 
       {/* Main content */}
       <main className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "#0a0a0a" }}>

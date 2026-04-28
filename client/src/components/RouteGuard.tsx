@@ -12,10 +12,11 @@ interface RouteGuardProps {
  * RouteGuard — wraps protected routes.
  * - Unauthenticated users are redirected to the login page.
  * - Non-admin users attempting to access admin routes are redirected to /portal.
+ * - Client users with must_reset_password=true are redirected to /portal/set-password.
  */
 export default function RouteGuard({ children, requireAdmin = false }: RouteGuardProps) {
   const { user, loading, isAuthenticated } = useAuth();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
 
   useEffect(() => {
     if (loading) return;
@@ -25,8 +26,17 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
     }
     if (requireAdmin && user?.role !== "admin") {
       navigate("/portal");
+      return;
     }
-  }, [loading, isAuthenticated, user, requireAdmin]);
+    // First-login: client must set a password before accessing the portal
+    if (
+      user?.must_reset_password &&
+      user.role !== "admin" &&
+      location !== "/portal/set-password"
+    ) {
+      navigate("/portal/set-password");
+    }
+  }, [loading, isAuthenticated, user, requireAdmin, location]);
 
   if (loading) {
     return (

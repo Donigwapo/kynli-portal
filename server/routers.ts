@@ -79,6 +79,8 @@ import {
   getStaffAssignments,
   assignStaffToClient,
   unassignStaffFromClient,
+  inviteClientByEmail,
+  markInviteAccepted,
 } from "./supabase";
 
 // ─── Admin guard middleware ───────────────────────────────────────────────────
@@ -147,6 +149,22 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
+    changePassword: protectedProcedure
+      .input(z.object({ newPassword: z.string().min(8) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user.supabase_uid) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "No Supabase auth account linked to this user" });
+        }
+        const { error } = await supabase.auth.admin.updateUserById(ctx.user.supabase_uid, {
+          password: input.newPassword,
+        });
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        // Mark invite as accepted when client sets their password for the first time
+        if (ctx.user.email) {
+          await markInviteAccepted(ctx.user.email);
+        }
+        return { success: true };
+      }),
   }),
 
   tenant: router({
@@ -167,6 +185,8 @@ export const appRouter = router({
         packageTier: z.enum(["legacy", "momentum", "growth_1", "growth_2", "cfo"]),
         isActive: z.boolean().optional(),
         ghlNotes: z.string().optional(),
+        sendInvite: z.boolean().optional(),
+        portalOrigin: z.string().optional(), // frontend passes window.location.origin
       }))
       .mutation(async ({ input }) => {
         await upsertPortalTenant({
@@ -180,7 +200,38 @@ export const appRouter = router({
         });
         // Auto-provision all Supabase tables for this tenant
         const provision = await provisionTenant(input.slug);
-        return { success: true, provision };
+        // Send magic-link invite if requested and email is provided
+        let invite: { sent: boolean; error?: string } | null = null;
+        if (input.sendInvite && input.email && input.portalOrigin) {
+          const redirectTo = `${input.portalOrigin}/portal`;
+          invite = await inviteClientByEmail(
+            input.email,
+            input.contactName ?? input.companyName,
+            input.slug,
+            redirectTo,
+          );
+        }
+        return { success: true, provision, invite };
+      }),
+    sendInvite: adminProcedure
+      .input(z.object({
+        slug: z.string(),
+        email: z.string().email(),
+        contactName: z.string().optional(),
+        portalOrigin: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const tenant = await getTenantBySlug(input.slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const redirectTo = `${input.portalOrigin}/portal`;
+        const result = await inviteClientByEmail(
+          input.email,
+          input.contactName ?? tenant.company_name,
+          input.slug,
+          redirectTo,
+        );
+        if (!result.sent) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: result.error ?? "Invite failed" });
+        return { success: true };
       }),
     provision: adminProcedure
       .input(z.object({ slug: z.string() }))

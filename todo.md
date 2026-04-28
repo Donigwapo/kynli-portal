@@ -260,3 +260,18 @@
 - [x] Team nav item (UserCog icon) added to ADMIN_NAV in PortalLayout.tsx
 - [x] /admin/team route registered in App.tsx
 - [x] TypeScript: 0 errors
+
+## Phase 24: Client Authentication Flow — Magic Link Invite + Password Management
+- [x] Backend: inviteClientByEmail() helper in supabase.ts using Supabase Admin API inviteUserByEmail()
+- [x] Backend: markInviteAccepted() helper in supabase.ts — marks invite_accepted=true on portal_tenants + portal_users
+- [x] Backend: tenant.upsert updated to accept sendInvite + portalOrigin params, calls inviteClientByEmail() when requested
+- [x] Backend: tenant.sendInvite procedure (admin-only) — sends/resends magic link to client email
+- [x] Backend: auth.changePassword procedure (protectedProcedure) — updates Supabase Auth password via admin API, calls markInviteAccepted()
+- [x] Frontend: AddClientDialog — invite checkbox appears when email is entered, passes sendInvite + portalOrigin to tenant.upsert
+- [x] Frontend: AdminClientDetail — invite status row (Not sent / Sent {date} / Accepted), Send/Resend Invite button
+- [x] Frontend: SetPassword.tsx — full-page password setup shown after magic link click (must_reset_password gate in RouteGuard)
+- [x] Frontend: ChangePasswordDialog.tsx — reusable dialog for changing password from portal sidebar
+- [x] Frontend: PortalLayout — "Change Password" button in sidebar user section (client users only)
+- [x] Frontend: RouteGuard — redirects clients with must_reset_password=true to /portal/set-password
+- [x] Frontend: /portal/set-password route registered in App.tsx
+- [x] TypeScript: 0 errors
