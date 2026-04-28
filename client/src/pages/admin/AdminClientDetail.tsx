@@ -11,8 +11,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import {
+  Archive,
   ArrowLeft,
   Building2,
   CheckCircle2,
@@ -21,6 +32,7 @@ import {
   Eye,
   Mail,
   RefreshCw,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
@@ -67,6 +79,33 @@ export default function AdminClientDetail() {
   const [provisioning, setProvisioning] = useState(false);
 
   const utils = trpc.useUtils();
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  const archiveMutation = trpc.tenant.archive.useMutation({
+    onSuccess: () => {
+      toast.success("Client archived — status set to Churned.");
+      refetch();
+      utils.tenant.list.invalidate();
+    },
+    onError: (e) => toast.error(`Archive failed: ${e.message}`),
+  });
+
+  const restoreMutation = trpc.tenant.restore.useMutation({
+    onSuccess: () => {
+      toast.success("Client restored — status set to Active.");
+      refetch();
+      utils.tenant.list.invalidate();
+    },
+    onError: (e) => toast.error(`Restore failed: ${e.message}`),
+  });
+
+  const deleteMutation = trpc.tenant.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Client permanently deleted.");
+      navigate("/admin/clients");
+    },
+    onError: (e) => toast.error(`Delete failed: ${e.message}`),
+  });
 
   const upsert = trpc.tenant.upsert.useMutation({
     onSuccess: () => {
@@ -164,15 +203,51 @@ export default function AdminClientDetail() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {tenant.is_churned && (
+            <Badge variant="outline" className="text-xs border-orange-500/30 text-orange-400 bg-orange-500/10">
+              Churned
+            </Badge>
+          )}
+          {!tenant.is_churned && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-border text-muted-foreground hover:text-primary"
+              onClick={handleImpersonate}
+            >
+              <Eye size={13} /> View as Client
+            </Button>
+          )}
+          {tenant.is_churned ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+              onClick={() => restoreMutation.mutate({ slug: tenant.slug })}
+              disabled={restoreMutation.isPending}
+            >
+              <RefreshCw size={13} /> {restoreMutation.isPending ? "Restoring…" : "Restore Client"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-orange-500/30 text-orange-400 hover:bg-orange-500/10"
+              onClick={() => archiveMutation.mutate({ slug: tenant.slug })}
+              disabled={archiveMutation.isPending}
+            >
+              <Archive size={13} /> {archiveMutation.isPending ? "Archiving…" : "Archive (Churn)"}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
-            className="gap-2 border-border text-muted-foreground hover:text-primary"
-            onClick={handleImpersonate}
+            className="gap-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
+            onClick={() => setDeleteConfirmOpen(true)}
           >
-            <Eye size={13} /> View as Client
+            <Trash2 size={13} /> Delete
           </Button>
-          {!editMode && (
+          {!editMode && !tenant.is_churned && (
             <Button size="sm" className="bg-primary text-primary-foreground" onClick={startEdit}>
               Edit
             </Button>
@@ -381,6 +456,33 @@ export default function AdminClientDetail() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-foreground">Delete Client Permanently?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
+              This will permanently remove <strong className="text-foreground">{tenant.company_name}</strong> from the portal.
+              Their Supabase data tables will be preserved, but the client record and portal access will be gone.
+              <br /><br />
+              <span className="text-red-400 font-medium">This action cannot be undone.</span> Consider archiving instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-border text-foreground hover:bg-muted/20">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => deleteMutation.mutate({ slug: tenant.slug })}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete Permanently"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

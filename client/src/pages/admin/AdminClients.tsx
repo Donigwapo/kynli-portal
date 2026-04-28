@@ -7,6 +7,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -19,26 +36,100 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Eye, ExternalLink, Mail, Plus, Search, StickyNote, Users } from "lucide-react";
+import {
+  Archive,
+  Eye,
+  ExternalLink,
+  Mail,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  Search,
+  StickyNote,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { PACKAGE_COLORS, PACKAGE_LABELS, PackageTier } from "../../../../shared/tiers";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 
+type TenantRow = {
+  slug: string;
+  company_name: string;
+  contact_name: string | null;
+  email: string | null;
+  package_tier: string;
+  is_active: boolean;
+  is_churned: boolean;
+  ghl_notes: string | null;
+};
+
+function StatusBadge({ tenant }: { tenant: TenantRow }) {
+  if (tenant.is_churned) {
+    return (
+      <Badge variant="outline" className="text-xs border-orange-500/30 text-orange-400 bg-orange-500/10">
+        Churned
+      </Badge>
+    );
+  }
+  if (tenant.is_active) {
+    return (
+      <Badge variant="outline" className="text-xs border-emerald-500/30 text-emerald-400 bg-emerald-500/10">
+        Active
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="text-xs border-red-500/30 text-red-400 bg-red-500/10">
+      Inactive
+    </Badge>
+  );
+}
+
 export default function AdminClients() {
   const [search, setSearch] = useState("");
   const [filterTier, setFilterTier] = useState<string>("all");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
   const [ghlDialogOpen, setGhlDialogOpen] = useState(false);
   const [selectedTenant, setSelectedTenant] = useState<{ slug: string; name: string; notes: string } | null>(null);
   const [ghlNotes, setGhlNotes] = useState("");
   const [addClientOpen, setAddClientOpen] = useState(false);
+  const [deleteConfirmSlug, setDeleteConfirmSlug] = useState<string | null>(null);
   const [, navigate] = useLocation();
   const { setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
 
   const { data: tenants, isLoading, refetch } = trpc.tenant.list.useQuery();
+  const utils = trpc.useUtils();
+
   const updateGhl = trpc.tenant.updateGhlNotes.useMutation({
     onSuccess: () => { toast.success("GHL notes saved"); setGhlDialogOpen(false); refetch(); },
+  });
+
+  const archive = trpc.tenant.archive.useMutation({
+    onSuccess: (_, vars) => {
+      toast.success(`Client archived — status set to Churned.`);
+      utils.tenant.list.invalidate();
+    },
+    onError: (e) => toast.error(`Archive failed: ${e.message}`),
+  });
+
+  const restore = trpc.tenant.restore.useMutation({
+    onSuccess: () => {
+      toast.success("Client restored — status set to Active.");
+      utils.tenant.list.invalidate();
+    },
+    onError: (e) => toast.error(`Restore failed: ${e.message}`),
+  });
+
+  const deleteTenant = trpc.tenant.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Client permanently deleted.");
+      setDeleteConfirmSlug(null);
+      utils.tenant.list.invalidate();
+    },
+    onError: (e) => toast.error(`Delete failed: ${e.message}`),
   });
 
   const filtered = (tenants ?? []).filter((t) => {
@@ -48,20 +139,27 @@ export default function AdminClients() {
       t.contact_name?.toLowerCase().includes(search.toLowerCase()) ||
       t.email?.toLowerCase().includes(search.toLowerCase());
     const matchTier = filterTier === "all" || t.package_tier === filterTier;
-    return matchSearch && matchTier;
+    const matchStatus =
+      filterStatus === "all" ||
+      (filterStatus === "active" && t.is_active && !t.is_churned) ||
+      (filterStatus === "churned" && t.is_churned) ||
+      (filterStatus === "inactive" && !t.is_active && !t.is_churned);
+    return matchSearch && matchTier && matchStatus;
   });
 
-  function handleImpersonate(tenant: typeof filtered[0]) {
+  function handleImpersonate(tenant: TenantRow) {
     setImpersonatingTenantSlug(tenant.slug);
     setEffectiveTier(tenant.package_tier as PackageTier);
     navigate("/portal");
   }
 
-  function openGhlDialog(tenant: typeof filtered[0]) {
+  function openGhlDialog(tenant: TenantRow) {
     setSelectedTenant({ slug: tenant.slug, name: tenant.company_name ?? "Client", notes: tenant.ghl_notes ?? "" });
     setGhlNotes(tenant.ghl_notes ?? "");
     setGhlDialogOpen(true);
   }
+
+  const tenantToDelete = tenants?.find((t) => t.slug === deleteConfirmSlug);
 
   return (
     <div className="p-6 space-y-6">
@@ -74,6 +172,11 @@ export default function AdminClients() {
             <h1 className="text-2xl font-bold text-foreground">Client Management</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               {tenants?.length ?? 0} total clients
+              {tenants && tenants.filter(t => t.is_churned).length > 0 && (
+                <span className="ml-2 text-orange-400">
+                  · {tenants.filter(t => t.is_churned).length} churned
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -88,7 +191,7 @@ export default function AdminClients() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
         <div className="relative flex-1 max-w-xs">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -100,13 +203,24 @@ export default function AdminClients() {
         </div>
         <Select value={filterTier} onValueChange={setFilterTier}>
           <SelectTrigger className="w-36 bg-card border-border text-sm h-9">
-            <SelectValue placeholder="All tiers" />
+            <SelectValue placeholder="All Tiers" />
           </SelectTrigger>
           <SelectContent className="bg-card border-border">
             <SelectItem value="all" className="text-sm">All Tiers</SelectItem>
             {Object.entries(PACKAGE_LABELS).map(([key, label]) => (
               <SelectItem key={key} value={key} className="text-sm">{label}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={filterStatus} onValueChange={setFilterStatus}>
+          <SelectTrigger className="w-36 bg-card border-border text-sm h-9">
+            <SelectValue placeholder="All Status" />
+          </SelectTrigger>
+          <SelectContent className="bg-card border-border">
+            <SelectItem value="all" className="text-sm">All Status</SelectItem>
+            <SelectItem value="active" className="text-sm">Active</SelectItem>
+            <SelectItem value="churned" className="text-sm">Churned</SelectItem>
+            <SelectItem value="inactive" className="text-sm">Inactive</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -137,7 +251,10 @@ export default function AdminClients() {
                 </thead>
                 <tbody>
                   {filtered.map((tenant) => (
-                    <tr key={tenant.slug} className="border-b border-border/50 hover:bg-muted/20 transition-colors group">
+                    <tr
+                      key={tenant.slug}
+                      className={`border-b border-border/50 hover:bg-muted/20 transition-colors group ${tenant.is_churned ? "opacity-70" : ""}`}
+                    >
                       <td className="px-5 py-3">
                         <p className="font-medium text-foreground">{tenant.company_name ?? "—"}</p>
                         <p className="text-xs text-muted-foreground">{tenant.email ?? ""}</p>
@@ -152,43 +269,81 @@ export default function AdminClients() {
                         </Badge>
                       </td>
                       <td className="px-5 py-3">
-                        <Badge
-                          variant="outline"
-                          className={`text-xs ${tenant.is_active ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-red-500/30 text-red-400 bg-red-500/10"}`}
-                        >
-                          {tenant.is_active ? "Active" : "Inactive"}
-                        </Badge>
+                        <StatusBadge tenant={tenant as TenantRow} />
                       </td>
                       <td className="px-5 py-3 text-muted-foreground text-xs font-mono">{tenant.slug}</td>
                       <td className="px-5 py-3">
-                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center justify-end gap-1">
+                          {/* Quick actions — always visible */}
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-8 px-2 text-xs text-muted-foreground hover:text-cyan-400 gap-1"
+                            className="h-8 px-2 text-xs text-muted-foreground hover:text-cyan-400 gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
                             onClick={() => navigate(`/admin/clients/${tenant.slug}`)}
                           >
                             <ExternalLink size={13} />
                             Details
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-xs text-muted-foreground hover:text-primary gap-1"
-                            onClick={() => handleImpersonate(tenant)}
-                          >
-                            <Eye size={13} />
-                            View as
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-2 text-xs text-muted-foreground hover:text-amber-400 gap-1"
-                            onClick={() => openGhlDialog(tenant)}
-                          >
-                            <StickyNote size={13} />
-                            GHL Notes
-                          </Button>
+                          {!tenant.is_churned && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs text-muted-foreground hover:text-primary gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => handleImpersonate(tenant as TenantRow)}
+                            >
+                              <Eye size={13} />
+                              View as
+                            </Button>
+                          )}
+                          {/* More actions dropdown */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <MoreHorizontal size={15} />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="bg-card border-border w-44">
+                              <DropdownMenuItem
+                                className="text-sm gap-2 cursor-pointer"
+                                onClick={() => openGhlDialog(tenant as TenantRow)}
+                              >
+                                <StickyNote size={13} />
+                                GHL Notes
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator className="bg-border" />
+                              {tenant.is_churned ? (
+                                <DropdownMenuItem
+                                  className="text-sm gap-2 cursor-pointer text-emerald-400 focus:text-emerald-400"
+                                  onClick={() => restore.mutate({ slug: tenant.slug })}
+                                  disabled={restore.isPending}
+                                >
+                                  <RefreshCw size={13} />
+                                  Restore Client
+                                </DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem
+                                  className="text-sm gap-2 cursor-pointer text-orange-400 focus:text-orange-400"
+                                  onClick={() => archive.mutate({ slug: tenant.slug })}
+                                  disabled={archive.isPending}
+                                >
+                                  <Archive size={13} />
+                                  Archive (Churn)
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuSeparator className="bg-border" />
+                              <DropdownMenuItem
+                                className="text-sm gap-2 cursor-pointer text-red-400 focus:text-red-400"
+                                onClick={() => setDeleteConfirmSlug(tenant.slug)}
+                              >
+                                <Trash2 size={13} />
+                                Delete Permanently
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
@@ -232,6 +387,33 @@ export default function AdminClients() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteConfirmSlug} onOpenChange={(open) => !open && setDeleteConfirmSlug(null)}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-foreground">Delete Client Permanently?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
+              This will permanently remove <strong className="text-foreground">{tenantToDelete?.company_name}</strong> from the portal.
+              Their Supabase data tables will be preserved, but the client record and portal access will be gone.
+              <br /><br />
+              <span className="text-red-400 font-medium">This action cannot be undone.</span> Consider archiving instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-border text-foreground hover:bg-muted/20">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => deleteConfirmSlug && deleteTenant.mutate({ slug: deleteConfirmSlug })}
+              disabled={deleteTenant.isPending}
+            >
+              {deleteTenant.isPending ? "Deleting…" : "Delete Permanently"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Add Client Dialog */}
       <AddClientDialog

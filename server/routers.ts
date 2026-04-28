@@ -81,6 +81,9 @@ import {
   unassignStaffFromClient,
   inviteClientByEmail,
   markInviteAccepted,
+  archiveTenant,
+  restoreTenant,
+  deleteTenant,
 } from "./supabase";
 
 // ─── Admin guard middleware ───────────────────────────────────────────────────
@@ -243,6 +246,24 @@ export const appRouter = router({
       .input(z.object({ slug: z.string(), notes: z.string() }))
       .mutation(async ({ input }) => {
         await updateTenantGhlNotes(input.slug, input.notes);
+        return { success: true };
+      }),
+    archive: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        await archiveTenant(input.slug);
+        return { success: true };
+      }),
+    restore: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        await restoreTenant(input.slug);
+        return { success: true };
+      }),
+    delete: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .mutation(async ({ input }) => {
+        await deleteTenant(input.slug);
         return { success: true };
       }),
   }),

@@ -275,3 +275,11 @@
 - [x] Frontend: RouteGuard — redirects clients with must_reset_password=true to /portal/set-password
 - [x] Frontend: /portal/set-password route registered in App.tsx
 - [x] TypeScript: 0 errors
+
+## Phase 25: Archive / Churned + Delete Clients
+- [x] Supabase migration: add is_churned BOOLEAN DEFAULT FALSE to portal_tenants
+- [x] supabase.ts: archiveTenant(slug) — sets is_churned=true, is_active=false; restoreTenant(slug) — sets is_churned=false, is_active=true; deleteTenant(slug) — hard delete
+- [x] routers.ts: tenant.archive, tenant.restore, tenant.delete procedures (admin-only)
+- [x] AdminClients.tsx: Actions dropdown per row — Archive, Restore (if churned), Delete (with confirm); Churned status badge (amber/orange); filter includes Churned option
+- [x] AdminClientDetail.tsx: Archive/Restore button and Delete button with confirmation dialog
+- [x] TypeScript: 0 errors

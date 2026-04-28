@@ -50,6 +50,7 @@ export type PortalTenant = {
   email: string | null;
   package_tier: "legacy" | "momentum" | "growth_1" | "growth_2" | "cfo";
   is_active: boolean;
+  is_churned: boolean;
   ghl_notes: string | null;
   invite_sent_at: string | null;
   invite_accepted: boolean;
@@ -255,6 +256,43 @@ export async function upsertPortalTenant(tenant: Partial<PortalTenant> & { slug:
     .single();
   if (error) throw new Error(error.message);
   return data as PortalTenant;
+}
+
+// ─── Tenant Lifecycle ────────────────────────────────────────────────────────
+
+/**
+ * Archive a tenant: marks as churned (is_churned=true, is_active=false).
+ * The client's portal access is effectively disabled.
+ */
+export async function archiveTenant(slug: string): Promise<void> {
+  const { error } = await supabase
+    .from("portal_tenants")
+    .update({ is_churned: true, is_active: false })
+    .eq("slug", slug);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Restore a churned tenant back to active.
+ */
+export async function restoreTenant(slug: string): Promise<void> {
+  const { error } = await supabase
+    .from("portal_tenants")
+    .update({ is_churned: false, is_active: true })
+    .eq("slug", slug);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Hard delete a tenant row. Use with caution — irreversible.
+ * Does NOT delete the per-client Supabase tables (data is preserved).
+ */
+export async function deleteTenant(slug: string): Promise<void> {
+  const { error } = await supabase
+    .from("portal_tenants")
+    .delete()
+    .eq("slug", slug);
+  if (error) throw new Error(error.message);
 }
 
 // ─── Client Invite ───────────────────────────────────────────────────────────
