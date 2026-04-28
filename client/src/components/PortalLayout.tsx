@@ -11,6 +11,7 @@ import {
   TrendingUp,
   Users,
   ShoppingCart,
+  UserCog,
 } from "lucide-react";
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
@@ -43,6 +44,7 @@ const CLIENT_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { id: "admin_dashboard",   label: "Dashboard",        icon: <LayoutDashboard size={16} />, href: "/admin" },
   { id: "admin_clients",     label: "Clients",          icon: <Users size={16} />,           href: "/admin/clients" },
+  { id: "admin_team",        label: "Team",             icon: <UserCog size={16} />,         href: "/admin/team" },
   { id: "admin_chat",        label: "Chat",             icon: <MessageSquare size={16} />,   href: "/admin/chat" },
   { id: "admin_data_entry",  label: "Data Entry",       icon: <FolderOpen size={16} />,      href: "/admin/data-entry" },
 ];

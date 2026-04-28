@@ -20,16 +20,26 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type StaffRole = "admin" | "accounting_manager" | "tax_manager" | "accountant";
+export type UserRole = StaffRole | "client";
+
 export type PortalUser = {
   id: number;
   supabase_uid: string | null;
   email: string;
   name: string | null;
-  role: "client" | "admin";
+  role: UserRole;
   tenant_slug: string | null;
   must_reset_password: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type StaffAssignment = {
+  id: number;
+  staff_id: number;
+  tenant_slug: string;
+  assigned_at: string;
 };
 
 export type PortalTenant = {
@@ -923,4 +933,126 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
   }
 
   return result;
+}
+
+// ─── Staff / Team Management ──────────────────────────────────────────────────
+
+export const STAFF_ROLES: StaffRole[] = [
+  "admin",
+  "accounting_manager",
+  "tax_manager",
+  "accountant",
+];
+
+export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
+  admin: "Admin",
+  accounting_manager: "Accounting Manager",
+  tax_manager: "Tax Manager",
+  accountant: "Accountant",
+};
+
+/** List all staff members (non-client portal_users) */
+export async function listStaff(): Promise<PortalUser[]> {
+  const { data, error } = await supabase
+    .from("portal_users")
+    .select("*")
+    .in("role", STAFF_ROLES)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listStaff: ${error.message}`);
+  return (data ?? []) as PortalUser[];
+}
+
+/** Get a single staff member by id */
+export async function getStaffById(id: number): Promise<PortalUser | null> {
+  const { data, error } = await supabase
+    .from("portal_users")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) return null;
+  return data as PortalUser;
+}
+
+/** Create a new staff member (supabase_uid filled in later after auth invite) */
+export async function createStaffMember(params: {
+  email: string;
+  name: string;
+  role: StaffRole;
+}): Promise<PortalUser> {
+  const { data, error } = await supabase
+    .from("portal_users")
+    .insert({
+      email: params.email,
+      name: params.name,
+      role: params.role,
+      tenant_slug: null,
+      must_reset_password: true,
+    })
+    .select()
+    .single();
+  if (error) throw new Error(`createStaffMember: ${error.message}`);
+  return data as PortalUser;
+}
+
+/** Update a staff member's role and/or name */
+export async function updateStaffMember(
+  id: number,
+  updates: Partial<{ name: string; role: StaffRole }>
+): Promise<PortalUser> {
+  const { data, error } = await supabase
+    .from("portal_users")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw new Error(`updateStaffMember: ${error.message}`);
+  return data as PortalUser;
+}
+
+/** Remove a staff member from portal_users */
+export async function removeStaffMember(id: number): Promise<void> {
+  const { error } = await supabase
+    .from("portal_users")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(`removeStaffMember: ${error.message}`);
+}
+
+/** Get all client assignments for a staff member */
+export async function getStaffAssignments(staffId: number): Promise<StaffAssignment[]> {
+  const { data, error } = await supabase
+    .from("staff_client_assignments")
+    .select("*")
+    .eq("staff_id", staffId)
+    .order("assigned_at", { ascending: true });
+  if (error) throw new Error(`getStaffAssignments: ${error.message}`);
+  return (data ?? []) as StaffAssignment[];
+}
+
+/** Get all staff assigned to a specific tenant */
+export async function getAssignedStaff(tenantSlug: string): Promise<PortalUser[]> {
+  const { data, error } = await supabase
+    .from("staff_client_assignments")
+    .select("staff_id, portal_users(*)")
+    .eq("tenant_slug", tenantSlug);
+  if (error) throw new Error(`getAssignedStaff: ${error.message}`);
+  return ((data ?? []).map((r: Record<string, unknown>) => r.portal_users).filter(Boolean)) as PortalUser[];
+}
+
+/** Assign a staff member to a client tenant */
+export async function assignStaffToClient(staffId: number, tenantSlug: string): Promise<void> {
+  const { error } = await supabase
+    .from("staff_client_assignments")
+    .upsert({ staff_id: staffId, tenant_slug: tenantSlug }, { onConflict: "staff_id,tenant_slug" });
+  if (error) throw new Error(`assignStaffToClient: ${error.message}`);
+}
+
+/** Remove a staff member from a client tenant */
+export async function unassignStaffFromClient(staffId: number, tenantSlug: string): Promise<void> {
+  const { error } = await supabase
+    .from("staff_client_assignments")
+    .delete()
+    .eq("staff_id", staffId)
+    .eq("tenant_slug", tenantSlug);
+  if (error) throw new Error(`unassignStaffFromClient: ${error.message}`);
 }

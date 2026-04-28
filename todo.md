@@ -247,3 +247,16 @@
 - [x] ADMIN_NAV updated: Dashboard, Clients, Chat, Data Entry
 - [x] /admin default route shows AdminDashboard
 - [x] TypeScript: 0 errors
+
+## Phase 23: Team Member Management
+- [x] Supabase migration: supabase-migrations/team_management.sql — update role check constraint, create staff_client_assignments table
+- [x] StaffRole type, STAFF_ROLE_LABELS, STAFF_ROLES array added to supabase.ts
+- [x] listStaff(), createStaffMember(), updateStaffMember(), removeStaffMember() helpers in supabase.ts
+- [x] getStaffAssignments(), assignStaffToClient(), unassignStaffFromClient() helpers in supabase.ts
+- [x] staff.list, staff.roles, staff.invite, staff.update, staff.remove tRPC procedures
+- [x] staff.getAssignments, staff.assignClient, staff.unassignClient tRPC procedures
+- [x] AdminTeam.tsx: staff list with role-colored badges, invite dialog, edit role dialog, remove confirm
+- [x] AdminTeam.tsx: expandable client assignment panel per staff member (toggle assign/unassign)
+- [x] Team nav item (UserCog icon) added to ADMIN_NAV in PortalLayout.tsx
+- [x] /admin/team route registered in App.tsx
+- [x] TypeScript: 0 errors

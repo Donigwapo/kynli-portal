@@ -69,6 +69,16 @@ import {
   insertChatMessageSupabase,
   deleteChatMessageSupabase,
   type PortalUser,
+  type StaffRole,
+  STAFF_ROLES,
+  STAFF_ROLE_LABELS,
+  listStaff,
+  createStaffMember,
+  updateStaffMember,
+  removeStaffMember,
+  getStaffAssignments,
+  assignStaffToClient,
+  unassignStaffFromClient,
 } from "./supabase";
 
 // ─── Admin guard middleware ───────────────────────────────────────────────────
@@ -1038,6 +1048,60 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
         await deleteChatMessageSupabase(slug, input.id);
+        return { success: true };
+      }),
+  }),
+  // ─── Staff / Team Management ───────────────────────────────────────────────
+  staff: router({
+    list: adminProcedure.query(async () => listStaff()),
+
+    roles: adminProcedure.query(async () =>
+      STAFF_ROLES.map((r) => ({ value: r, label: STAFF_ROLE_LABELS[r] }))
+    ),
+
+    invite: adminProcedure
+      .input(z.object({
+        email: z.string().email(),
+        name: z.string().min(1),
+        role: z.enum(["admin", "accounting_manager", "tax_manager", "accountant"]),
+      }))
+      .mutation(async ({ input }) =>
+        createStaffMember({ email: input.email, name: input.name, role: input.role as StaffRole })
+      ),
+
+    update: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).optional(),
+        role: z.enum(["admin", "accounting_manager", "tax_manager", "accountant"]).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { id, ...updates } = input;
+        return updateStaffMember(id, updates as Partial<{ name: string; role: StaffRole }>);
+      }),
+
+    remove: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await removeStaffMember(input.id);
+        return { success: true };
+      }),
+
+    getAssignments: adminProcedure
+      .input(z.object({ staffId: z.number() }))
+      .query(async ({ input }) => getStaffAssignments(input.staffId)),
+
+    assignClient: adminProcedure
+      .input(z.object({ staffId: z.number(), tenantSlug: z.string() }))
+      .mutation(async ({ input }) => {
+        await assignStaffToClient(input.staffId, input.tenantSlug);
+        return { success: true };
+      }),
+
+    unassignClient: adminProcedure
+      .input(z.object({ staffId: z.number(), tenantSlug: z.string() }))
+      .mutation(async ({ input }) => {
+        await unassignStaffFromClient(input.staffId, input.tenantSlug);
         return { success: true };
       }),
   }),
