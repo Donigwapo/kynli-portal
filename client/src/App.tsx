@@ -9,9 +9,11 @@ import { PortalProvider } from "./contexts/PortalContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
+import AuthCallback from "./pages/AuthCallback";
 
 // Portal pages
 import Overview from "./pages/portal/Overview";
+import Profile from "./pages/portal/Profile";
 import Financials from "./pages/portal/Financials";
 import Reports from "./pages/portal/Reports";
 import Documents from "./pages/portal/Documents";
@@ -64,11 +66,13 @@ function Router() {
       {/* Landing / Login */}
       <Route path="/" component={Home} />
       <Route path="/login" component={Login} />
+      <Route path="/auth/callback" component={AuthCallback} />
 
       {/* Client Portal — protected, tier-gated */}
       {/* Set password page — shown after magic-link invite, no layout wrapper needed */}
       <Route path="/portal/set-password" component={() => <RouteGuard><SetPassword /></RouteGuard>} />
       <Route path="/portal"              component={() => <PortalRoute component={Overview}         featureKey="overview" />} />
+      <Route path="/portal/profile"      component={() => <PortalRoute component={Profile}          featureKey="overview" />} />
       <Route path="/portal/clients"      component={() => <PortalRoute component={Clients}          featureKey="clients" />} />
       <Route path="/portal/financials"   component={() => <PortalRoute component={Financials}       featureKey="financials" />} />
       <Route path="/portal/reports"      component={() => <PortalRoute component={Reports}          featureKey="reports" />} />

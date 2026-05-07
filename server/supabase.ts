@@ -297,10 +297,84 @@ export async function deleteTenant(slug: string): Promise<void> {
 
 // ─── Client Invite ───────────────────────────────────────────────────────────
 
+const RESEND_API_URL = "https://api.resend.com/emails";
+
+function getResendConfig() {
+  const apiKey = process.env.RESEND_API_KEY ?? "";
+  const fromEmail = process.env.RESEND_FROM_EMAIL ?? "Kynli Consulting <invite@kynliconsulting.com>";
+  return { apiKey, fromEmail };
+}
+
+type InviteEmailVariant = "invite" | "access";
+
+async function sendKynliInviteEmail(params: {
+  to: string;
+  companyName: string;
+  inviteLink: string;
+  variant: InviteEmailVariant;
+}): Promise<void> {
+  const { apiKey, fromEmail } = getResendConfig();
+
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+
+  const { to, companyName, inviteLink, variant } = params;
+
+  const isInvite = variant === "invite";
+  const subject = isInvite ? "You’re invited to Kynli Portal" : "Access Your Kynli Portal";
+  const heading = isInvite ? "Kynli Portal Invite" : "Access Your Kynli Portal";
+  const intro = isInvite
+    ? "You're invited to access your Kynli client portal."
+    : "Use the secure link below to access your Kynli client portal.";
+  const buttonLabel = isInvite ? "Accept Invite" : "Access Your Portal";
+
+  const html = `
+    <div style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <div style="padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
+        <h2 style="margin: 0 0 8px; font-size: 22px;">${heading}</h2>
+        <p style="margin: 0 0 16px; color: #4b5563;">${intro}</p>
+        <p style="margin: 0 0 8px;"><strong>Company:</strong> ${companyName}</p>
+        <p style="margin: 0 0 20px; color: #4b5563;">Welcome! Click below to continue.</p>
+        <a href="${inviteLink}" style="display: inline-block; background: #111827; color: #ffffff; text-decoration: none; padding: 12px 18px; border-radius: 8px; font-weight: 600;">${buttonLabel}</a>
+        <p style="margin: 20px 0 8px; color: #6b7280; font-size: 13px;">If the button doesn’t work, use this link:</p>
+        <p style="word-break: break-all; margin: 0; font-size: 13px;"><a href="${inviteLink}">${inviteLink}</a></p>
+      </div>
+    </div>
+  `;
+
+  const text = [
+    subject,
+    "",
+    `Company: ${companyName}`,
+    `Use this link to continue:`,
+    inviteLink,
+  ].join("\n");
+
+  const response = await fetch(RESEND_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: fromEmail,
+      to: [to],
+      subject,
+      html,
+      text,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Resend send failed (${response.status} ${response.statusText})${detail ? `: ${detail}` : ""}`);
+  }
+}
+
 /**
- * Sends a Supabase magic-link invite to a client email.
- * Creates the Supabase Auth user if they don't exist yet.
- * Returns { sent: true } on success or throws.
+ * Generates a Supabase invite link and sends a branded email through Resend.
+ * Returns { sent: true } on success.
  */
 export async function inviteClientByEmail(
   email: string,
@@ -308,19 +382,115 @@ export async function inviteClientByEmail(
   tenantSlug: string,
   redirectTo: string,
 ): Promise<{ sent: boolean; error?: string }> {
-  // 1. Send the invite via Supabase Auth Admin API
-  const { data: authData, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
-    redirectTo,
-    data: { name, tenant_slug: tenantSlug },
-  });
-  if (authError) {
-    console.error(`[inviteClientByEmail] Auth invite failed for ${email}:`, authError.message);
-    return { sent: false, error: authError.message };
+  type GeneratedLinkResult = {
+    user?: { id?: string | null } | null;
+    properties?: {
+      action_link?: string | null;
+      email_otp?: string | null;
+    } | null;
+  };
+
+  let linkData: GeneratedLinkResult | null = null;
+  let emailVariant: InviteEmailVariant = "invite";
+
+  // 1) Try invite link first (new users)
+  {
+    const { data, error } = await supabase.auth.admin.generateLink({
+      type: "invite",
+      email,
+      options: {
+        redirectTo,
+        data: { name, tenant_slug: tenantSlug },
+      },
+    });
+
+    if (!error && data) {
+      linkData = data;
+      emailVariant = "invite";
+      console.info("[inviteClientByEmail] new invite link generated", {
+        linkTypeUsed: "invite",
+        recipientEmail: email,
+        redirectTo,
+      });
+    } else {
+      const message = error?.message ?? "Invite link generation failed";
+      const msg = message.toLowerCase();
+      const isExistingUser =
+        msg.includes("already") ||
+        msg.includes("exists") ||
+        msg.includes("registered") ||
+        msg.includes("invitee already") ||
+        msg.includes("user already");
+
+      if (!isExistingUser) {
+        console.error(`[inviteClientByEmail] generateLink(invite) failed for ${email}:`, message);
+        return { sent: false, error: message };
+      }
+
+      console.info("[inviteClientByEmail] existing user detected", {
+        email,
+        tenantSlug,
+        reason: message,
+      });
+
+      // 2) Existing users: fallback to magic link
+      const { data: magicData, error: magicError } = await supabase.auth.admin.generateLink({
+        type: "magiclink",
+        email,
+        options: {
+          redirectTo,
+        },
+      });
+
+      if (magicError || !magicData) {
+        const magicMessage = magicError?.message ?? "Magic link generation failed";
+        console.error(`[inviteClientByEmail] generateLink(magiclink) failed for ${email}:`, magicMessage);
+        return { sent: false, error: magicMessage };
+      }
+
+      linkData = magicData;
+      emailVariant = "access";
+      console.info("[inviteClientByEmail] magic link generated", {
+        linkTypeUsed: "magiclink",
+        recipientEmail: email,
+        redirectTo,
+      });
+    }
   }
 
-  // 2. Upsert portal_users record linking supabase_uid → client role
-  const supabaseUid = authData?.user?.id ?? null;
-  await supabase.from("portal_users").upsert(
+  const inviteLink = linkData?.properties?.action_link || linkData?.properties?.email_otp || "";
+
+  if (!inviteLink) {
+    const errMsg = "Supabase generateLink did not return an action link";
+    console.error(`[inviteClientByEmail] ${errMsg} for ${email}`);
+    return { sent: false, error: errMsg };
+  }
+
+  // 3) Send branded email via Resend
+  try {
+    await sendKynliInviteEmail({
+      to: email,
+      companyName: name,
+      inviteLink,
+      variant: emailVariant,
+    });
+    console.info("[inviteClientByEmail] Resend send success", {
+      recipientEmail: email,
+      redirectTo,
+      linkTypeUsed: emailVariant === "invite" ? "invite" : "magiclink",
+      resendSentSuccessfully: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown Resend error";
+    console.error("[inviteClientByEmail] Resend send failure", { email, tenantSlug, error: message });
+    return { sent: false, error: message };
+  }
+
+  // 4) Mark invite metadata only after email send succeeds
+  const supabaseUid = linkData?.user?.id ?? null;
+  const nowIso = new Date().toISOString();
+
+  const { error: upsertError } = await supabase.from("portal_users").upsert(
     {
       supabase_uid: supabaseUid,
       email,
@@ -328,17 +498,24 @@ export async function inviteClientByEmail(
       role: "client",
       tenant_slug: tenantSlug,
       must_reset_password: false,
-      invite_sent_at: new Date().toISOString(),
+      invite_sent_at: nowIso,
       invite_accepted: false,
     },
     { onConflict: "email" },
   );
 
-  // 3. Stamp invite_sent_at on the tenant record
-  await supabase
+  if (upsertError) {
+    return { sent: false, error: upsertError.message };
+  }
+
+  const { error: tenantUpdateError } = await supabase
     .from("portal_tenants")
-    .update({ invite_sent_at: new Date().toISOString() })
+    .update({ invite_sent_at: nowIso })
     .eq("slug", tenantSlug);
+
+  if (tenantUpdateError) {
+    return { sent: false, error: tenantUpdateError.message };
+  }
 
   return { sent: true };
 }

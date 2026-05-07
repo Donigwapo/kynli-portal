@@ -10,7 +10,14 @@
 
 import type { Express, Request, Response } from "express";
 import { SignJWT, jwtVerify } from "jose";
-import { supabase, getPortalUserByUid, getPortalUserByEmail, type PortalUser } from "./supabase";
+import {
+  supabase,
+  getPortalUserByUid,
+  getPortalUserByEmail,
+  markInviteAccepted,
+  type PortalUser,
+  type PortalTenant,
+} from "./supabase";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { COOKIE_NAME } from "@shared/const";
 
@@ -68,6 +75,127 @@ export async function getPortalUserFromRequest(req: Request): Promise<PortalUser
 // ─── Register auth routes ─────────────────────────────────────────────────────
 
 export function registerAuthRoutes(app: Express) {
+  async function resolvePortalUserFromAuthUser(authUser: {
+    id: string;
+    email?: string | null;
+  }): Promise<PortalUser | null> {
+    let portalUser = await getPortalUserByUid(authUser.id);
+    if (portalUser) {
+      console.info("[Auth] portal user found by supabase_uid", { uid: authUser.id, email: portalUser.email });
+      return portalUser;
+    }
+
+    const email = (authUser.email ?? "").trim().toLowerCase();
+
+    if (email) {
+      console.info("[Auth] searching portal_users by email", { email });
+      portalUser = await getPortalUserByEmail(email);
+
+      if (portalUser) {
+        console.info("[Auth] portal_users match found", {
+          email,
+          tenant_slug: portalUser.tenant_slug,
+          hadSupabaseUid: Boolean(portalUser.supabase_uid),
+        });
+
+        if (!portalUser.supabase_uid) {
+          await supabase
+            .from("portal_users")
+            .update({ supabase_uid: authUser.id, updated_at: new Date().toISOString() })
+            .eq("email", email);
+
+          portalUser = { ...portalUser, supabase_uid: authUser.id };
+          console.info("[Auth] linked supabase_uid to existing portal_user", { email, uid: authUser.id });
+        }
+
+        return portalUser;
+      }
+
+      console.info("[Auth] no portal_users match; searching portal_tenants by email", { email });
+      const { data: tenantByEmail } = await supabase
+        .from("portal_tenants")
+        .select("slug, company_name, contact_name, email")
+        .ilike("email", email)
+        .maybeSingle();
+
+      let matchedTenant: Pick<PortalTenant, "slug" | "company_name" | "contact_name" | "email"> | null =
+        (tenantByEmail as Pick<PortalTenant, "slug" | "company_name" | "contact_name" | "email"> | null) ?? null;
+
+      if (!matchedTenant) {
+        console.info("[Auth] no portal_tenants.email match; searching portal_tenants by contact_name", { email });
+        const { data: tenantByContactEmail, error: contactLookupError } = await supabase
+          .from("portal_tenants")
+          .select("slug, company_name, contact_name, email")
+          .ilike("contact_name", email)
+          .maybeSingle();
+
+        if (contactLookupError) {
+          console.warn("[Auth] portal_tenants contact_name lookup failed", { email, error: contactLookupError.message });
+        }
+
+        matchedTenant =
+          (tenantByContactEmail as Pick<PortalTenant, "slug" | "company_name" | "contact_name" | "email"> | null) ??
+          null;
+      }
+
+      if (matchedTenant) {
+        console.info("[Auth] matched tenant record for callback-session", {
+          searchedTable: "portal_tenants",
+          email,
+          slug: matchedTenant.slug,
+        });
+
+        const { data: createdPortalUser, error: createError } = await supabase
+          .from("portal_users")
+          .upsert(
+            {
+              supabase_uid: authUser.id,
+              email,
+              name: matchedTenant.contact_name ?? matchedTenant.company_name,
+              role: "client",
+              tenant_slug: matchedTenant.slug,
+              must_reset_password: false,
+              invite_accepted: true,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "email" },
+          )
+          .select("*")
+          .single();
+
+        if (createError) {
+          console.error("[Auth] failed to create/link portal_user from tenant match", {
+            email,
+            slug: matchedTenant.slug,
+            error: createError.message,
+          });
+          return null;
+        }
+
+        console.info("[Auth] created/linked portal_user from tenant match", {
+          email,
+          slug: matchedTenant.slug,
+          uid: authUser.id,
+        });
+
+        return createdPortalUser as PortalUser;
+      }
+
+      console.warn("[Auth] no portal account match found across searched tables", {
+        email,
+        searchedTables: ["portal_users", "portal_tenants.email", "portal_tenants.contact_name"],
+      });
+    }
+
+    return null;
+  }
+
+  async function issueSessionCookie(req: Request, res: Response, portalUser: PortalUser) {
+    const sessionToken = await createPortalSessionToken(portalUser);
+    const cookieOptions = getSessionCookieOptions(req);
+    res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+  }
+
   // POST /api/auth/login
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     const { email, password } = req.body as { email?: string; password?: string };
@@ -89,31 +217,18 @@ export function registerAuthRoutes(app: Express) {
         return;
       }
 
-      // Fetch portal user record
-      let portalUser = await getPortalUserByUid(authData.user.id);
+      const portalUser = await resolvePortalUserFromAuthUser(authData.user);
 
-      // Fallback: look up by email if uid not linked yet
-      if (!portalUser) {
-        portalUser = await getPortalUserByEmail(email);
-        if (portalUser && !portalUser.supabase_uid) {
-          // Link the UID
-          await supabase
-            .from("portal_users")
-            .update({ supabase_uid: authData.user.id, updated_at: new Date().toISOString() })
-            .eq("email", email);
-          portalUser = { ...portalUser, supabase_uid: authData.user.id };
-        }
-      }
+      await markInviteAccepted(email).catch((err) => {
+        console.warn("[Auth] Failed to mark invite accepted during login:", err);
+      });
 
       if (!portalUser) {
         res.status(403).json({ error: "No portal account found for this email. Contact your KynLi advisor." });
         return;
       }
 
-      // Create session cookie
-      const sessionToken = await createPortalSessionToken(portalUser);
-      const cookieOptions = getSessionCookieOptions(req);
-      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      await issueSessionCookie(req, res, portalUser);
 
       res.json({
         success: true,
@@ -137,6 +252,61 @@ export function registerAuthRoutes(app: Express) {
     const cookieOptions = getSessionCookieOptions(req);
     res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     res.json({ success: true });
+  });
+
+  // GET /api/auth/callback-session
+  // Used by Supabase invite/magic-link callback on frontend to mint app JWT cookie.
+  app.post("/api/auth/callback-session", async (req: Request, res: Response) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+    if (!token) {
+      res.status(400).json({ error: "Missing Supabase access token" });
+      return;
+    }
+
+    try {
+      const {
+        data: { user: authUser },
+        error,
+      } = await supabase.auth.getUser(token);
+
+      if (error || !authUser) {
+        res.status(401).json({ error: "Invalid Supabase session token" });
+        return;
+      }
+
+      const portalUser = await resolvePortalUserFromAuthUser(authUser);
+
+      const email = authUser.email ?? "";
+      if (email) {
+        await markInviteAccepted(email).catch((err) => {
+          console.warn("[Auth] Failed to mark invite accepted during callback:", err);
+        });
+      }
+
+      if (!portalUser) {
+        res.status(403).json({ error: "No portal account found for this email." });
+        return;
+      }
+
+      await issueSessionCookie(req, res, portalUser);
+
+      res.json({
+        success: true,
+        user: {
+          id: portalUser.id,
+          email: portalUser.email,
+          name: portalUser.name,
+          role: portalUser.role,
+          tenant_slug: portalUser.tenant_slug,
+          must_reset_password: portalUser.must_reset_password,
+        },
+      });
+    } catch (err) {
+      console.error("[Auth] Callback session error:", err);
+      res.status(500).json({ error: "Failed to establish session" });
+    }
   });
 
   // GET /api/auth/me

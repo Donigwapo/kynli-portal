@@ -86,6 +86,18 @@ import {
   deleteTenant,
 } from "./supabase";
 
+// ─── Invite redirect helpers ─────────────────────────────────────────────────
+const PROD_PORTAL_ORIGIN = "https://portal.kynliconsulting.com";
+
+function getInviteRedirectTo(portalOrigin?: string): string {
+  if (process.env.NODE_ENV === "production") {
+    return `${PROD_PORTAL_ORIGIN}/auth/callback`;
+  }
+
+  const origin = (portalOrigin && portalOrigin.trim()) || "http://localhost:3000";
+  return `${origin.replace(/\/$/, "")}/auth/callback`;
+}
+
 // ─── Admin guard middleware ───────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") {
@@ -205,11 +217,11 @@ export const appRouter = router({
         const provision = await provisionTenant(input.slug);
         // Send magic-link invite if requested and email is provided
         let invite: { sent: boolean; error?: string } | null = null;
-        if (input.sendInvite && input.email && input.portalOrigin) {
-          const redirectTo = `${input.portalOrigin}/portal`;
+        if (input.sendInvite && input.email) {
+          const redirectTo = getInviteRedirectTo(input.portalOrigin);
           invite = await inviteClientByEmail(
             input.email,
-            input.contactName ?? input.companyName,
+            input.companyName,
             input.slug,
             redirectTo,
           );
@@ -226,10 +238,10 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const tenant = await getTenantBySlug(input.slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const redirectTo = `${input.portalOrigin}/portal`;
+        const redirectTo = getInviteRedirectTo(input.portalOrigin);
         const result = await inviteClientByEmail(
           input.email,
-          input.contactName ?? tenant.company_name,
+          tenant.company_name,
           input.slug,
           redirectTo,
         );
