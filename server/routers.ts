@@ -32,6 +32,7 @@ import {
   getDocuments,
   insertDocument,
   deleteDocument,
+  deleteDocuments,
   getFinancials,
   getKpiMetrics,
   getLineItems,
@@ -67,6 +68,8 @@ import {
   getThreadReplies,
   incrementReplyCount,
   insertChatMessageSupabase,
+  insertGlobalChatTextMessage,
+  insertGlobalChatFileMessage,
   deleteChatMessageSupabase,
   type PortalUser,
   type StaffRole,
@@ -84,6 +87,8 @@ import {
   archiveTenant,
   restoreTenant,
   deleteTenant,
+  sanitizeTenantSlug,
+  backfillDocumentsOrganizationIds,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
@@ -96,6 +101,39 @@ function getInviteRedirectTo(portalOrigin?: string): string {
 
   const origin = (portalOrigin && portalOrigin.trim()) || "http://localhost:3000";
   return `${origin.replace(/\/$/, "")}/auth/callback`;
+}
+
+function sanitizeStorageFileName(rawName: string | undefined, fallbackExt: string): string {
+  const raw = (rawName && rawName.trim()) || `document.${fallbackExt}`;
+
+  // Remove path separators/controls and normalize unicode.
+  const normalized = raw
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\\/]/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+
+  const lastDot = normalized.lastIndexOf(".");
+  const hasExt = lastDot > 0 && lastDot < normalized.length - 1;
+
+  const base = hasExt ? normalized.slice(0, lastDot) : normalized;
+  const extRaw = hasExt ? normalized.slice(lastDot + 1) : fallbackExt;
+
+  const safeBase = base
+    .toLowerCase()
+    .replace(/\./g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/_+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "") || "file";
+
+  const safeExt = (extRaw || fallbackExt)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "") || fallbackExt;
+
+  return `${safeBase}.${safeExt}`;
 }
 
 // ─── Admin guard middleware ───────────────────────────────────────────────────
@@ -111,6 +149,46 @@ async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Pr
   if (user.role === "admin" && impersonateSlug) return impersonateSlug;
   if (user.tenant_slug) return user.tenant_slug;
   throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
+}
+
+async function authorizeDocumentDeleteScope(
+  user: PortalUser,
+  ids: Array<string | number>,
+  tenantSlugOverride?: string,
+): Promise<string> {
+  const resolvedSlug = sanitizeTenantSlug(await resolveTenantSlug(user, tenantSlugOverride));
+  const normalizedIds = ids.map((id) => String(id));
+
+  const { data, error } = await supabase
+    .from("documents_metadata")
+    .select("id, tenant_slug, uploaded_by_user_id")
+    .in("id", normalizedIds);
+
+  if (error) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Unable to validate document ownership: ${error.message}` });
+  }
+
+  const rows = (data || []) as Array<{ id: string; tenant_slug: string; uploaded_by_user_id: string | null }>;
+  const tenantMismatches = rows.filter((row) => sanitizeTenantSlug(row.tenant_slug) !== resolvedSlug);
+
+  console.info("[documents.delete] authorization decision", {
+    userId: user.id,
+    userEmail: user.email,
+    role: user.role,
+    tenantSlug: resolvedSlug,
+    documentCount: rows.length,
+    documentTenantSlugs: Array.from(new Set(rows.map((r) => sanitizeTenantSlug(r.tenant_slug)))),
+    mismatchCount: tenantMismatches.length,
+  });
+
+  if (tenantMismatches.length > 0) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You can only delete documents from your own tenant.",
+    });
+  }
+
+  return resolvedSlug;
 }
 
 /**
@@ -179,6 +257,14 @@ export const appRouter = router({
           await markInviteAccepted(ctx.user.email);
         }
         return { success: true };
+      }),
+  }),
+
+  documentsAdmin: router({
+    backfillOrganizationIds: adminProcedure
+      .mutation(async () => {
+        const result = await backfillDocumentsOrganizationIds();
+        return { success: true, ...result };
       }),
   }),
 
@@ -370,35 +456,150 @@ export const appRouter = router({
         month: z.number().optional(), // 1–12
       }))
       .mutation(async ({ ctx, input }) => {
-        const buffer = Buffer.from(input.fileBase64, "base64");
+        const bucketName = process.env.SUPABASE_STORAGE_BUCKET || "documents";
+
+        let resolvedTenantSlug: string;
+        try {
+          resolvedTenantSlug = await resolveTenantSlug(ctx.user);
+        } catch (error) {
+          console.error("[documents.upload] unable to resolve tenant slug", {
+            userId: ctx.user.id,
+            userEmail: ctx.user.email,
+            userTenantSlug: ctx.user.tenant_slug,
+            rawTenantSlug: ctx.user.tenant_slug,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Unable to resolve tenant slug for document upload.",
+          });
+        }
+
+        console.info("[documents.upload] tenant slug resolution", {
+          userId: ctx.user.id,
+          userEmail: ctx.user.email,
+          userTenantSlug: ctx.user.tenant_slug,
+          rawTenantSlug: ctx.user.tenant_slug,
+          resolvedTenantSlug,
+        });
+
+        const tenantSlug = sanitizeTenantSlug(resolvedTenantSlug);
+
+        console.info("[documents.upload] tenant slug sanitized", {
+          rawTenantSlug: resolvedTenantSlug,
+          sanitizedTenantSlug: tenantSlug,
+        });
+
+        const tenantRecord = await getTenantBySlug(tenantSlug);
+        const organizationId = tenantRecord?.id != null ? String(tenantRecord.id) : null;
+        const uploadedByUserId = ctx.user.id != null ? String(ctx.user.id) : null;
+
+        console.info("[documents.upload] tenant lookup result", {
+          tenantSlug,
+          tenantRecord,
+        });
+
+        if (!organizationId) {
+          console.warn("[documents.upload] organization_id unresolved; inserting null", {
+            tenantSlug,
+            userId: ctx.user.id,
+            userEmail: ctx.user.email,
+          });
+        }
+
+        console.info("[documents.upload] metadata ownership resolution", {
+          tenantSlug,
+          organizationId,
+          uploadedByUserId,
+        });
+
+        let buffer: Buffer;
+        try {
+          buffer = Buffer.from(input.fileBase64, "base64");
+        } catch (error) {
+          console.error("[documents.upload] invalid base64 payload", {
+            tenantSlug,
+            fileName: input.fileName,
+            mimeType: input.mimeType,
+            error,
+          });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid file payload." });
+        }
+
+        if (!buffer.length) {
+          console.error("[documents.upload] empty decoded payload", {
+            tenantSlug,
+            fileName: input.fileName,
+            fileBase64Length: input.fileBase64.length,
+          });
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Uploaded file is empty or invalid." });
+        }
+
         const ext = input.mimeType.split("/")[1]
           ?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
           .replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
-        const tenantSlug = ctx.user.tenant_slug || `tenant-${ctx.user.id}`;
-        const safeDocType = input.docType.toLowerCase().replace(/[^a-z0-9]/g, "-");
+        const safeDocType = (input.docType || "other").toLowerCase().replace(/[^a-z0-9]/g, "-") || "other";
+        const safeYear = Number.isFinite(input.year) ? String(input.year) : "unknown_year";
+        const safeMonth = input.month && Number.isFinite(input.month)
+          ? String(input.month).padStart(2, "0")
+          : "00";
         const timestamp = Date.now();
         const rand = Math.random().toString(36).slice(2);
         const originalFileName = input.fileName || `document-${timestamp}.${ext}`;
-        // Upload to Supabase Storage: documents/{tenantSlug}/{docType}/{timestamp}-{rand}-{filename}
-        const supabasePath = `${tenantSlug}/${safeDocType}/${timestamp}-${rand}-${originalFileName}`;
-        const { error: sbError } = await supabase.storage
-          .from("documents")
-          .upload(supabasePath, buffer, { contentType: input.mimeType, upsert: false });
+        const sanitizedFileName = sanitizeStorageFileName(originalFileName, ext);
+        const supabasePath = `${tenantSlug}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
+
+        console.info("[documents.upload] starting upload", {
+          tenantSlug,
+          bucketName,
+          fileName: originalFileName,
+          sanitizedFileName,
+          mimeType: input.mimeType,
+          fileSize: input.fileSize ?? buffer.length,
+          tableName: "documents_metadata",
+        });
+
         let fileUrl: string;
         let fileKey: string;
-        if (sbError) {
-          // Fallback to S3 if Supabase upload fails
-          console.warn("Supabase upload failed, falling back to S3:", sbError.message);
-          const s3Key = `docs/${tenantSlug}/${safeDocType}/${timestamp}-${rand}.${ext}`;
-          const s3Result = await storagePut(s3Key, buffer, input.mimeType);
-          fileUrl = s3Result.url;
-          fileKey = s3Key;
-        } else {
-          const { data: urlData } = supabase.storage.from("documents").getPublicUrl(supabasePath);
-          fileUrl = urlData.publicUrl;
-          fileKey = supabasePath;
+
+        try {
+          const uploaded = await storagePut(supabasePath, buffer, input.mimeType);
+          fileUrl = uploaded.url;
+          fileKey = uploaded.key;
+        } catch (primaryUploadError) {
+          const primaryMessage =
+            primaryUploadError instanceof Error ? primaryUploadError.message : String(primaryUploadError);
+
+          console.error("[documents.upload] storage upload failed", {
+            tenantSlug,
+            bucketName,
+            path: supabasePath,
+            error: primaryMessage,
+          });
+
+          const fallbackKey = `docs/${tenantSlug}/${safeDocType}/${timestamp}-${rand}.${ext}`;
+          try {
+            const fallbackResult = await storagePut(fallbackKey, buffer, input.mimeType);
+            fileUrl = fallbackResult.url;
+            fileKey = fallbackResult.key;
+          } catch (fallbackError) {
+            const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            console.error("[documents.upload] fallback upload failed", {
+              tenantSlug,
+              bucketName,
+              path: fallbackKey,
+              error: fallbackMessage,
+            });
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Document storage upload failed: ${primaryMessage}`,
+            });
+          }
         }
-        await insertDocument(tenantSlug, {
+
+        const documentInsertPayload = {
+          organization_id: organizationId,
+          client_id: null,
           name: input.name,
           description: input.description || null,
           doc_type: input.docType,
@@ -410,15 +611,54 @@ export const appRouter = router({
           year: input.year,
           month: input.month ?? null,
           uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+          uploaded_by_user_id: uploadedByUserId,
+        };
+
+        console.info("[documents.upload] final insert payload", {
+          tenantSlug,
+          payload: documentInsertPayload,
         });
+
+        try {
+          await insertDocument(tenantSlug, documentInsertPayload);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("[documents.upload] insertDocument failed", {
+            tenantSlug,
+            tableName: "documents_metadata",
+            uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+            fileKey,
+            error: message,
+          });
+
+          if (message.includes("relation") || message.includes("does not exist") || message.includes("404")) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Document upload failed: documents_metadata table does not exist yet.",
+            });
+          }
+
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Document upload failed while saving the document record: ${message}`,
+          });
+        }
+
         return { success: true, url: fileUrl };
       }),
-    delete: adminProcedure
-      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+    delete: protectedProcedure
+      .input(z.object({ id: z.union([z.string(), z.number()]), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        await deleteDocument(slug, input.id);
+        const authorizedSlug = await authorizeDocumentDeleteScope(ctx.user, [input.id], input.tenantSlug);
+        await deleteDocument(authorizedSlug, input.id);
         return { success: true };
+      }),
+    bulkDelete: protectedProcedure
+      .input(z.object({ ids: z.array(z.union([z.string(), z.number()])).min(1), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const authorizedSlug = await authorizeDocumentDeleteScope(ctx.user, input.ids, input.tenantSlug);
+        const result = await deleteDocuments(authorizedSlug, input.ids);
+        return { success: true, deleted: result.deleted };
       }),
   }),
 
@@ -979,7 +1219,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         return getThreadReplies(slug, input.parentId);
       }),
 
-    // Send a text message
+    // Send a text message (Phase 1 global chat table)
     send: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
@@ -989,25 +1229,29 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const now = new Date();
-        const msg = await insertChatMessageSupabase(slug, {
-          sender_user_id: ctx.user.id ?? null,
-          sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
-          sender_role: ctx.user.role === "admin" ? "admin" : "client",
-          message: input.body,
-          read: false,
-          file_key: null,
-          file_url: null,
-          file_name: null,
-          file_size: null,
-          mime_type: null,
-          archive_year: now.getFullYear(),
-          archive_month: now.getMonth() + 1,
-          portal_document_id: null,
-          thread_id: null,
-          reply_count: 0,
-        });
-        return msg;
+
+        try {
+          const msg = await insertGlobalChatTextMessage({
+            tenant_slug: slug,
+            organization_id: tenant?.id != null ? String(tenant.id) : null,
+            sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
+            sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
+            sender_role: ctx.user.role === "admin" ? "admin" : "client",
+            message_text: input.body,
+          });
+          return msg;
+        } catch (error) {
+          console.error("[chat.send] global insert failed", {
+            tenantSlug: slug,
+            senderUserId: ctx.user.id ?? null,
+            senderRole: ctx.user.role,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: error instanceof Error ? error.message : "Failed to send chat message",
+          });
+        }
       }),
 
     // Reply to a thread (sets thread_id to parent message id)
@@ -1063,19 +1307,32 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const archiveYear = now.getFullYear();
         const archiveMonth = now.getMonth() + 1;
 
-        // Upload file bytes to S3
-        const suffix = Math.random().toString(36).slice(2, 8);
-        const fileKey = `${slug}/chat/${archiveYear}-${String(archiveMonth).padStart(2, "0")}/${suffix}-${input.fileName}`;
+        // Upload file bytes to documents storage
+        const ext = input.mimeType.split("/")[1]
+          ?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+          .replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
+        const safeDocType = "chat_attachment";
+        const safeYear = String(archiveYear);
+        const safeMonth = String(archiveMonth).padStart(2, "0");
+        const timestamp = Date.now();
+        const rand = Math.random().toString(36).slice(2);
+        const originalFileName = input.fileName || `attachment-${timestamp}.${ext}`;
+        const sanitizedFileName = sanitizeStorageFileName(originalFileName, ext);
+        const fileKey = `${slug}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
+
         const fileBuffer = Buffer.from(input.fileBase64, "base64");
         const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
 
-        // Auto-archive to Supabase {slug}_documents (same store the Document Portal reads from)
-        let insertedDocId: number | null = null;
+        // Auto-archive to global documents_metadata table (scoped by tenant_slug)
+        let insertedDocMetadataId: string | null = null;
+        let insertedDocIdForLegacyInt: number | null = null;
         try {
           const inserted = await insertDocument(slug, {
+            organization_id: tenant?.id != null ? String(tenant.id) : null,
+            client_id: null,
             name: input.fileName,
             description: `Shared via chat by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
-            doc_type: "Chat Attachment",
+            doc_type: "chat_attachment",
             file_key: fileKey,
             file_url: fileUrl,
             file_name: input.fileName,
@@ -1084,30 +1341,69 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             year: archiveYear,
             month: archiveMonth,
             uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+            uploaded_by_user_id: ctx.user.id ? String(ctx.user.id) : null,
           });
-          if (inserted) insertedDocId = inserted.id;
+          if (inserted) {
+            insertedDocMetadataId = inserted.id ?? null;
+            // Legacy chat table column is INTEGER; documents_metadata.id is UUID.
+            const parsedDocId = Number(inserted.id);
+            insertedDocIdForLegacyInt = Number.isFinite(parsedDocId) ? parsedDocId : null;
+          }
         } catch (archiveErr) {
-          console.error(`[chat.sendFile] Exception archiving doc to Supabase:`, archiveErr);
+          console.error("[chat.sendFile] documents_metadata archive failed (non-blocking for chat message)", {
+            slug,
+            fileKey,
+            fileName: input.fileName,
+            error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
+          });
         }
 
-        // Record in chat (Supabase)
-        const msg = await insertChatMessageSupabase(slug, {
-          sender_user_id: ctx.user.id ?? null,
+        // Record in global chat table (portal_chat_messages)
+        let msg;
+        const chatInsertPayload = {
+          tenant_slug: slug,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
           sender_role: ctx.user.role === "admin" ? "admin" : "client",
-          message: input.body ?? null,
-          read: false,
-          file_key: fileKey,
+          message_text: input.body ?? null,
           file_url: fileUrl,
+          file_key: fileKey,
           file_name: input.fileName,
           file_size: input.fileSize,
           mime_type: input.mimeType,
-          archive_year: archiveYear,
-          archive_month: archiveMonth,
-          portal_document_id: insertedDocId,
-          thread_id: null,
-          reply_count: 0,
+          document_metadata_id: insertedDocMetadataId,
+          message_type: "file" as const,
+        };
+
+        console.info("[chat.sendFile] global chat insert payload", {
+          tableName: "portal_chat_messages",
+          tenantSlug: slug,
+          file_url: fileUrl,
+          file_name: input.fileName,
+          file_key: fileKey,
+          document_metadata_id: insertedDocMetadataId,
+          document_metadata_id_type: typeof insertedDocMetadataId,
+          payload: chatInsertPayload,
         });
+
+        try {
+          msg = await insertGlobalChatFileMessage(chatInsertPayload);
+        } catch (chatInsertErr) {
+          const detail = chatInsertErr instanceof Error ? chatInsertErr.message : String(chatInsertErr);
+          console.error("[chat.sendFile] global chat insert failed", {
+            slug,
+            fileKey,
+            fileUrl,
+            insertedDocMetadataId,
+            insertedDocIdForLegacyInt,
+            detail,
+          });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `File was uploaded to the vault, but creating the chat message failed: ${detail}`,
+          });
+        }
 
         // Notify admin if sender is a client
         if (ctx.user.role !== "admin") {

@@ -1,6 +1,6 @@
 // Storage helpers backed by Supabase Storage
 
-import { supabase } from "./supabase";
+import { createClient } from "@supabase/supabase-js";
 
 function getBucketName(): string {
   return process.env.SUPABASE_STORAGE_BUCKET || "documents";
@@ -22,6 +22,28 @@ function toUploadBody(data: Buffer | Uint8Array | string): Buffer {
   return Buffer.from(data);
 }
 
+function getStorageAdminClient() {
+  const url = process.env.SUPABASE_URL ?? "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+
+  if (!url || !serviceKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for storage uploads");
+  }
+
+  return createClient(url, serviceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+      },
+    },
+  });
+}
+
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
@@ -30,8 +52,9 @@ export async function storagePut(
   const bucket = getBucketName();
   const key = normalizeKey(relKey);
   const uploadBody = toUploadBody(data);
+  const storageClient = getStorageAdminClient();
 
-  const { error } = await supabase.storage
+  const { error } = await storageClient.storage
     .from(bucket)
     .upload(key, uploadBody, { contentType, upsert: false });
 
@@ -39,7 +62,7 @@ export async function storagePut(
     throw new Error(`Storage upload failed: ${error.message}`);
   }
 
-  const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(key);
+  const { data: urlData } = storageClient.storage.from(bucket).getPublicUrl(key);
 
   return { key, url: urlData.publicUrl };
 }
@@ -47,7 +70,8 @@ export async function storagePut(
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
   const bucket = getBucketName();
   const key = normalizeKey(relKey);
-  const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(key);
+  const storageClient = getStorageAdminClient();
+  const { data: urlData } = storageClient.storage.from(bucket).getPublicUrl(key);
 
   return {
     key,

@@ -21,6 +21,10 @@ import {
   Search,
   MessageCircleReply,
   ChevronLeft,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Clock3,
 } from "lucide-react";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -81,6 +85,7 @@ function humanSize(bytes?: number | null) {
 }
 
 const MAX_FILE_MB = 16;
+const MAX_ATTACH_FILES = 10;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,8 +101,10 @@ type Msg = {
   mimeType?: string | null;
   replyCount: number;
   threadId?: number | null;
-  portalDocId?: number | null; // set when archive to MySQL documents succeeded
+  portalDocId?: number | null;
   createdAt: string | Date;
+  localStatus?: "sending" | "failed";
+  localError?: string;
 };
 
 function normalizeMsg(raw: any): Msg {
@@ -170,6 +177,30 @@ function MessageBubble({
               : "bg-card border border-border text-foreground rounded-tl-sm"
             }`}
         >
+          {/* Local pending status */}
+          {msg.localStatus && (
+            <div className="mb-2">
+              <div
+                className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] ${
+                  msg.localStatus === "sending"
+                    ? "border-blue-400/30 bg-blue-500/10 text-blue-200"
+                    : "border-red-400/30 bg-red-500/10 text-red-200"
+                }`}
+              >
+                {msg.localStatus === "sending" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {msg.localStatus === "sending"
+                    ? "Sending file…"
+                    : `Failed to send file${msg.localError ? `: ${msg.localError}` : ""}`}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* File attachment */}
           {msg.fileUrl && (
             <div className="mb-2">
@@ -273,69 +304,230 @@ function DateDivider({ label }: { label: string }) {
 
 // ─── Compose input ────────────────────────────────────────────────────────────
 
+type AttachmentStatus = "pending" | "uploading" | "uploaded" | "failed";
+type PendingAttachment = {
+  id: string;
+  file: File;
+  status: AttachmentStatus;
+  error?: string;
+};
+
 function ComposeBar({
   onSend,
-  onSendFile,
+  onSendFiles,
   sending,
   placeholder,
 }: {
-  onSend: (body: string) => void;
-  onSendFile: (file: File, caption?: string) => void;
+  onSend: (body: string) => Promise<void> | void;
+  onSendFiles: (
+    files: File[],
+    caption?: string,
+    onProgress?: (current: number, total: number) => void,
+  ) => Promise<{
+    uploaded: number;
+    failed: number;
+    results: Array<{ fileName: string; success: boolean; error?: string }>;
+  }>;
   sending: boolean;
   placeholder?: string;
 }) {
   const [body, setBody] = useState("");
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [progressIndex, setProgressIndex] = useState(0);
+  const [progressTotal, setProgressTotal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleSend = useCallback(() => {
+  const uploadedCount = attachments.filter((a) => a.status === "uploaded").length;
+  const failedCount = attachments.filter((a) => a.status === "failed").length;
+  const progressText = sending
+    ? `Uploading ${Math.min(progressIndex, Math.max(1, progressTotal))} of ${Math.max(1, progressTotal)}...`
+    : failedCount > 0
+      ? `${uploadedCount} uploaded, ${failedCount} failed`
+      : uploadedCount > 0
+        ? `${uploadedCount} uploaded`
+        : null;
+
+  const handleSend = useCallback(async () => {
     const trimmed = body.trim();
-    if (!trimmed && !pendingFile) return;
-    if (pendingFile) {
-      onSendFile(pendingFile, trimmed || undefined);
-      setPendingFile(null);
-    } else {
-      onSend(trimmed);
+    if (!trimmed && attachments.length === 0) return;
+
+    if (attachments.length > 0) {
+      const retryable = attachments.filter((a) => a.status === "pending" || a.status === "failed");
+      if (retryable.length === 0) {
+        toast.info("All selected files are already uploaded. Remove them or add new files.");
+        return;
+      }
+
+      setProgressTotal(retryable.length);
+      setProgressIndex(0);
+
+      const working = attachments.map((a) => ({ ...a }));
+      for (const target of retryable) {
+        const idx = working.findIndex((a) => a.id === target.id);
+        if (idx < 0) continue;
+        working[idx] = { ...working[idx], status: "pending", error: undefined };
+      }
+      setAttachments([...working]);
+
+      const files = retryable.map((r) => r.file);
+      const result = await onSendFiles(files, trimmed || undefined, (current, total) => {
+        setProgressTotal(total);
+        setProgressIndex(current);
+
+        const targetItem = retryable[current - 1];
+        if (!targetItem) return;
+
+        setAttachments((prev) =>
+          prev.map((item) =>
+            item.id === targetItem.id
+              ? { ...item, status: "uploading", error: undefined }
+              : item,
+          ),
+        );
+      });
+
+      const resultQueue = [...result.results];
+      const final: PendingAttachment[] = working.map((item) => {
+        if (item.status !== "uploading") return item;
+
+        const r = resultQueue.shift();
+        if (!r) {
+          return { ...item, status: "failed", error: "Upload failed" } as PendingAttachment;
+        }
+
+        if (r.success) {
+          return { ...item, status: "uploaded", error: undefined } as PendingAttachment;
+        }
+
+        return { ...item, status: "failed", error: r.error ?? "Upload failed" } as PendingAttachment;
+      });
+
+      // Keep failed visible, clear uploaded after partial failure
+      if (result.failed > 0) {
+        setAttachments(final.filter((a) => a.status !== "uploaded"));
+      } else {
+        setAttachments([]);
+        setBody("");
+        textareaRef.current?.focus();
+      }
+
+      setProgressIndex(0);
+      setProgressTotal(0);
+      return;
     }
+
+    await onSend(trimmed);
     setBody("");
     textareaRef.current?.focus();
-  }, [body, pendingFile, onSend, onSendFile]);
+  }, [body, attachments, onSend, onSendFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_FILE_MB * 1024 * 1024) {
-      toast.error(`File too large. Maximum size is ${MAX_FILE_MB} MB.`);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+
+    const validFiles = files.filter((f) => {
+      if (f.size > MAX_FILE_MB * 1024 * 1024) {
+        toast.error(`${f.name}: file too large. Maximum size is ${MAX_FILE_MB} MB.`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validFiles.length === 0) {
+      e.target.value = "";
       return;
     }
-    setPendingFile(file);
+
+    if (validFiles.length > MAX_ATTACH_FILES) {
+      toast.error(`You can attach up to ${MAX_ATTACH_FILES} files at once. Keeping the first ${MAX_ATTACH_FILES}.`);
+    }
+
+    const limited = validFiles.slice(0, MAX_ATTACH_FILES);
+    const next: PendingAttachment[] = limited.map((file, idx) => ({
+      id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
+      file,
+      status: "pending",
+    }));
+
+    setAttachments(next);
+    setProgressIndex(0);
+    setProgressTotal(0);
     e.target.value = "";
+  };
+
+  const removeAttachmentAt = (idx: number) => {
+    setAttachments((prev) => {
+      const item = prev[idx];
+      if (!item || item.status === "uploading") return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   return (
     <div>
-      {/* Pending file preview */}
-      {pendingFile && (
-        <div className="mx-0 mb-2 flex items-center gap-3 px-3 py-2 bg-muted/40 border border-border rounded-xl">
-          {fileIcon(pendingFile.type)}
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium text-foreground truncate">{pendingFile.name}</p>
-            <p className="text-[10px] text-muted-foreground">{humanSize(pendingFile.size)}</p>
+      {attachments.length > 0 && (
+        <div className="mx-0 mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span>{attachments.length} attached (max {MAX_ATTACH_FILES})</span>
+            {progressText && <span>{progressText}</span>}
           </div>
-          <button
-            onClick={() => setPendingFile(null)}
-            className="text-muted-foreground hover:text-destructive transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+
+          <div className="space-y-1 max-h-40 overflow-auto pr-1">
+            {attachments.map((item, idx) => {
+              const statusIcon = item.status === "uploading"
+                ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                : item.status === "uploaded"
+                  ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  : item.status === "failed"
+                    ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                    : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
+
+              const statusLabel = item.status === "uploading"
+                ? "Uploading"
+                : item.status === "uploaded"
+                  ? "Uploaded"
+                  : item.status === "failed"
+                    ? "Failed"
+                    : "Pending";
+
+              return (
+                <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {fileIcon(item.file.type)}
+                      <span className="truncate text-sm">{item.file.name}</span>
+                      <span className="text-muted-foreground text-xs shrink-0">({humanSize(item.file.size)})</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
+                        {statusIcon}
+                        {statusLabel}
+                      </span>
+                      <button
+                        onClick={() => removeAttachmentAt(idx)}
+                        disabled={item.status === "uploading"}
+                        className="text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                        aria-label={`Remove ${item.file.name}`}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                  {item.status === "failed" && item.error && (
+                    <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">{item.error}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -345,7 +537,7 @@ function ComposeBar({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           className="flex-shrink-0 mb-1 text-muted-foreground hover:text-primary transition-colors"
-          title="Attach file"
+          title="Attach file(s)"
         >
           <Paperclip className="w-4 h-4" />
         </button>
@@ -353,6 +545,7 @@ function ComposeBar({
           ref={fileInputRef}
           type="file"
           className="hidden"
+          multiple
           accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip"
           onChange={handleFileChange}
         />
@@ -372,8 +565,8 @@ function ComposeBar({
         <Button
           size="icon"
           className="flex-shrink-0 h-8 w-8 rounded-xl bg-primary hover:bg-primary/90 mb-0.5"
-          disabled={(!body.trim() && !pendingFile) || sending}
-          onClick={handleSend}
+          disabled={(!body.trim() && attachments.length === 0) || sending}
+          onClick={() => void handleSend()}
         >
           <Send className="w-3.5 h-3.5" />
         </Button>
@@ -515,7 +708,10 @@ function ThreadPanel({
       <div className="flex-shrink-0 px-4 pb-4 pt-2 border-t border-border">
         <ComposeBar
           onSend={handleSend}
-          onSendFile={() => toast.info("File uploads in threads coming soon.")}
+          onSendFiles={async () => {
+            toast.info("File uploads in threads coming soon.");
+            return { uploaded: 0, failed: 0, results: [] };
+          }}
           sending={sending}
           placeholder="Reply in thread… (Enter to send)"
         />
@@ -539,6 +735,7 @@ export default function Chat() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
   const [olderMessages, setOlderMessages] = useState<Msg[]>([]);
+  const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true); // optimistic: assume there may be more
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -564,11 +761,17 @@ export default function Chat() {
 
   // Merge older (paginated) messages with latest, deduplicating by id
   const messages = useMemo(() => {
-    if (olderMessages.length === 0) return latestMessages;
     const latestIds = new Set(latestMessages.map((m) => m.id));
     const uniqueOlder = olderMessages.filter((m) => !latestIds.has(m.id));
-    return [...uniqueOlder, ...latestMessages];
-  }, [olderMessages, latestMessages]);
+    const merged = [...uniqueOlder, ...latestMessages];
+
+    if (pendingMessages.length === 0) return merged;
+
+    const mergedIds = new Set(merged.map((m) => m.id));
+    const visiblePending = pendingMessages.filter((m) => !mergedIds.has(m.id));
+
+    return [...merged, ...visiblePending];
+  }, [olderMessages, latestMessages, pendingMessages]);
 
   const utils = trpc.useUtils();
 
@@ -594,10 +797,6 @@ export default function Chat() {
   });
 
   const sendFileMutation = trpc.chat.sendFile.useMutation({
-    onSuccess: () => {
-      utils.chat.list.invalidate();
-      toast.success("File sent and saved to Portal vault.");
-    },
     onError: (err) => toast.error(err.message),
   });
 
@@ -649,6 +848,14 @@ export default function Chat() {
   }, [loadingMore, hasMore, messages, tenantSlug, utils]);
 
   // ─── Send handlers ──────────────────────────────────────────────────────────
+  const fileToBase64 = useCallback(async (file: File): Promise<string> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
+    let binary = "";
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    return btoa(binary);
+  }, []);
+
   const handleSend = useCallback(async (body: string) => {
     setSending(true);
     try {
@@ -658,25 +865,93 @@ export default function Chat() {
     }
   }, [tenantSlug, sendMutation]);
 
-  const handleSendFile = useCallback(async (file: File, caption?: string) => {
+  const handleSendFiles = useCallback(async (
+    files: File[],
+    caption?: string,
+    onProgress?: (current: number, total: number) => void,
+  ) => {
     setSending(true);
+    const results: Array<{ fileName: string; success: boolean; error?: string }> = [];
+    let uploaded = 0;
+    let failed = 0;
+
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), "")
-      );
-      await sendFileMutation.mutateAsync({
-        tenantSlug,
-        body: caption,
-        fileBase64: base64,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        fileSize: file.size,
-      });
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        onProgress?.(i + 1, files.length);
+
+        const tempId = -(Date.now() + i);
+        const pendingBubble: Msg = {
+          id: tempId,
+          senderName: user?.name ?? user?.email ?? "You",
+          senderRole: user?.role === "admin" ? "admin" : "client",
+          senderUserId: (user as any)?.id ?? null,
+          body: i === 0 ? (caption ?? null) : null,
+          fileUrl: null,
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type || "application/octet-stream",
+          replyCount: 0,
+          threadId: null,
+          portalDocId: null,
+          createdAt: new Date(),
+          localStatus: "sending",
+        };
+        setPendingMessages((prev) => [...prev, pendingBubble]);
+
+        try {
+          const base64 = await fileToBase64(file);
+          const sent = await sendFileMutation.mutateAsync({
+            tenantSlug,
+            body: i === 0 ? caption : undefined,
+            fileBase64: base64,
+            fileName: file.name,
+            mimeType: file.type || "application/octet-stream",
+            fileSize: file.size,
+          });
+
+          uploaded += 1;
+          results.push({ fileName: file.name, success: true });
+
+          setPendingMessages((prev) => prev.filter((m) => m.id !== tempId));
+          if (sent) {
+            const normalized = normalizeMsg(sent as any);
+            setOlderMessages((prev) => {
+              const exists = prev.some((m) => m.id === normalized.id);
+              return exists ? prev : [...prev, normalized];
+            });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Upload failed";
+          failed += 1;
+          results.push({ fileName: file.name, success: false, error: message });
+
+          setPendingMessages((prev) =>
+            prev.map((m) =>
+              m.id === tempId
+                ? { ...m, localStatus: "failed", localError: message }
+                : m,
+            ),
+          );
+
+          toast.error(`Failed: ${file.name} — ${message}`);
+        }
+      }
+
+      await utils.chat.list.invalidate();
+
+      if (uploaded > 0 && failed === 0) {
+        toast.success(`${uploaded} file${uploaded === 1 ? "" : "s"} sent and saved to Portal vault.`);
+      } else if (uploaded > 0 && failed > 0) {
+        toast.success(`${uploaded} uploaded, ${failed} failed.`);
+      }
+
+      setPendingMessages((prev) => prev.filter((m) => m.localStatus === "failed"));
+      return { uploaded, failed, results };
     } finally {
       setSending(false);
     }
-  }, [tenantSlug, sendFileMutation]);
+  }, [tenantSlug, sendFileMutation, utils.chat.list, fileToBase64, user]);
 
   // ─── Group messages by day for date dividers ────────────────────────────────
   type DayGroup = { key: string; label: string; msgs: Msg[] };
@@ -813,7 +1088,7 @@ export default function Chat() {
           <div className="flex-shrink-0 px-6 pb-4 pt-2 border-t border-border bg-card/30 backdrop-blur-sm">
             <ComposeBar
               onSend={handleSend}
-              onSendFile={handleSendFile}
+              onSendFiles={handleSendFiles}
               sending={sending}
             />
             <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">

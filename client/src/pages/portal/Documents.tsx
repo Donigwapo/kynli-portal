@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useMemo, useState, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import {
@@ -8,12 +8,18 @@ import {
   Download,
   ExternalLink,
   Trash2,
+  CheckSquare,
+  Square,
   Calendar,
   HardDrive,
   X,
   Image as ImageIcon,
   FileSpreadsheet,
   File,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Clock3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -100,10 +106,18 @@ function truncateFileName(name: string, max = 22): string {
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH = new Date().getMonth() + 1;
 const YEAR_OPTIONS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - i);
+const MAX_UPLOAD_FILES = 10;
+
+type UploadItemStatus = "pending" | "uploading" | "uploaded" | "failed";
+type UploadItem = {
+  id: string;
+  file: File;
+  status: UploadItemStatus;
+  error?: string;
+};
 
 export default function Documents() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
 
   // Filters
   const [selectedType, setSelectedType] = useState<DocType>("All Types");
@@ -112,13 +126,18 @@ export default function Documents() {
 
   // Upload dialog
   const [showUpload, setShowUpload] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [uploadName, setUploadName] = useState("");
   const [uploadDesc, setUploadDesc] = useState("");
   const [uploadDocType, setUploadDocType] = useState("Financials");
   const [uploadYear, setUploadYear] = useState(String(CURRENT_YEAR));
   const [uploadMonth, setUploadMonth] = useState(String(CURRENT_MONTH));
   const [uploading, setUploading] = useState(false);
+  const [uploadProgressIndex, setUploadProgressIndex] = useState(0);
+  const [uploadTotalCount, setUploadTotalCount] = useState(0);
+  const [selectedDocIds, setSelectedDocIds] = useState<Array<string | number>>([]);
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const utils = trpc.useUtils();
@@ -130,15 +149,7 @@ export default function Documents() {
     tenantSlug: undefined, // resolved server-side from session
   });
 
-  const uploadMutation = trpc.documents.upload.useMutation({
-    onSuccess: () => {
-      utils.documents.list.invalidate();
-      setShowUpload(false);
-      resetUploadForm();
-      toast.success("Document uploaded successfully");
-    },
-    onError: (e) => toast.error(`Upload failed: ${e.message}`),
-  });
+  const uploadMutation = trpc.documents.upload.useMutation();
 
   const deleteMutation = trpc.documents.delete.useMutation({
     onSuccess: () => {
@@ -148,13 +159,18 @@ export default function Documents() {
     onError: (e) => toast.error(`Delete failed: ${e.message}`),
   });
 
+  const bulkDeleteMutation = trpc.documents.bulkDelete.useMutation();
+
   function resetUploadForm() {
-    setUploadFile(null);
+    setUploadItems([]);
     setUploadName("");
     setUploadDesc("");
     setUploadDocType("Financials");
     setUploadYear(String(CURRENT_YEAR));
     setUploadMonth(String(CURRENT_MONTH));
+    setUploadProgressIndex(0);
+    setUploadTotalCount(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function openUploadDialog() {
@@ -166,28 +182,189 @@ export default function Documents() {
     setShowUpload(true);
   }
 
+  function applySelectedFiles(files: File[]) {
+    if (files.length === 0) return;
+    if (files.length > MAX_UPLOAD_FILES) {
+      toast.error(`You can upload up to ${MAX_UPLOAD_FILES} files at once. Keeping the first ${MAX_UPLOAD_FILES}.`);
+    }
+
+    const limited = files.slice(0, MAX_UPLOAD_FILES);
+    const nextItems: UploadItem[] = limited.map((file, idx) => ({
+      id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
+      file,
+      status: "pending",
+    }));
+
+    setUploadItems(nextItems);
+    setUploadProgressIndex(0);
+    setUploadTotalCount(0);
+
+    if (nextItems.length === 1) {
+      setUploadName((prev) => prev || nextItems[0].file.name.replace(/\.[^.]+$/, ""));
+    } else {
+      setUploadName("");
+    }
+  }
+
+  function removeUploadFileAt(index: number) {
+    setUploadItems((prev) => {
+      const item = prev[index];
+      if (!item) return prev;
+      if (item.status === "uploading") return prev;
+
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length !== 1) {
+        setUploadName("");
+      } else if (!uploadName) {
+        setUploadName(next[0].file.name.replace(/\.[^.]+$/, ""));
+      }
+      return next;
+    });
+  }
+
+  async function fileToBase64(file: File): Promise<string> {
+    const arrayBuffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
+    let binary = "";
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    return btoa(binary);
+  }
+
+  const uploadFiles = uploadItems.map((item) => item.file);
+  const uploadedCount = uploadItems.filter((item) => item.status === "uploaded").length;
+  const failedCount = uploadItems.filter((item) => item.status === "failed").length;
+  const pendingOrFailedCount = uploadItems.filter(
+    (item) => item.status === "pending" || item.status === "failed",
+  ).length;
+  const effectiveTotal = uploadTotalCount > 0 ? uploadTotalCount : pendingOrFailedCount;
+  const overallProgressText = uploading
+    ? `Uploading ${Math.min(uploadProgressIndex, Math.max(1, effectiveTotal))} of ${Math.max(1, effectiveTotal)}...`
+    : failedCount > 0
+      ? `${uploadedCount} uploaded, ${failedCount} failed`
+      : uploadedCount > 0
+        ? `${uploadedCount} uploaded`
+        : null;
+
   async function handleUpload() {
-    if (!uploadFile || !uploadName.trim()) return;
+    if (uploadItems.length === 0) return;
+    if (uploadItems.length === 1 && !uploadName.trim()) return;
+
     setUploading(true);
+
+    let working = uploadItems.map((item) => ({ ...item }));
+
     try {
-      const arrayBuffer = await uploadFile.arrayBuffer();
-      const uint8 = new Uint8Array(arrayBuffer);
-      let binary = "";
-      for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
-      const base64 = btoa(binary);
-      await uploadMutation.mutateAsync({
-        name: uploadName.trim(),
-        description: uploadDesc.trim() || undefined,
-        fileBase64: base64,
-        mimeType: uploadFile.type || "application/octet-stream",
-        fileName: uploadFile.name,
-        fileSize: uploadFile.size,
-        docType: uploadDocType,
-        year: Number(uploadYear),
-        month: Number(uploadMonth),
-      });
+      const pendingIndexes = working
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => item.status === "pending" || item.status === "failed")
+        .map(({ idx }) => idx);
+
+      setUploadTotalCount(pendingIndexes.length);
+
+      for (let step = 0; step < pendingIndexes.length; step++) {
+        const index = pendingIndexes[step];
+        const current = working[index];
+        if (!current) continue;
+
+        setUploadProgressIndex(step + 1);
+
+        working[index] = { ...current, status: "uploading", error: undefined };
+        setUploadItems([...working]);
+
+        const file = working[index].file;
+
+        try {
+          const base64 = await fileToBase64(file);
+          const derivedName = uploadItems.length === 1
+            ? uploadName.trim()
+            : file.name.replace(/\.[^.]+$/, "");
+
+          await uploadMutation.mutateAsync({
+            name: derivedName,
+            description: uploadDesc.trim() || undefined,
+            fileBase64: base64,
+            mimeType: file.type || "application/octet-stream",
+            fileName: file.name,
+            fileSize: file.size,
+            docType: uploadDocType,
+            year: Number(uploadYear),
+            month: Number(uploadMonth),
+          });
+
+          working[index] = { ...working[index], status: "uploaded", error: undefined };
+          setUploadItems([...working]);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Upload failed";
+          working[index] = { ...working[index], status: "failed", error: message };
+          setUploadItems([...working]);
+          toast.error(`Failed: ${file.name} — ${message}`);
+        }
+      }
+
+      await utils.documents.list.invalidate();
+
+      const finalUploaded = working.filter((item) => item.status === "uploaded").length;
+      const finalFailed = working.filter((item) => item.status === "failed").length;
+
+      if (finalUploaded > 0 && finalFailed === 0) {
+        toast.success(`${finalUploaded} document${finalUploaded === 1 ? "" : "s"} uploaded`);
+        setShowUpload(false);
+        resetUploadForm();
+      } else if (finalUploaded > 0 && finalFailed > 0) {
+        toast.success(`${finalUploaded} uploaded, ${finalFailed} failed`);
+        setUploadItems(working.filter((item) => item.status !== "uploaded"));
+        setUploadTotalCount(0);
+      }
     } finally {
       setUploading(false);
+      setUploadProgressIndex(0);
+    }
+  }
+
+  const selectedCount = selectedDocIds.length;
+  const selectedSet = useMemo(() => new Set(selectedDocIds.map((id) => String(id))), [selectedDocIds]);
+
+  const toggleSelect = (id: string | number) => {
+    const key = String(id);
+    setSelectedDocIds((prev) => {
+      const exists = prev.some((p) => String(p) === key);
+      if (exists) return prev.filter((p) => String(p) !== key);
+      return [...prev, id];
+    });
+  };
+
+  const clearSelection = () => setSelectedDocIds([]);
+
+  const selectableIds = docs.map((d) => d.id);
+  const allVisibleSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedSet.has(String(id)));
+
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      setSelectedDocIds((prev) => prev.filter((id) => !selectableIds.some((sid) => String(sid) === String(id))));
+      return;
+    }
+
+    setSelectedDocIds((prev) => {
+      const map = new Map(prev.map((id) => [String(id), id] as const));
+      for (const id of selectableIds) map.set(String(id), id);
+      return Array.from(map.values());
+    });
+  };
+
+  async function handleBulkDeleteConfirm() {
+    if (selectedDocIds.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      const result = await bulkDeleteMutation.mutateAsync({ ids: selectedDocIds });
+      await utils.documents.list.invalidate();
+      clearSelection();
+      setShowBulkDeleteConfirm(false);
+      toast.success(`${result.deleted} document${result.deleted === 1 ? "" : "s"} deleted`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Bulk delete failed";
+      toast.error(message);
+    } finally {
+      setBulkDeleting(false);
     }
   }
 
@@ -225,6 +402,36 @@ export default function Documents() {
           Add Document
         </Button>
       </div>
+
+      {/* Bulk action bar */}
+      {selectedCount > 0 && (
+        <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm text-emerald-300">
+            <CheckSquare className="w-4 h-4" />
+            <span className="font-medium">{selectedCount} selected</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-zinc-700"
+              onClick={clearSelection}
+              disabled={bulkDeleting}
+            >
+              Clear
+            </Button>
+            <Button
+              size="sm"
+              className="bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30"
+              onClick={() => setShowBulkDeleteConfirm(true)}
+              disabled={bulkDeleting}
+            >
+              <Trash2 className="w-4 h-4 mr-1.5" />
+              Delete Selected
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex items-center gap-3 mb-6 flex-wrap">
@@ -275,7 +482,18 @@ export default function Documents() {
           </SelectContent>
         </Select>
 
-        {/* Doc count */}
+        {/* Select all + Doc count */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="border-zinc-700"
+          onClick={toggleSelectAllVisible}
+          disabled={docs.length === 0}
+        >
+          {allVisibleSelected ? <CheckSquare className="w-4 h-4 mr-1.5" /> : <Square className="w-4 h-4 mr-1.5" />}
+          {allVisibleSelected ? "Unselect All" : "Select All"}
+        </Button>
+
         <span className="ml-auto text-sm text-muted-foreground">
           {docs.length} document{docs.length !== 1 ? "s" : ""}
         </span>
@@ -327,10 +545,16 @@ export default function Documents() {
 
                       {/* Document cards grid */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {docsByYearMonth[year][month].map((doc) => (
+                        {docsByYearMonth[year][month].map((doc) => {
+                          const isSelected = selectedSet.has(String(doc.id));
+                          return (
                           <div
                             key={doc.id}
-                            className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors"
+                            className={`bg-zinc-900 border rounded-xl p-4 flex flex-col gap-3 transition-colors ${
+                              isSelected
+                                ? "border-emerald-500/50 ring-1 ring-emerald-500/30"
+                                : "border-zinc-800 hover:border-zinc-700"
+                            }`}
                           >
                             {/* Image thumbnail (for image MIME types) */}
                             {getMimeCategory(doc.mime_type) === "image" && doc.file_url && (
@@ -348,14 +572,27 @@ export default function Documents() {
                               </a>
                             )}
 
-                            {/* Card top: icon + type badge */}
-                            <div className="flex items-start justify-between">
-                              <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                            {/* Card top: select + icon + type badge */}
+                            <div className="flex items-start justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleSelect(doc.id)}
+                                className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+                                  isSelected
+                                    ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
+                                    : "border-zinc-600 text-zinc-500 hover:border-zinc-400"
+                                }`}
+                                aria-label={isSelected ? "Deselect document" : "Select document"}
+                              >
+                                {isSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                              </button>
+
+                              <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
                                 <DocIcon mimeType={doc.mime_type} />
                               </div>
                               <Badge
                                 variant="outline"
-                                className={`text-xs font-medium ${
+                                className={`ml-auto text-xs font-medium ${
                                   DOC_TYPE_COLORS[doc.doc_type ?? "Other"] ?? DOC_TYPE_COLORS.Other
                                 }`}
                               >
@@ -399,7 +636,12 @@ export default function Documents() {
                               <Button
                                 size="sm"
                                 className="flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 gap-1.5 text-xs"
-                                                        onClick={() => window.open(doc.file_url, "_blank")}>
+                                disabled={!doc.file_url}
+                                onClick={() => {
+                                  if (!doc.file_url) return;
+                                  window.open(doc.file_url, "_blank");
+                                }}
+                              >
                                 <ExternalLink className="w-3.5 h-3.5" />
                                 {openButtonLabel(doc.mime_type)}
                               </Button>
@@ -407,7 +649,9 @@ export default function Documents() {
                                 size="sm"
                                 variant="outline"
                                 className="px-2.5 border-zinc-700 hover:bg-zinc-800"
+                                disabled={!doc.file_url}
                                 onClick={() => {
+                                  if (!doc.file_url) return;
                                   const a = document.createElement("a");
                                   a.href = doc.file_url;
                                   a.download = doc.file_name || doc.name;
@@ -416,23 +660,23 @@ export default function Documents() {
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </Button>
-                              {isAdmin && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="px-2.5 border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30"
-                                  onClick={() => {
-                                    if (confirm(`Delete "${doc.name}"?`)) {
-                                      deleteMutation.mutate({ id: doc.id });
-                                    }
-                                  }}
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              )}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="px-2.5 border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30"
+                                onClick={() => {
+                                  if (confirm(`Delete "${doc.name}"?`)) {
+                                    deleteMutation.mutate({ id: doc.id });
+                                    setSelectedDocIds((prev) => prev.filter((id) => String(id) !== String(doc.id)));
+                                  }
+                                }}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
@@ -443,8 +687,52 @@ export default function Documents() {
         </div>
       )}
 
+      {/* Bulk Delete Confirm Dialog */}
+      <Dialog
+        open={showBulkDeleteConfirm}
+        onOpenChange={(open) => {
+          if (!bulkDeleting) setShowBulkDeleteConfirm(open);
+        }}
+      >
+        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-300">
+              <Trash2 className="w-4 h-4" />
+              Delete Selected Documents
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="text-sm text-muted-foreground py-1">
+            Are you sure you want to delete the selected documents?
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowBulkDeleteConfirm(false)}
+              className="border-zinc-700"
+              disabled={bulkDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleBulkDeleteConfirm}
+              disabled={bulkDeleting || selectedCount === 0}
+              className="bg-red-500 hover:bg-red-600 text-white font-semibold"
+            >
+              {bulkDeleting ? "Deleting..." : `Delete ${selectedCount}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Upload Dialog */}
-      <Dialog open={showUpload} onOpenChange={setShowUpload}>
+      <Dialog open={showUpload} onOpenChange={(open) => {
+        if (!uploading) {
+          setShowUpload(open);
+          if (!open) resetUploadForm();
+        }
+      }}>
         <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -456,34 +744,76 @@ export default function Documents() {
           <div className="space-y-4 py-2">
             {/* File picker */}
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">File</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Files</Label>
               <div
                 className="border-2 border-dashed border-zinc-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-500/50 transition-colors"
                 onClick={() => fileInputRef.current?.click()}
               >
-                {uploadFile ? (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm">
-                      <FileText className="w-4 h-4 text-emerald-400" />
-                      <span className="truncate max-w-[200px]">{uploadFile.name}</span>
-                      <span className="text-muted-foreground text-xs">
-                        ({formatBytes(uploadFile.size)})
-                      </span>
+                {uploadFiles.length > 0 ? (
+                  <div className="space-y-2 text-left">
+                    <div className="text-xs text-muted-foreground flex items-center justify-between">
+                      <span>{uploadFiles.length} selected (max {MAX_UPLOAD_FILES})</span>
+                      {overallProgressText && <span className="text-zinc-400">{overallProgressText}</span>}
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setUploadFile(null);
-                      }}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+                    <div className="max-h-40 overflow-auto space-y-1 pr-1">
+                      {uploadItems.map((item, idx) => {
+                        const f = item.file;
+                        const statusIcon = item.status === "uploading"
+                          ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                          : item.status === "uploaded"
+                            ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            : item.status === "failed"
+                              ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                              : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
+
+                        const statusLabel = item.status === "uploading"
+                          ? "Uploading"
+                          : item.status === "uploaded"
+                            ? "Uploaded"
+                            : item.status === "failed"
+                              ? "Failed"
+                              : "Pending";
+
+                        return (
+                          <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+                                <span className="truncate text-sm">{f.name}</span>
+                                <span className="text-muted-foreground text-xs shrink-0">({formatBytes(f.size)})</span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
+                                  {statusIcon}
+                                  {statusLabel}
+                                </span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeUploadFileAt(idx);
+                                  }}
+                                  disabled={item.status === "uploading"}
+                                  className="text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                                  aria-label={`Remove ${f.name}`}
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                            {item.status === "failed" && item.error && (
+                              <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">
+                                {item.error}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ) : (
                   <div className="text-muted-foreground text-sm">
                     <Upload className="w-6 h-6 mx-auto mb-1 opacity-50" />
-                    Click to select a file
+                    Click to select up to {MAX_UPLOAD_FILES} files
                   </div>
                 )}
               </div>
@@ -491,27 +821,33 @@ export default function Documents() {
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
+                multiple
                 accept=".pdf,.xlsx,.xls,.docx,.doc,.csv,.png,.jpg,.jpeg"
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) {
-                    setUploadFile(f);
-                    if (!uploadName) setUploadName(f.name.replace(/\.[^.]+$/, ""));
-                  }
+                  const files = Array.from(e.target.files ?? []);
+                  applySelectedFiles(files);
                 }}
               />
             </div>
 
-            {/* Document name */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Document Name</Label>
-              <Input
-                value={uploadName}
-                onChange={(e) => setUploadName(e.target.value)}
-                placeholder="e.g. KynLi Q1 2026 Financials"
-                className="bg-zinc-900 border-zinc-700"
-              />
-            </div>
+            {/* Document name (single-file only) */}
+            {uploadFiles.length <= 1 && (
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1.5 block">Document Name</Label>
+                <Input
+                  value={uploadName}
+                  onChange={(e) => setUploadName(e.target.value)}
+                  placeholder="e.g. KynLi Q1 2026 Financials"
+                  className="bg-zinc-900 border-zinc-700"
+                />
+              </div>
+            )}
+
+            {uploadFiles.length > 1 && (
+              <p className="text-xs text-muted-foreground">
+                Multiple files selected: each document will use its original file name.
+              </p>
+            )}
 
             {/* Description */}
             <div>
@@ -588,10 +924,16 @@ export default function Documents() {
             </Button>
             <Button
               onClick={handleUpload}
-              disabled={!uploadFile || !uploadName.trim() || uploading}
+              disabled={
+                uploadFiles.length === 0 ||
+                (uploadFiles.length === 1 && !uploadName.trim()) ||
+                uploading
+              }
               className="bg-emerald-500 hover:bg-emerald-600 text-black font-semibold"
             >
-              {uploading ? "Uploading..." : "Upload"}
+              {uploading
+                ? `Uploading ${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}...`
+                : `Upload ${uploadFiles.length > 0 ? uploadFiles.length : ""}`.trim()}
             </Button>
           </DialogFooter>
         </DialogContent>

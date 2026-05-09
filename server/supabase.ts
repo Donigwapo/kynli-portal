@@ -13,9 +13,33 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const json = Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function isLikelyServiceRoleKey(key: string): boolean {
+  const payload = decodeJwtPayload(key);
+  if (!payload) return false;
+  return payload.role === "service_role" || payload.supabase_admin === true;
+}
+
 // Service-role client — bypasses RLS, used for all server-side operations
 export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false },
+  auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  global: {
+    headers: {
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    },
+  },
 });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -136,6 +160,9 @@ export type ChatMessage = {
   sender_user_id: number | null;
   sender_role: "client" | "admin";
   sender_name: string;
+  // Legacy compatibility (older tenant chat tables)
+  sender?: string | null;
+  role?: string | null;
   message: string | null;       // null if file-only message
   read: boolean;
   // File attachment fields (null if text-only)
@@ -170,19 +197,24 @@ export type ClientRosterEntry = {
 };
 
 export type Document = {
-  id: number;
+  id: string;
+  tenant_slug: string;
+  organization_id: string | null;
+  client_id: string | null;
   name: string;
   description: string | null;
-  doc_type: string;
+  doc_type: string | null;
   file_key: string;
-  file_url: string;
+  file_url: string | null;
   file_name: string | null;
   file_size: number | null;
   mime_type: string | null;
-  year: number;
+  year: number | null;
   month: number | null;       // 1–12
   uploaded_by_name: string | null;
+  uploaded_by_user_id: string | null;
   created_at: string;
+  updated_at?: string;
 };
 
 // ─── Slug helper ──────────────────────────────────────────────────────────────
@@ -193,6 +225,21 @@ export function toClientSlug(name: string): string {
     .replace(/[^a-z0-9\s]/g, "")
     .trim()
     .replace(/\s+/g, "_");
+}
+
+export function sanitizeTenantSlug(raw: unknown): string {
+  const input = typeof raw === "string" ? raw : raw == null ? "" : String(raw);
+
+  let slug = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!slug) slug = "tenant";
+  if (/^[0-9]/.test(slug)) slug = `t_${slug}`;
+
+  return slug;
 }
 
 // ─── Portal Users ─────────────────────────────────────────────────────────────
@@ -612,43 +659,278 @@ export async function insertLineItem(slug: string, item: Omit<LineItem, "id" | "
 
 // ─── Documents ────────────────────────────────────────────────────────────────
 
+const DOCUMENTS_METADATA_TABLE = "documents_metadata";
+
 export async function getDocuments(
   slug: string,
   year?: number,
   month?: number,
   docType?: string,
 ): Promise<Document[]> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
   let query = supabase
-    .from(`${slug}_documents`)
+    .from(DOCUMENTS_METADATA_TABLE)
     .select("*")
+    .eq("tenant_slug", tenantSlug)
     .order("created_at", { ascending: false });
+
   if (year !== undefined) query = query.eq("year", year);
   if (month !== undefined) query = query.eq("month", month);
   if (docType && docType !== "All Types") query = query.eq("doc_type", docType);
+
   const { data, error } = await query;
   if (error) {
-    console.error(`[getDocuments] ${slug}:`, error.message);
+    console.error(`[getDocuments] ${tenantSlug}:`, error.message);
     return [];
   }
+
   return (data || []) as Document[];
 }
 
 export async function insertDocument(
   slug: string,
-  doc: Omit<Document, "id" | "created_at">,
+  doc: Omit<Document, "id" | "tenant_slug" | "created_at" | "updated_at">,
 ): Promise<Document> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  let resolvedOrganizationId = doc.organization_id != null ? String(doc.organization_id) : null;
+  if (!resolvedOrganizationId) {
+    const tenant = await getTenantBySlug(tenantSlug);
+    resolvedOrganizationId = tenant?.id != null ? String(tenant.id) : null;
+
+    if (!resolvedOrganizationId) {
+      console.warn("[insertDocument] organization_id unresolved; inserting null", {
+        tenantSlug,
+      });
+    }
+  }
+
+  const insertPayload = {
+    tenant_slug: tenantSlug,
+    organization_id: resolvedOrganizationId,
+    client_id: doc.client_id ?? null,
+    name: doc.name,
+    description: doc.description ?? null,
+    doc_type: doc.doc_type ?? null,
+    file_key: doc.file_key,
+    file_url: doc.file_url ?? null,
+    file_name: doc.file_name ?? null,
+    file_size: doc.file_size ?? null,
+    mime_type: doc.mime_type ?? null,
+    year: doc.year ?? null,
+    month: doc.month ?? null,
+    uploaded_by_name: doc.uploaded_by_name ?? null,
+    uploaded_by_user_id: doc.uploaded_by_user_id != null ? String(doc.uploaded_by_user_id) : null,
+    updated_at: new Date().toISOString(),
+  };
+
+  console.info("[insertDocument] inserting documents_metadata row", {
+    tenantSlug,
+    resolvedOrganizationId,
+    insertPayload,
+    clientUsed: "server/supabase.ts::supabase(service-role)",
+    serviceRoleKeyExists: Boolean(SUPABASE_SERVICE_KEY),
+    serviceRoleKeyLooksValid: isLikelyServiceRoleKey(SUPABASE_SERVICE_KEY),
+  });
+
   const { data, error } = await supabase
-    .from(`${slug}_documents`)
-    .insert(doc)
+    .from(DOCUMENTS_METADATA_TABLE)
+    .insert(insertPayload)
     .select()
     .single();
-  if (error) throw new Error(error.message);
+
+  if (error) {
+    console.error("[insertDocument] insert failed", {
+      tenantSlug,
+      error: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+      clientUsed: "server/supabase.ts::supabase(service-role)",
+      serviceRoleKeyExists: Boolean(SUPABASE_SERVICE_KEY),
+      serviceRoleKeyLooksValid: isLikelyServiceRoleKey(SUPABASE_SERVICE_KEY),
+    });
+    throw new Error(error.message);
+  }
   return data as Document;
 }
 
-export async function deleteDocument(slug: string, id: number): Promise<void> {
-  const { error } = await supabase.from(`${slug}_documents`).delete().eq("id", id);
-  if (error) throw new Error(error.message);
+async function removeDocumentFiles(fileKeys: string[]): Promise<void> {
+  const keys = fileKeys.filter((k) => typeof k === "string" && k.length > 0);
+  if (keys.length === 0) return;
+
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET || "documents";
+  const { error } = await supabase.storage.from(bucket).remove(keys);
+  if (error) {
+    throw new Error(`Failed to remove document file(s) from storage: ${error.message}`);
+  }
+}
+
+export async function deleteDocuments(slug: string, ids: Array<string | number>): Promise<{ deleted: number }> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+  const normalizedIds = ids.map((id) => String(id));
+
+  if (normalizedIds.length === 0) return { deleted: 0 };
+
+  const { data: rows, error: lookupError } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .select("id, file_key")
+    .eq("tenant_slug", tenantSlug)
+    .in("id", normalizedIds);
+
+  if (lookupError) throw new Error(lookupError.message);
+
+  const foundRows = (rows || []) as Array<{ id: string; file_key: string | null }>;
+  const foundIds = foundRows.map((r) => r.id);
+
+  if (foundIds.length === 0) return { deleted: 0 };
+
+  await removeDocumentFiles(foundRows.map((r) => r.file_key ?? ""));
+
+  const { error: deleteError } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .delete()
+    .eq("tenant_slug", tenantSlug)
+    .in("id", foundIds);
+
+  if (deleteError) throw new Error(deleteError.message);
+
+  return { deleted: foundIds.length };
+}
+
+export async function deleteDocument(slug: string, id: string | number): Promise<void> {
+  await deleteDocuments(slug, [id]);
+}
+
+export async function backfillDocumentsOrganizationIds(): Promise<{
+  found: number;
+  updated: number;
+  unmatchedTenantSlugs: string[];
+}> {
+  const { data: rows, error: rowsError } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .select("id, tenant_slug")
+    .is("organization_id", null);
+
+  if (rowsError) throw new Error(`backfillDocumentsOrganizationIds: ${rowsError.message}`);
+
+  const pendingRows = (rows || []) as Array<{ id: string; tenant_slug: string | null }>;
+  const found = pendingRows.length;
+
+  if (found === 0) {
+    console.info("[documents_metadata.backfill_org] no rows with null organization_id");
+    return { found: 0, updated: 0, unmatchedTenantSlugs: [] };
+  }
+
+  const { data: tenants, error: tenantError } = await supabase
+    .from("portal_tenants")
+    .select("id, slug");
+
+  if (tenantError) throw new Error(`backfillDocumentsOrganizationIds tenants lookup failed: ${tenantError.message}`);
+
+  const tenantMap = new Map<string, string>();
+  for (const t of (tenants || []) as Array<{ id: number | string; slug: string }>) {
+    tenantMap.set(sanitizeTenantSlug(t.slug), String(t.id));
+  }
+
+  const idsByOrg = new Map<string, string[]>();
+  const unmatched = new Set<string>();
+
+  for (const row of pendingRows) {
+    const rowSlug = sanitizeTenantSlug(row.tenant_slug);
+    const orgId = tenantMap.get(rowSlug);
+
+    if (!orgId) {
+      unmatched.add(rowSlug || "(empty)");
+      continue;
+    }
+
+    const list = idsByOrg.get(orgId) || [];
+    list.push(String(row.id));
+    idsByOrg.set(orgId, list);
+  }
+
+  let updated = 0;
+  const groupedUpdates = Array.from(idsByOrg.entries());
+  for (const [orgId, ids] of groupedUpdates) {
+    const { data: updatedRows, error: updateError } = await supabase
+      .from(DOCUMENTS_METADATA_TABLE)
+      .update({ organization_id: orgId, updated_at: new Date().toISOString() })
+      .in("id", ids)
+      .is("organization_id", null)
+      .select("id");
+
+    if (updateError) {
+      throw new Error(`backfillDocumentsOrganizationIds update failed for org ${orgId}: ${updateError.message}`);
+    }
+
+    updated += (updatedRows || []).length;
+  }
+
+  console.info("[documents_metadata.backfill_org] complete", {
+    found,
+    updated,
+    unmatchedTenantSlugs: Array.from(unmatched),
+  });
+
+  if (unmatched.size > 0) {
+    console.warn("[documents_metadata.backfill_org] unmatched tenant slugs", {
+      unmatchedTenantSlugs: Array.from(unmatched),
+    });
+  }
+
+  return {
+    found,
+    updated,
+    unmatchedTenantSlugs: Array.from(unmatched),
+  };
+}
+
+export async function migrateLegacyDocumentsToGlobal(slug: string): Promise<{ migrated: number; skipped: number }> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+  const legacyTables = [`${tenantSlug}_documents_list`, `${tenantSlug}_documents`];
+
+  let migrated = 0;
+  let skipped = 0;
+
+  for (const table of legacyTables) {
+    const { data, error } = await supabase.from(table).select("*");
+    if (error || !data || data.length === 0) continue;
+
+    for (const row of data as Record<string, unknown>[]) {
+      const insertPayload = {
+        tenant_slug: tenantSlug,
+        organization_id: null,
+        client_id: null,
+        name: (row.name as string) ?? "Untitled",
+        description: (row.description as string | null) ?? null,
+        doc_type: (row.doc_type as string | null) ?? null,
+        file_key: (row.file_key as string) ?? "",
+        file_url: (row.file_url as string | null) ?? null,
+        file_name: (row.file_name as string | null) ?? null,
+        file_size: (row.file_size as number | null) ?? null,
+        mime_type: (row.mime_type as string | null) ?? null,
+        year: (row.year as number | null) ?? null,
+        month: (row.month as number | null) ?? null,
+        uploaded_by_name: (row.uploaded_by_name as string | null) ?? null,
+        uploaded_by_user_id: null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: insertError } = await supabase
+        .from(DOCUMENTS_METADATA_TABLE)
+        .insert(insertPayload);
+
+      if (insertError) {
+        skipped += 1;
+      } else {
+        migrated += 1;
+      }
+    }
+  }
+
+  return { migrated, skipped };
 }
 
 // ─── Coaching ─────────────────────────────────────────────────────────────────
@@ -757,27 +1039,224 @@ export async function upsertSalesTracker(slug: string, data: Omit<SalesTracker, 
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
+const GLOBAL_CHAT_TABLE = "portal_chat_messages";
+
+type PortalChatMessageRow = {
+  id: number;
+  tenant_slug: string;
+  organization_id: string | null;
+  sender_user_id: string | null;
+  sender_name: string | null;
+  sender_role: string | null;
+  message_text: string | null;
+  message_type: string;
+  file_url: string | null;
+  file_key: string | null;
+  file_name: string | null;
+  file_size: number | null;
+  mime_type: string | null;
+  document_metadata_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function mapGlobalChatRowToChatMessage(row: PortalChatMessageRow): ChatMessage {
+  const senderUserId = row.sender_user_id != null ? Number(row.sender_user_id) : null;
+  return {
+    id: Number(row.id),
+    sender_user_id: Number.isFinite(senderUserId) ? senderUserId : null,
+    sender_role: row.sender_role === "admin" ? "admin" : "client",
+    sender_name: row.sender_name ?? "Unknown",
+    sender: row.sender_name ?? "Unknown",
+    role: row.sender_role ?? "client",
+    message: row.message_text,
+    read: false,
+    file_key: row.file_key,
+    file_url: row.file_url,
+    file_name: row.file_name,
+    file_size: row.file_size,
+    mime_type: row.mime_type,
+    archive_year: null,
+    archive_month: null,
+    portal_document_id: null,
+    thread_id: null,
+    reply_count: 0,
+    created_at: row.created_at,
+  };
+}
+
+export async function getGlobalChatMessages(
+  slug: string,
+  limit = 200,
+  beforeId?: number,
+  search?: string,
+): Promise<ChatMessage[]> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  let query = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("*")
+    .eq("tenant_slug", tenantSlug)
+    .in("message_type", ["text", "file", "attachment"])
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (beforeId !== undefined) {
+    query = query.lt("id", beforeId);
+  }
+
+  if (search && search.trim()) {
+    const q = search.trim().replace(/,/g, " ");
+    query = query.or(`message_text.ilike.%${q}%,file_name.ilike.%${q}%`);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[getGlobalChatMessages] query failed", {
+      tenantSlug,
+      limit,
+      beforeId,
+      search,
+      error: error.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    throw new Error(error.message);
+  }
+
+  const rows = (data || []) as PortalChatMessageRow[];
+  return rows.reverse().map(mapGlobalChatRowToChatMessage);
+}
+
+async function insertGlobalChatMessage(payload: Record<string, unknown>, label: string): Promise<ChatMessage> {
+  const { data, error } = await supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error(`[${label}] insert failed`, {
+      payload,
+      error: error?.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    throw new Error(error?.message || `Failed to insert ${label}`);
+  }
+
+  return mapGlobalChatRowToChatMessage(data as PortalChatMessageRow);
+}
+
+export async function insertGlobalChatTextMessage(input: {
+  tenant_slug: string;
+  organization_id: string | null;
+  sender_user_id: string | null;
+  sender_name: string | null;
+  sender_role: string | null;
+  message_text: string;
+}): Promise<ChatMessage> {
+  const payload = {
+    tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    organization_id: input.organization_id,
+    sender_user_id: input.sender_user_id,
+    sender_name: input.sender_name,
+    sender_role: input.sender_role,
+    message_text: input.message_text,
+    message_type: "text",
+    file_url: null,
+    file_key: null,
+    file_name: null,
+    file_size: null,
+    mime_type: null,
+    document_metadata_id: null,
+  };
+
+  return insertGlobalChatMessage(payload, "insertGlobalChatTextMessage");
+}
+
+export async function insertGlobalChatFileMessage(input: {
+  tenant_slug: string;
+  organization_id: string | null;
+  sender_user_id: string | null;
+  sender_name: string | null;
+  sender_role: string | null;
+  message_text: string | null;
+  file_url: string;
+  file_key: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  document_metadata_id: string | null;
+  message_type?: "file" | "attachment";
+}): Promise<ChatMessage> {
+  const payload = {
+    tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    organization_id: input.organization_id,
+    sender_user_id: input.sender_user_id,
+    sender_name: input.sender_name,
+    sender_role: input.sender_role,
+    message_text: input.message_text,
+    message_type: input.message_type ?? "file",
+    file_url: input.file_url,
+    file_key: input.file_key,
+    file_name: input.file_name,
+    file_size: input.file_size,
+    mime_type: input.mime_type,
+    document_metadata_id: input.document_metadata_id,
+  };
+
+  return insertGlobalChatMessage(payload, "insertGlobalChatFileMessage");
+}
+
 export async function getChatMessages(
   slug: string,
   limit = 200,
   beforeId?: number,
   search?: string
 ): Promise<ChatMessage[]> {
-  // Only fetch top-level messages (thread_id IS NULL) in the main feed
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  try {
+    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search);
+    if (globalMessages.length > 0) return globalMessages;
+  } catch (error) {
+    console.error("[getChatMessages] global chat query failed; attempting legacy fallback", {
+      tenantSlug,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // Legacy fallback: only fetch top-level messages (thread_id IS NULL) from tenant-specific table
   let query = supabase
-    .from(`${slug}_chat`)
+    .from(`${tenantSlug}_chat`)
     .select("*")
     .is("thread_id", null)
     .order("created_at", { ascending: false })
     .limit(limit);
+
   if (beforeId !== undefined) {
     query = query.lt("id", beforeId);
   }
+
   if (search && search.trim()) {
     query = query.ilike("message", `%${search.trim()}%`);
   }
+
   const { data, error } = await query;
-  if (error) return [];
+  if (error) {
+    console.error("[getChatMessages] legacy fallback query failed", {
+      tenantSlug,
+      error: error.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    return [];
+  }
+
   // Return oldest-first for display
   return ((data || []) as ChatMessage[]).reverse();
 }
@@ -816,13 +1295,94 @@ export async function insertChatMessageSupabase(
   slug: string,
   msg: Omit<ChatMessage, "id" | "created_at">
 ): Promise<ChatMessage> {
-  const { data, error } = await supabase
-    .from(`${slug}_chat`)
-    .insert(msg)
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-  return data as ChatMessage;
+  const tableName = `${slug}_chat`;
+
+  const basePayload = {
+    sender_user_id: msg.sender_user_id ?? null,
+    sender_name: msg.sender_name,
+    sender_role: msg.sender_role,
+    sender: msg.sender_name,
+    role: msg.sender_role,
+    message: msg.message ?? null,
+    read: msg.read,
+    file_key: msg.file_key ?? null,
+    file_url: msg.file_url ?? null,
+    file_name: msg.file_name ?? null,
+    file_size: msg.file_size ?? null,
+    mime_type: msg.mime_type ?? null,
+    archive_year: msg.archive_year ?? null,
+    archive_month: msg.archive_month ?? null,
+    portal_document_id: msg.portal_document_id ?? null,
+    thread_id: msg.thread_id ?? null,
+    reply_count: msg.reply_count ?? 0,
+  } as Record<string, unknown>;
+
+  const attemptInsert = async (payload: Record<string, unknown>, label: string) => {
+    const { data, error } = await supabase.from(tableName).insert(payload).select().single();
+    if (error) {
+      const rawError = JSON.stringify(error, null, 2);
+      console.error(`[insertChatMessageSupabase] ${label} raw error`, rawError);
+      console.error("[insertChatMessageSupabase] insert context", {
+        tableName,
+        tenantSlug: slug,
+        payload,
+        file_url: payload.file_url ?? null,
+        file_name: payload.file_name ?? null,
+        file_key: payload.file_key ?? null,
+        portal_document_id: payload.portal_document_id ?? null,
+        portal_document_id_type: typeof payload.portal_document_id,
+      });
+
+      const formatted = [
+        (error as any)?.message,
+        (error as any)?.details,
+        (error as any)?.hint,
+        (error as any)?.code,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+
+      const fallbackString = String((error as any)?.message ?? "").trim();
+      throw new Error(formatted || fallbackString || rawError || "Unknown chat insert error");
+    }
+
+    return data as ChatMessage;
+  };
+
+  try {
+    return await attemptInsert(basePayload, "primary insert");
+  } catch (primaryErr) {
+    const detail = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+
+    // Fallback for legacy tenant chat schemas that still use sender/role but do not have sender_name/sender_role/read/etc
+    const legacyPayload = {
+      sender: msg.sender_name,
+      role: msg.sender_role,
+      message: msg.message ?? null,
+      file_key: msg.file_key ?? null,
+      file_url: msg.file_url ?? null,
+      file_name: msg.file_name ?? null,
+      file_size: msg.file_size ?? null,
+      mime_type: msg.mime_type ?? null,
+      archive_year: msg.archive_year ?? null,
+      archive_month: msg.archive_month ?? null,
+      portal_document_id: msg.portal_document_id ?? null,
+      thread_id: msg.thread_id ?? null,
+      reply_count: msg.reply_count ?? 0,
+    } as Record<string, unknown>;
+
+    try {
+      console.warn("[insertChatMessageSupabase] primary failed, retrying with legacy payload", {
+        tableName,
+        tenantSlug: slug,
+        detail,
+      });
+      return await attemptInsert(legacyPayload, "legacy fallback insert");
+    } catch (legacyErr) {
+      const legacyDetail = legacyErr instanceof Error ? legacyErr.message : String(legacyErr);
+      throw new Error(`Primary: ${detail}. Legacy fallback: ${legacyDetail}`);
+    }
+  }
 }
 
 export async function deleteChatMessageSupabase(
@@ -1017,28 +1577,7 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
         CREATE INDEX IF NOT EXISTS idx_${slug}_chat_fts ON ${slug}_chat USING gin(to_tsvector('english', coalesce(message, '')));
       `,
     },
-    {
-      name: `${slug}_documents`,
-      sql: `
-        CREATE TABLE IF NOT EXISTS ${slug}_documents (
-          id               BIGSERIAL PRIMARY KEY,
-          name             TEXT NOT NULL,
-          description      TEXT,
-          doc_type         TEXT NOT NULL DEFAULT 'Other',
-          file_key         TEXT NOT NULL,
-          file_url         TEXT NOT NULL,
-          file_name        TEXT,
-          file_size        BIGINT,
-          mime_type        TEXT,
-          year             INTEGER NOT NULL,
-          month            INTEGER,
-          uploaded_by_name TEXT,
-          created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_${slug}_documents_year_month ON ${slug}_documents(year, month);
-        CREATE INDEX IF NOT EXISTS idx_${slug}_documents_doc_type ON ${slug}_documents(doc_type);
-      `,
-    },
+
     {
       name: `${slug}_financials`,
       sql: `

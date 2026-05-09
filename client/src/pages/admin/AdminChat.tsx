@@ -9,6 +9,10 @@ import {
   Search,
   Send,
   X,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Clock3,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { trpc } from "../../lib/trpc";
@@ -32,19 +36,39 @@ type Msg = {
 };
 
 function normalizeMsg(m: Record<string, unknown>): Msg {
+  const sender =
+    (m.sender as string | undefined) ??
+    (m.sender_name as string | undefined) ??
+    "Unknown";
+
+  const role =
+    (m.role as string | undefined) ??
+    (m.sender_role as string | undefined) ??
+    "client";
+
+  const message =
+    (m.message as string | null | undefined) ??
+    (m.message_text as string | null | undefined) ??
+    null;
+
+  const createdRaw =
+    (m.created_at as string | undefined) ??
+    (m.createdAt as string | undefined) ??
+    new Date().toISOString();
+
   return {
-    id: m.id as number,
-    sender: m.sender as string,
-    message: m.message as string | null,
-    role: (m.role as string) ?? "client",
-    createdAt: new Date(m.created_at as string),
-    fileUrl: m.file_url as string | null,
-    fileName: m.file_name as string | null,
-    fileSize: m.file_size as number | null,
-    mimeType: m.mime_type as string | null,
-    portalDocId: m.portal_document_id as number | null,
-    threadId: m.thread_id as number | null,
-    replyCount: (m.reply_count as number) ?? 0,
+    id: Number(m.id ?? 0),
+    sender,
+    message,
+    role,
+    createdAt: new Date(createdRaw),
+    fileUrl: (m.file_url as string | null | undefined) ?? (m.fileUrl as string | null | undefined) ?? null,
+    fileName: (m.file_name as string | null | undefined) ?? (m.fileName as string | null | undefined) ?? null,
+    fileSize: (m.file_size as number | null | undefined) ?? (m.fileSize as number | null | undefined) ?? null,
+    mimeType: (m.mime_type as string | null | undefined) ?? (m.mimeType as string | null | undefined) ?? null,
+    portalDocId: (m.portal_document_id as number | null | undefined) ?? (m.portalDocId as number | null | undefined) ?? null,
+    threadId: (m.thread_id as number | null | undefined) ?? (m.threadId as number | null | undefined) ?? null,
+    replyCount: (m.reply_count as number | undefined) ?? (m.replyCount as number | undefined) ?? 0,
   };
 }
 
@@ -74,6 +98,17 @@ function isImage(mime: string | null | undefined) {
   return mime?.startsWith("image/") ?? false;
 }
 
+const MAX_FILE_MB = 16;
+const MAX_ATTACH_FILES = 10;
+
+type AttachmentStatus = "pending" | "uploading" | "uploaded" | "failed";
+type PendingAttachment = {
+  id: string;
+  file: File;
+  status: AttachmentStatus;
+  error?: string;
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function AdminChat() {
@@ -88,6 +123,10 @@ export default function AdminChat() {
   const [threadReplyText, setThreadReplyText] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [sendingCompose, setSendingCompose] = useState(false);
+  const [attachProgressIndex, setAttachProgressIndex] = useState(0);
+  const [attachProgressTotal, setAttachProgressTotal] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -120,7 +159,11 @@ export default function AdminChat() {
   useEffect(() => {
     const raw = searchActive ? searchQueryResult.data : listQuery.data;
     if (raw) {
-      setMessages((raw as Record<string, unknown>[]).map(normalizeMsg));
+      const normalized = (raw as Record<string, unknown>[]).map(normalizeMsg);
+      if (normalized.length > 0) {
+        console.info("[AdminChat] normalized message sample", normalized.slice(0, 3));
+      }
+      setMessages(normalized);
     }
   }, [listQuery.data, searchQueryResult.data, searchActive]);
 
@@ -159,47 +202,114 @@ export default function AdminChat() {
     setHasMore(true);
   }, [selectedSlug]);
 
-  const handleSend = useCallback(async () => {
-    if (!text.trim() || !selectedSlug) return;
-    const body = text.trim();
-    setText("");
-    try {
-      await sendMsg.mutateAsync({
-        tenantSlug: selectedSlug,
-        body,
-      });
-      listQuery.refetch();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to send";
-      toast.error(msg);
-      setText(body);
-    }
-  }, [text, selectedSlug, user, sendMsg, listQuery]);
+  const fileToBase64 = useCallback(async (file: File): Promise<string> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
+    let binary = "";
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    return btoa(binary);
+  }, []);
 
-  const handleFileUpload = useCallback(async (file: File) => {
+  const handleSend = useCallback(async () => {
     if (!selectedSlug) return;
-    const MAX = 16 * 1024 * 1024;
-    if (file.size > MAX) { toast.error("File too large (max 16 MB)"); return; }
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64 = (e.target?.result as string).split(",")[1];
+
+    const body = text.trim();
+    const retryable = attachments.filter((a) => a.status === "pending" || a.status === "failed");
+
+    if (!body && retryable.length === 0) return;
+
+    // Text-only message
+    if (retryable.length === 0 && body) {
+      setSendingCompose(true);
+      setText("");
       try {
-        await sendFile.mutateAsync({
-          tenantSlug: selectedSlug,
-          fileBase64: base64,
-          fileName: file.name,
-          mimeType: file.type,
-          fileSize: file.size,
-        });
+        await sendMsg.mutateAsync({ tenantSlug: selectedSlug, body });
         listQuery.refetch();
-        toast.success("File sent and saved to Portal vault");
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Upload failed";
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Failed to send";
         toast.error(msg);
+        setText(body);
+      } finally {
+        setSendingCompose(false);
       }
-    };
-    reader.readAsDataURL(file);
-  }, [selectedSlug, user, sendFile, listQuery]);
+      return;
+    }
+
+    // File batch upload (with optional caption on first file)
+    setSendingCompose(true);
+    setAttachProgressTotal(retryable.length);
+    setAttachProgressIndex(0);
+
+    const working = attachments.map((a) => ({ ...a }));
+    for (const target of retryable) {
+      const idx = working.findIndex((a) => a.id === target.id);
+      if (idx >= 0) working[idx] = { ...working[idx], status: "pending", error: undefined };
+    }
+    setAttachments([...working]);
+
+    const results: Array<{ id: string; success: boolean; error?: string }> = [];
+
+    try {
+      for (let i = 0; i < retryable.length; i++) {
+        const target = retryable[i];
+        setAttachProgressIndex(i + 1);
+
+        setAttachments((prev) =>
+          prev.map((item) => item.id === target.id ? { ...item, status: "uploading", error: undefined } : item),
+        );
+
+        try {
+          const base64 = await fileToBase64(target.file);
+          await sendFile.mutateAsync({
+            tenantSlug: selectedSlug,
+            body: i === 0 ? (body || undefined) : undefined,
+            fileBase64: base64,
+            fileName: target.file.name,
+            mimeType: target.file.type || "application/octet-stream",
+            fileSize: target.file.size,
+          });
+          results.push({ id: target.id, success: true });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Upload failed";
+          results.push({ id: target.id, success: false, error: msg });
+          toast.error(`Failed: ${target.file.name} — ${msg}`);
+        }
+      }
+
+      const uploaded = results.filter((r) => r.success).length;
+      const failed = results.length - uploaded;
+
+      setAttachments((prev) => {
+        const updated: PendingAttachment[] = prev.map((item) => {
+          const r = results.find((x) => x.id === item.id);
+          if (!r) return item;
+          if (r.success) {
+            return { ...item, status: "uploaded", error: undefined } as PendingAttachment;
+          }
+          return { ...item, status: "failed", error: r.error ?? "Upload failed" } as PendingAttachment;
+        });
+
+        if (failed > 0) {
+          return updated.filter((i) => i.status !== "uploaded");
+        }
+
+        return [];
+      });
+
+      if (uploaded > 0 && failed === 0) {
+        toast.success(`${uploaded} file${uploaded === 1 ? "" : "s"} sent and saved to Portal vault.`);
+        setText("");
+      } else if (uploaded > 0 && failed > 0) {
+        toast.success(`${uploaded} uploaded, ${failed} failed`);
+      }
+
+      listQuery.refetch();
+    } finally {
+      setSendingCompose(false);
+      setAttachProgressIndex(0);
+      setAttachProgressTotal(0);
+    }
+  }, [selectedSlug, text, attachments, sendMsg, sendFile, listQuery, fileToBase64]);
 
   const handleThreadReply = useCallback(async () => {
     if (!threadReplyText.trim() || !selectedSlug || !threadMsg) return;
@@ -259,8 +369,9 @@ export default function AdminChat() {
     else grouped.push({ label, msgs: [msg] });
   }
 
-  const senderInitial = (name: string) => name.charAt(0).toUpperCase();
+  const senderInitial = (name?: string | null) => (name?.trim()?.charAt(0) || "?").toUpperCase();
   const isAdmin = (role: string) => role === "admin";
+  const selectedTenantName = tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug ?? "client";
 
   return (
     <div className="flex h-full min-h-0">
@@ -427,6 +538,76 @@ export default function AdminChat() {
           {/* Compose */}
           {!searchActive && (
             <div className="px-5 py-3 border-t border-border bg-card/30 shrink-0">
+              {attachments.length > 0 && (
+                <div className="mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>{attachments.length} attached (max {MAX_ATTACH_FILES})</span>
+                    {(sendingCompose || attachments.some((a) => a.status === "failed" || a.status === "uploaded")) && (
+                      <span>
+                        {sendingCompose
+                          ? `Uploading ${Math.min(attachProgressIndex, Math.max(1, attachProgressTotal))} of ${Math.max(1, attachProgressTotal)}...`
+                          : `${attachments.filter((a) => a.status === "uploaded").length} uploaded, ${attachments.filter((a) => a.status === "failed").length} failed`}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 max-h-40 overflow-auto pr-1">
+                    {attachments.map((item, idx) => {
+                      const statusIcon = item.status === "uploading"
+                        ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                        : item.status === "uploaded"
+                          ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          : item.status === "failed"
+                            ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                            : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
+
+                      const statusLabel = item.status === "uploading"
+                        ? "Uploading"
+                        : item.status === "uploaded"
+                          ? "Uploaded"
+                          : item.status === "failed"
+                            ? "Failed"
+                            : "Pending";
+
+                      return (
+                        <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Paperclip size={12} className="text-muted-foreground shrink-0" />
+                              <span className="truncate text-sm">{item.file.name}</span>
+                              <span className="text-muted-foreground text-xs shrink-0">({formatFileSize(item.file.size)})</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
+                                {statusIcon}
+                                {statusLabel}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setAttachments((prev) => {
+                                    const current = prev[idx];
+                                    if (!current || current.status === "uploading") return prev;
+                                    return prev.filter((_, i) => i !== idx);
+                                  });
+                                }}
+                                disabled={item.status === "uploading"}
+                                className="text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                                aria-label={`Remove ${item.file.name}`}
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                          {item.status === "failed" && item.error && (
+                            <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">{item.error}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-end gap-2 bg-background border border-border rounded-xl px-3 py-2">
                 <button
                   className="text-muted-foreground hover:text-primary transition-colors mb-1"
@@ -436,23 +617,56 @@ export default function AdminChat() {
                 </button>
                 <textarea
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[36px] max-h-32"
-                  placeholder={`Message ${tenants.find((t) => t.slug === selectedSlug)?.company_name ?? "client"}…`}
+                  placeholder={`Message ${selectedTenantName}…`}
                   value={text}
                   rows={1}
                   onChange={(e) => setText(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); }
                   }}
                 />
                 <button
-                  disabled={!text.trim() || sendMsg.isPending}
-                  onClick={handleSend}
+                  disabled={(!text.trim() && attachments.length === 0) || sendingCompose}
+                  onClick={() => void handleSend()}
                   className="mb-1 text-primary disabled:text-muted-foreground/40 transition-colors"
                 >
                   <Send size={16} />
                 </button>
               </div>
-              <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); e.target.value = ""; }} />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length === 0) return;
+
+                  const valid = files.filter((f) => {
+                    if (f.size > MAX_FILE_MB * 1024 * 1024) {
+                      toast.error(`${f.name}: file too large. Maximum size is ${MAX_FILE_MB} MB.`);
+                      return false;
+                    }
+                    return true;
+                  });
+
+                  if (valid.length > MAX_ATTACH_FILES) {
+                    toast.error(`You can attach up to ${MAX_ATTACH_FILES} files at once. Keeping the first ${MAX_ATTACH_FILES}.`);
+                  }
+
+                  const limited = valid.slice(0, MAX_ATTACH_FILES);
+                  const next: PendingAttachment[] = limited.map((file, idx) => ({
+                    id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
+                    file,
+                    status: "pending",
+                  }));
+                  setAttachments(next);
+                  setAttachProgressIndex(0);
+                  setAttachProgressTotal(0);
+                  e.target.value = "";
+                }}
+              />
             </div>
           )}
         </div>
