@@ -20,6 +20,14 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
 
   useEffect(() => {
     if (loading) return;
+
+    console.log("[RouteGuard] password setup check", {
+      userId: user?.id,
+      role: user?.role,
+      passwordSetupRequired: user?.must_reset_password,
+      hasSetPassword: user ? !user.must_reset_password : undefined,
+    });
+
     if (!isAuthenticated) {
       navigate("/login");
       return;
@@ -35,8 +43,15 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       location !== "/portal/set-password"
     ) {
       navigate("/portal/set-password");
+      return;
     }
-  }, [loading, isAuthenticated, user, requireAdmin, location]);
+
+    const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
+    if (isStaffPortfolioUser && (location === "/portal/sales" || location === "/portal/financials")) {
+      navigate("/portal/clients");
+      return;
+    }
+  }, [loading, isAuthenticated, user, requireAdmin, location, navigate]);
 
   if (loading) {
     return (

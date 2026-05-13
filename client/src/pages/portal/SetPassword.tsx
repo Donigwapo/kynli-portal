@@ -28,9 +28,11 @@ export default function SetPassword() {
   const [showConfirm, setShowConfirm] = useState(false);
 
   const changePassword = trpc.auth.changePassword.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (data) => {
+      console.log("[SetPassword] submit success", data);
       toast.success("Password set successfully! Welcome to the KynLi portal.");
-      await refresh(); // re-fetch user so must_reset_password is cleared
+      const refreshed = await refresh(); // re-fetch user so must_reset_password is cleared
+      console.log("[SetPassword] user after password set", refreshed?.data ?? null);
       navigate("/portal");
     },
     onError: (e) => toast.error(`Failed to set password: ${e.message}`),

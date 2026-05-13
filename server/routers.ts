@@ -6,7 +6,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
-import { PACKAGE_TIERS, TAB_ACCESS, type PackageTier } from "../shared/tiers";
+import { PACKAGE_TIERS, TAB_ACCESS, PACKAGE_LABELS, type PackageTier } from "../shared/tiers";
 import {
   getTeamMembersDb,
   addTeamMemberDb,
@@ -30,9 +30,11 @@ import {
   getClientRoster,
   getCoachingItems,
   getDocuments,
+  getDocumentsByUploader,
   insertDocument,
   deleteDocument,
   deleteDocuments,
+  updateDocumentType,
   getFinancials,
   getKpiMetrics,
   getLineItems,
@@ -145,10 +147,54 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
 });
 
 // ─── Tenant context helper ────────────────────────────────────────────────────
+const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
+  "accounting_manager",
+  "tax_manager",
+  "accountant",
+]);
+
+async function getAssignedTenantSlugsForUser(user: PortalUser): Promise<string[]> {
+  if (!STAFF_PORTAL_ROLES.has(user.role)) return [];
+  const assignments = await getStaffAssignments(user.id);
+  return Array.from(new Set(assignments.map((a) => sanitizeTenantSlug(a.tenant_slug)).filter(Boolean)));
+}
+
+async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?: string): Promise<string[]> {
+  const requested = requestedTenantSlug ? sanitizeTenantSlug(requestedTenantSlug) : null;
+
+  if (user.role === "admin") {
+    if (requested) return [requested];
+    // Admin without explicit tenant context should not accidentally hit all tenants on tenant-scoped routes.
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Admin tenant context required" });
+  }
+
+  if (user.tenant_slug) {
+    const own = sanitizeTenantSlug(user.tenant_slug);
+    if (requested && requested !== own) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own tenant." });
+    }
+    return [own];
+  }
+
+  // Staff users can be assigned to multiple tenants via staff_client_assignments.
+  const assignedSlugs = await getAssignedTenantSlugsForUser(user);
+  if (!assignedSlugs.length) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
+  }
+
+  if (requested) {
+    if (!assignedSlugs.includes(requested)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+    }
+    return [requested];
+  }
+
+  return assignedSlugs;
+}
+
 async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
-  if (user.role === "admin" && impersonateSlug) return impersonateSlug;
-  if (user.tenant_slug) return user.tenant_slug;
-  throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
+  const slugs = await resolveTenantSlugsForUser(user, impersonateSlug);
+  return slugs[0];
 }
 
 async function authorizeDocumentDeleteScope(
@@ -248,15 +294,31 @@ export const appRouter = router({
         if (!ctx.user.supabase_uid) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "No Supabase auth account linked to this user" });
         }
+
         const { error } = await supabase.auth.admin.updateUserById(ctx.user.supabase_uid, {
           password: input.newPassword,
         });
         if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+
+        // Keep app profile in sync so RouteGuard knows setup is complete.
+        const { error: profileUpdateError } = await supabase
+          .from("portal_users")
+          .update({ must_reset_password: false, updated_at: new Date().toISOString() })
+          .eq("id", ctx.user.id);
+
+        if (profileUpdateError) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Password updated, but failed to update profile state: ${profileUpdateError.message}`,
+          });
+        }
+
         // Mark invite as accepted when client sets their password for the first time
         if (ctx.user.email) {
           await markInviteAccepted(ctx.user.email);
         }
-        return { success: true };
+
+        return { success: true, must_reset_password: false };
       }),
   }),
 
@@ -270,13 +332,19 @@ export const appRouter = router({
 
   tenant: router({
     me: protectedProcedure.query(async ({ ctx }) => {
-      if (!ctx.user.tenant_slug) return null;
-      return getTenantBySlug(ctx.user.tenant_slug);
+      const slugs = await resolveTenantSlugsForUser(ctx.user);
+      if (!slugs.length) return null;
+      return getTenantBySlug(slugs[0]);
     }),
     getBySlug: adminProcedure
       .input(z.object({ slug: z.string() }))
       .query(async ({ input }) => getTenantBySlug(input.slug)),
-    list: adminProcedure.query(async () => getAllPortalTenants()),
+    list: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role === "admin") return getAllPortalTenants();
+      const slugs = await resolveTenantSlugsForUser(ctx.user);
+      const all = await getAllPortalTenants();
+      return all.filter((t) => slugs.includes(sanitizeTenantSlug(t.slug)));
+    }),
     upsert: adminProcedure
       .input(z.object({
         slug: z.string(),
@@ -370,20 +438,112 @@ export const appRouter = router({
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getFinancials(slug, input.year, input.month);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        console.log("[OverviewScope]", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          resolvedSlugs: slugs,
+        });
+
+        if (slugs.length === 1) {
+          return getFinancials(slugs[0], input.year, input.month);
+        }
+
+        const lists = await Promise.all(slugs.map((slug) => getFinancials(slug, input.year, input.month)));
+        const byMonth = new Map<number, {
+          year: number;
+          month: number;
+          revenue: number;
+          budget_revenue: number;
+          expenses: number;
+          budget_expenses: number;
+          net_profit: number;
+          net_profit_margin: number;
+          summary: string | null;
+        }>();
+
+        for (const rows of lists) {
+          for (const row of rows) {
+            const existing = byMonth.get(row.month) ?? {
+              year: row.year,
+              month: row.month,
+              revenue: 0,
+              budget_revenue: 0,
+              expenses: 0,
+              budget_expenses: 0,
+              net_profit: 0,
+              net_profit_margin: 0,
+              summary: null,
+            };
+            existing.revenue += row.revenue ?? 0;
+            existing.budget_revenue += row.budget_revenue ?? 0;
+            existing.expenses += row.expenses ?? 0;
+            existing.budget_expenses += row.budget_expenses ?? 0;
+            byMonth.set(row.month, existing);
+          }
+        }
+
+        const merged = Array.from(byMonth.values())
+          .map((m, idx) => {
+            const netProfit = m.revenue - m.expenses;
+            const margin = m.revenue > 0 ? netProfit / m.revenue : 0;
+            return {
+              id: idx + 1,
+              year: m.year,
+              month: m.month,
+              revenue: m.revenue,
+              budget_revenue: m.budget_revenue,
+              expenses: m.expenses,
+              budget_expenses: m.budget_expenses,
+              net_profit: netProfit,
+              net_profit_margin: margin,
+              summary: null,
+            };
+          })
+          .sort((a, b) => a.month - b.month);
+
+        return merged;
       }),
     lineItems: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getLineItems(slug, input.year, input.month);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        if (slugs.length === 1) {
+          return getLineItems(slugs[0], input.year, input.month);
+        }
+
+        const lists = await Promise.all(slugs.map((slug) => getLineItems(slug, input.year, input.month)));
+        const mergedByKey = new Map<string, { type: "income" | "expense"; label: string; amount: number }>();
+
+        for (const rows of lists) {
+          for (const row of rows) {
+            const key = `${row.type}::${row.label}`;
+            const existing = mergedByKey.get(key) ?? { type: row.type, label: row.label, amount: 0 };
+            existing.amount += row.amount ?? 0;
+            mergedByKey.set(key, existing);
+          }
+        }
+
+        return Array.from(mergedByKey.values()).map((r, idx) => ({
+          id: idx + 1,
+          year: input.year,
+          month: input.month,
+          type: r.type,
+          label: r.label,
+          amount: r.amount,
+          budget_amount: null,
+        }));
       }),
     lineItemsByYear: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getLineItemsByYear(slug, input.year);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        if (slugs.length === 1) {
+          return getLineItemsByYear(slugs[0], input.year);
+        }
+
+        const lists = await Promise.all(slugs.map((slug) => getLineItemsByYear(slug, input.year)));
+        return lists.flat().map((row, idx) => ({ ...row, id: (idx + 1) * 10 }));
       }),
     upsert: adminProcedure
       .input(z.object({
@@ -440,6 +600,16 @@ export const appRouter = router({
         tenantSlug: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+
+        // Staff/accountants default to personal operational document area
+        // (their own uploads only, no tenant context) unless they explicitly select a tenant via View as.
+        if (isStaffPortfolioUser && !input.tenantSlug) {
+          return getDocumentsByUploader(ctx.user.id, input.year, input.month, input.docType, undefined, {
+            tenantIsNullOnly: true,
+          });
+        }
+
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         return getDocuments(slug, input.year, input.month, input.docType);
       }),
@@ -454,43 +624,54 @@ export const appRouter = router({
         description: z.string().optional(),
         year: z.number(),
         month: z.number().optional(), // 1–12
+        tenantSlug: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const bucketName = process.env.SUPABASE_STORAGE_BUCKET || "documents";
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
 
-        let resolvedTenantSlug: string;
-        try {
-          resolvedTenantSlug = await resolveTenantSlug(ctx.user);
-        } catch (error) {
-          console.error("[documents.upload] unable to resolve tenant slug", {
+        // Staff/accountants without explicit View-as tenant upload into personal area (tenant_slug = null).
+        const requestedTenantSlug = input.tenantSlug;
+        const hasExplicitTenantContext = typeof requestedTenantSlug === "string" && requestedTenantSlug.trim().length > 0;
+
+        let tenantSlug: string | null = null;
+        if (!isStaffPortfolioUser || hasExplicitTenantContext) {
+          let resolvedTenantSlug: string;
+          try {
+            resolvedTenantSlug = await resolveTenantSlug(ctx.user, requestedTenantSlug);
+          } catch (error) {
+            console.error("[documents.upload] unable to resolve tenant slug", {
+              userId: ctx.user.id,
+              userEmail: ctx.user.email,
+              userTenantSlug: ctx.user.tenant_slug,
+              requestedTenantSlug,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Unable to resolve tenant slug for document upload.",
+            });
+          }
+
+          tenantSlug = sanitizeTenantSlug(resolvedTenantSlug);
+
+          console.info("[documents.upload] tenant slug resolution", {
             userId: ctx.user.id,
             userEmail: ctx.user.email,
             userTenantSlug: ctx.user.tenant_slug,
-            rawTenantSlug: ctx.user.tenant_slug,
-            error: error instanceof Error ? error.message : String(error),
+            requestedTenantSlug,
+            resolvedTenantSlug,
+            tenantSlug,
           });
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Unable to resolve tenant slug for document upload.",
+        } else {
+          console.info("[documents.upload] personal staff upload mode", {
+            userId: ctx.user.id,
+            role: ctx.user.role,
+            requestedTenantSlug,
           });
         }
 
-        console.info("[documents.upload] tenant slug resolution", {
-          userId: ctx.user.id,
-          userEmail: ctx.user.email,
-          userTenantSlug: ctx.user.tenant_slug,
-          rawTenantSlug: ctx.user.tenant_slug,
-          resolvedTenantSlug,
-        });
-
-        const tenantSlug = sanitizeTenantSlug(resolvedTenantSlug);
-
-        console.info("[documents.upload] tenant slug sanitized", {
-          rawTenantSlug: resolvedTenantSlug,
-          sanitizedTenantSlug: tenantSlug,
-        });
-
-        const tenantRecord = await getTenantBySlug(tenantSlug);
+        const tenantRecord = tenantSlug ? await getTenantBySlug(tenantSlug) : null;
         const organizationId = tenantRecord?.id != null ? String(tenantRecord.id) : null;
         const uploadedByUserId = ctx.user.id != null ? String(ctx.user.id) : null;
 
@@ -499,7 +680,7 @@ export const appRouter = router({
           tenantRecord,
         });
 
-        if (!organizationId) {
+        if (tenantSlug && !organizationId) {
           console.warn("[documents.upload] organization_id unresolved; inserting null", {
             tenantSlug,
             userId: ctx.user.id,
@@ -547,7 +728,8 @@ export const appRouter = router({
         const rand = Math.random().toString(36).slice(2);
         const originalFileName = input.fileName || `document-${timestamp}.${ext}`;
         const sanitizedFileName = sanitizeStorageFileName(originalFileName, ext);
-        const supabasePath = `${tenantSlug}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
+        const storagePrefix = tenantSlug ?? `staff/${uploadedByUserId ?? "unknown"}`;
+        const supabasePath = `${storagePrefix}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
 
         console.info("[documents.upload] starting upload", {
           tenantSlug,
@@ -577,7 +759,7 @@ export const appRouter = router({
             error: primaryMessage,
           });
 
-          const fallbackKey = `docs/${tenantSlug}/${safeDocType}/${timestamp}-${rand}.${ext}`;
+          const fallbackKey = `docs/${storagePrefix}/${safeDocType}/${timestamp}-${rand}.${ext}`;
           try {
             const fallbackResult = await storagePut(fallbackKey, buffer, input.mimeType);
             fileUrl = fallbackResult.url;
@@ -623,18 +805,24 @@ export const appRouter = router({
           await insertDocument(tenantSlug, documentInsertPayload);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error("[documents.upload] insertDocument failed", {
-            tenantSlug,
-            tableName: "documents_metadata",
-            uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
-            fileKey,
-            error: message,
+
+          console.error("[DocumentUploadError]", {
+            error,
+            payload: {
+              tenantSlug,
+              tableName: "documents_metadata",
+              uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+              fileKey,
+              documentInsertPayload,
+            },
           });
 
-          if (message.includes("relation") || message.includes("does not exist") || message.includes("404")) {
+          // Only return the explicit "table does not exist" message when the DB error
+          // clearly indicates missing relation (Postgres 42P01).
+          if (message.includes("code=42P01") || /relation .* does not exist/i.test(message)) {
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: "Document upload failed: documents_metadata table does not exist yet.",
+              message: "Document upload failed: documents_metadata table does not exist.",
             });
           }
 
@@ -660,15 +848,49 @@ export const appRouter = router({
         const result = await deleteDocuments(authorizedSlug, input.ids);
         return { success: true, deleted: result.deleted };
       }),
+    updateType: protectedProcedure
+      .input(
+        z.object({
+          id: z.union([z.string(), z.number()]),
+          docType: z.enum(["Financials", "Tax Returns", "W-2 / 1099", "Other", "Chat Attachment"]),
+          tenantSlug: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const updated = await updateDocumentType(slug, input.id, input.docType);
+        return { success: true, document: updated };
+      }),
   }),
 
   coaching: router({
     list: protectedProcedure
       .input(z.object({ year: z.number().optional(), quarter: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getCoachingItems(slug, input.year, input.quarter);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        console.log("[OverviewScope]", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          resolvedSlugs: slugs,
+        });
+
+        if (slugs.length === 1) {
+          await assertTierAccess(ctx.user, "coaching", slugs[0]);
+          return getCoachingItems(slugs[0], input.year, input.quarter);
+        }
+
+        const allLists = await Promise.all(
+          slugs.map(async (slug) => {
+            const tenant = await getTenantBySlug(slug);
+            if (!tenant) return [];
+            const tenantTierIdx = PACKAGE_TIERS.indexOf(tenant.package_tier as PackageTier);
+            const requiredTierIdx = PACKAGE_TIERS.indexOf((TAB_ACCESS["coaching"] ?? "legacy") as PackageTier);
+            if (tenantTierIdx < requiredTierIdx) return [];
+            return getCoachingItems(slug, input.year, input.quarter);
+          }),
+        );
+
+        return allLists.flat().map((row, idx) => ({ ...row, id: (idx + 1) * 10 }));
       }),
     add: adminProcedure
       .input(z.object({
@@ -1050,16 +1272,81 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "sales_tracker", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getSalesTracker(slug, input.year, input.month);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+
+        if (slugs.length === 1) {
+          await assertTierAccess(ctx.user, "sales_tracker", slugs[0]);
+          return getSalesTracker(slugs[0], input.year, input.month);
+        }
+
+        const rows = await Promise.all(
+          slugs.map(async (slug) => {
+            const tenant = await getTenantBySlug(slug);
+            if (!tenant) return null;
+            const tenantTierIdx = PACKAGE_TIERS.indexOf(tenant.package_tier as PackageTier);
+            const requiredTierIdx = PACKAGE_TIERS.indexOf((TAB_ACCESS["sales_tracker"] ?? "legacy") as PackageTier);
+            if (tenantTierIdx < requiredTierIdx) return null;
+            return getSalesTracker(slug, input.year, input.month);
+          }),
+        );
+
+        const merged = rows.filter(Boolean) as Awaited<ReturnType<typeof getSalesTracker>>[];
+        if (!merged.length) return null;
+
+        return {
+          id: 1,
+          year: input.year,
+          month: input.month,
+          goal_clients: merged.reduce((s, r) => s + (r?.goal_clients ?? 0), 0),
+          signed_clients: merged.reduce((s, r) => s + (r?.signed_clients ?? 0), 0),
+          referral_count: merged.reduce((s, r) => s + (r?.referral_count ?? 0), 0),
+          outbound_count: merged.reduce((s, r) => s + (r?.outbound_count ?? 0), 0),
+        };
       }),
     getByYear: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "sales_tracker", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getSalesTrackerByYear(slug, input.year);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+
+        if (slugs.length === 1) {
+          await assertTierAccess(ctx.user, "sales_tracker", slugs[0]);
+          return getSalesTrackerByYear(slugs[0], input.year);
+        }
+
+        const lists = await Promise.all(
+          slugs.map(async (slug) => {
+            const tenant = await getTenantBySlug(slug);
+            if (!tenant) return [];
+            const tenantTierIdx = PACKAGE_TIERS.indexOf(tenant.package_tier as PackageTier);
+            const requiredTierIdx = PACKAGE_TIERS.indexOf((TAB_ACCESS["sales_tracker"] ?? "legacy") as PackageTier);
+            if (tenantTierIdx < requiredTierIdx) return [];
+            return getSalesTrackerByYear(slug, input.year);
+          }),
+        );
+
+        const byMonth = new Map<number, { month: number; goal: number; signed: number; referral: number; outbound: number }>();
+        for (const rows of lists) {
+          for (const row of rows) {
+            const existing = byMonth.get(row.month) ?? { month: row.month, goal: 0, signed: 0, referral: 0, outbound: 0 };
+            existing.goal += row.goal_clients ?? 0;
+            existing.signed += row.signed_clients ?? 0;
+            existing.referral += row.referral_count ?? 0;
+            existing.outbound += row.outbound_count ?? 0;
+            byMonth.set(row.month, existing);
+          }
+        }
+
+        return Array.from(byMonth.values())
+          .map((m, idx) => ({
+            id: idx + 1,
+            year: input.year,
+            month: m.month,
+            goal_clients: m.goal,
+            signed_clients: m.signed,
+            referral_count: m.referral,
+            outbound_count: m.outbound,
+          }))
+          .sort((a, b) => a.month - b.month);
       }),
     upsert: adminProcedure
       .input(z.object({
@@ -1082,8 +1369,79 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
       .input(z.object({ tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "clients", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getClientRoster(slug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+
+        if (ctx.user.role === "admin" || ctx.user.role === "client") {
+          return getClientRoster(slugs[0]);
+        }
+
+        // Staff/accountants: aggregate assigned tenants only
+        console.log("[PortalScope]", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          tenantSlug: ctx.user.tenant_slug,
+        });
+        console.log("[PortalScope] assigned tenants", slugs);
+
+        const rosterLists = await Promise.all(slugs.map((slug) => getClientRoster(slug)));
+        const mergedRosterRows = rosterLists.flatMap((list, slugIndex) =>
+          list.map((entry) => ({
+            ...entry,
+            tenant_slug: slugs[slugIndex],
+            // Keep numeric id shape for frontend keys while avoiding collisions across tenant tables.
+            id: (slugIndex + 1) * 1_000_000 + Number(entry.id),
+          })),
+        );
+
+        // Fallback source of truth: assigned portal tenants should still appear
+        // even when tenant-specific roster tables are empty.
+        const allTenants = await getAllPortalTenants();
+        const tenantRows = allTenants.filter((t) => slugs.includes(sanitizeTenantSlug(t.slug)));
+
+        const rosterTenantSlugs = new Set(
+          mergedRosterRows
+            .map((r) => sanitizeTenantSlug((r as unknown as { tenant_slug?: string | null }).tenant_slug ?? ""))
+            .filter(Boolean),
+        );
+
+        const fallbackRows = tenantRows
+          .filter((t) => !rosterTenantSlugs.has(sanitizeTenantSlug(t.slug)))
+          .map((t, idx) => ({
+            id: 9_000_000 + idx + 1,
+            tenant_slug: sanitizeTenantSlug(t.slug),
+            client_name: t.company_name,
+            package: PACKAGE_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
+            monthly_amount: 0,
+            signed_date: null,
+            status: t.is_churned || !t.is_active ? "churned" as const : "active" as const,
+            tenure_months: 0,
+            ltv: 0,
+            total_income: 0,
+            notes: [t.contact_name, t.email].filter(Boolean).join(" · ") || null,
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+          }));
+
+        const finalRows = [...mergedRosterRows, ...fallbackRows];
+
+        console.log("[RosterListStaffDebug]", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          assignedSlugs: slugs,
+          rowsCount: mergedRosterRows.length,
+          rows: mergedRosterRows,
+        });
+
+        console.log("[RosterListStaffFinal]", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          assignedSlugs: slugs,
+          tenantRowsCount: tenantRows?.length,
+          finalRowsCount: finalRows?.length,
+          finalRows,
+        });
+
+        return finalRows;
       }),
     add: protectedProcedure
       .input(z.object({

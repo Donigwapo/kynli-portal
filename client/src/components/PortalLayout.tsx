@@ -61,19 +61,44 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
-  const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !isAdmin && !impersonatingTenantSlug });
+
+  const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
+
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
+    enabled: !isAdmin && !impersonatingTenantSlug && !isStaffPortfolioUser,
+  });
 
   // Determine the active tier: impersonated tenant uses effectiveTier set by admin;
-  // real client uses their own tenant's package_tier; admin sees all nav items.
+  // client users use their own tenant tier; staff portfolio users get full client nav visibility.
   const activeTier: PackageTier = isAdmin
-    ? "cfo" // admins see all items
-    : (impersonatingTenantSlug ? effectiveTier : (tenant?.package_tier ?? "legacy")) as PackageTier;
+    ? "cfo"
+    : isStaffPortfolioUser
+      ? "cfo"
+      : (impersonatingTenantSlug ? effectiveTier : (tenant?.package_tier ?? "legacy")) as PackageTier;
+
+  const displayLabel = isAdmin
+    ? "Admin"
+    : impersonatingTenantSlug
+      ? "Viewing as client"
+      : isStaffPortfolioUser
+        ? "Assigned Clients"
+        : (tenant?.company_name ?? "Client Portal");
+
+  console.log("[PortalShellScope]", {
+    userId: user?.id,
+    role: user?.role,
+    tenantSlug: user?.tenant_slug,
+    displayLabel,
+  });
 
   const navItems = isAdmin
     ? ADMIN_NAV
-    : CLIENT_NAV.filter(item =>
-        !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy")
-      );
+    : CLIENT_NAV.filter(item => {
+        if (isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
+          return false;
+        }
+        return !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy");
+      });
 
   const initials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -95,13 +120,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               className="h-7 w-auto object-contain"
             />
           </div>
-          {!isAdmin && !impersonatingTenantSlug && tenant?.company_name && (
+          {!impersonatingTenantSlug && (
             <span className="text-xs truncate w-full text-center" style={{ color: "#666" }}>
-              {tenant.company_name}
+              {displayLabel}
             </span>
-          )}
-          {isAdmin && (
-            <span className="text-xs" style={{ color: "#666" }}>Admin</span>
           )}
         </div>
 

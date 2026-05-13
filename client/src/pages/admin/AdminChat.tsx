@@ -15,6 +15,7 @@ import {
   Clock3,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { trpc } from "../../lib/trpc";
 import { useAuth } from "../../_core/hooks/useAuth";
 
@@ -113,6 +114,7 @@ type PendingAttachment = {
 
 export default function AdminChat() {
   const { user } = useAuth();
+  const [location, navigate] = useLocation();
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [text, setText] = useState("");
@@ -136,6 +138,22 @@ export default function AdminChat() {
   // Tenant list for sidebar
   const { data: tenants = [] } = trpc.tenant.list.useQuery();
 
+  const getClientFromUrl = useCallback((): string | null => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const value = params.get("client");
+    return value && value.trim().length > 0 ? value.trim() : null;
+  }, []);
+
+  const setClientInUrl = useCallback((clientSlug: string) => {
+    const [pathname] = location.split("?");
+    const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+    params.set("client", clientSlug);
+    const query = params.toString();
+    const next = query ? `${pathname}?${query}` : pathname;
+    navigate(next, { replace: true });
+  }, [location, navigate]);
+
   // Chat procedures
   const [beforeId, setBeforeId] = useState<number | undefined>(undefined);
 
@@ -158,14 +176,18 @@ export default function AdminChat() {
   // Sync messages from query
   useEffect(() => {
     const raw = searchActive ? searchQueryResult.data : listQuery.data;
-    if (raw) {
+    if (raw !== undefined) {
       const normalized = (raw as Record<string, unknown>[]).map(normalizeMsg);
       if (normalized.length > 0) {
         console.info("[AdminChat] normalized message sample", normalized.slice(0, 3));
       }
+      console.log("[AdminChat] messages loaded", {
+        selectedClientId: selectedSlug,
+        count: normalized.length,
+      });
       setMessages(normalized);
     }
-  }, [listQuery.data, searchQueryResult.data, searchActive]);
+  }, [listQuery.data, searchQueryResult.data, searchActive, selectedSlug]);
 
   // Sync thread replies
   useEffect(() => {
@@ -173,6 +195,31 @@ export default function AdminChat() {
       setThreadReplies((getThread.data as Record<string, unknown>[]).map(normalizeMsg));
     }
   }, [getThread.data]);
+
+  // URL -> selected client sync on tenant load / refresh
+  useEffect(() => {
+    if (!tenants.length) return;
+
+    const fromUrl = getClientFromUrl();
+    const existsInTenants = fromUrl ? tenants.some((t) => t.slug === fromUrl) : false;
+
+    if (fromUrl && existsInTenants) {
+      if (selectedSlug !== fromUrl) setSelectedSlug(fromUrl);
+      return;
+    }
+
+    const fallback = tenants[0]?.slug ?? null;
+    if (!selectedSlug && fallback) {
+      setSelectedSlug(fallback);
+      setClientInUrl(fallback);
+      return;
+    }
+
+    if (fromUrl && !existsInTenants && fallback) {
+      if (selectedSlug !== fallback) setSelectedSlug(fallback);
+      setClientInUrl(fallback);
+    }
+  }, [tenants, selectedSlug, getClientFromUrl, setClientInUrl]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -193,13 +240,16 @@ export default function AdminChat() {
     return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, [selectedSlug, searchActive]);
 
-  // Reset state when switching clients
+  // Reset only ancillary state when switching clients (keep messages until new payload arrives)
   useEffect(() => {
-    setMessages([]);
+    console.log("[AdminChat] selected client changed", {
+      selectedClientId: selectedSlug,
+    });
     setSearchQuery("");
     setSearchActive(false);
     setThreadMsg(null);
     setHasMore(true);
+    setBeforeId(undefined);
   }, [selectedSlug]);
 
   const fileToBase64 = useCallback(async (file: File): Promise<string> => {
@@ -373,6 +423,22 @@ export default function AdminChat() {
   const isAdmin = (role: string) => role === "admin";
   const selectedTenantName = tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug ?? "client";
 
+  const handleClientClick = useCallback((clientId: string) => {
+    console.log("[AdminChat] client clicked", {
+      clientId,
+      currentSelectedClientId: selectedSlug,
+    });
+
+    // Idempotent selection: clicking the same client should not clear/toggle off
+    if (selectedSlug === clientId) {
+      setClientInUrl(clientId);
+      return;
+    }
+
+    setSelectedSlug(clientId);
+    setClientInUrl(clientId);
+  }, [selectedSlug, setClientInUrl]);
+
   return (
     <div className="flex h-full min-h-0">
       {/* Client Sidebar */}
@@ -385,7 +451,7 @@ export default function AdminChat() {
             {tenants.map((t) => (
               <button
                 key={t.slug}
-                onClick={() => setSelectedSlug(t.slug)}
+                onClick={() => handleClientClick(t.slug)}
                 className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                   selectedSlug === t.slug
                     ? "bg-primary/15 text-primary font-medium"
@@ -444,6 +510,15 @@ export default function AdminChat() {
 
           {/* Messages */}
           <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-1 min-h-0">
+            {messages.length === 0 && !listQuery.isLoading && !searchQueryResult.isLoading && (
+              <div className="h-full flex items-center justify-center text-muted-foreground">
+                <div className="text-center space-y-2">
+                  <MessageSquare size={28} className="mx-auto opacity-30" />
+                  <p className="text-sm">No messages yet for this client.</p>
+                  <p className="text-xs">Send a message to start the conversation.</p>
+                </div>
+              </div>
+            )}
             {hasMore && !searchActive && (
               <div className="flex justify-center mb-3">
                 <Button variant="outline" size="sm" className="text-xs border-border text-muted-foreground" disabled={loadingMore} onClick={handleLoadMore}>

@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
+import { useAuth } from "@/_core/hooks/useAuth";
 import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -59,28 +60,35 @@ function KpiCard({
 }
 
 export default function Overview() {
+  const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
   const now = new Date();
   const [year] = useState(now.getFullYear());
-  const { data: tenant } = trpc.tenant.me.useQuery(undefined, { enabled: !impersonatingTenantSlug });
-  const tslug = impersonatingTenantSlug ?? tenant?.slug ?? null;
+
+  const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
+
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
+    enabled: !impersonatingTenantSlug && !isStaffPortfolioUser,
+  });
+
+  const tslug = impersonatingTenantSlug ?? (!isStaffPortfolioUser ? (tenant?.slug ?? null) : null);
 
   const { data: financials = [] } = trpc.financials.get.useQuery(
     { year, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug, staleTime: 30_000 }
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
   const { data: salesList = [] } = trpc.sales.getByYear.useQuery(
     { year, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug, staleTime: 30_000 }
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
   const currentQ = Math.ceil((now.getMonth() + 1) / 3);
   const { data: coachingItems = [] } = trpc.coaching.list.useQuery(
     { year, quarter: currentQ, tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug, staleTime: 30_000 }
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
   const { data: rosterData = [] } = trpc.roster.list.useQuery(
     { tenantSlug: tslug ?? undefined },
-    { enabled: !!tslug, staleTime: 30_000 }
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
 
   const latestPeriod = useMemo(() => {
@@ -110,6 +118,17 @@ export default function Overview() {
 
   const activeClients = rosterData.filter(c => c.status === "active").length;
   const churnedClients = rosterData.filter(c => c.status === "churned").length;
+
+  console.log("[PortalScope]", {
+    userId: user?.id,
+    role: user?.role,
+    tenantSlug: user?.tenant_slug,
+  });
+
+  console.log("[OverviewMetrics]", {
+    activeClients,
+    tenantCount: isStaffPortfolioUser ? "multi-assigned" : (tslug ? 1 : 0),
+  });
 
   // Active clients by package for donut chart
   const TIER_COLORS: Record<string, string> = {

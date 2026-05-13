@@ -1,7 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Plus, Users } from "lucide-react";
+import { Search, ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Plus, Users, Eye } from "lucide-react";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -56,14 +57,40 @@ const fmtMonth = (dateStr: string | null) => {
 
 export default function Clients() {
   const { user } = useAuth();
-  const { impersonatingTenantSlug } = usePortal();
+  const [, navigate] = useLocation();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
+
   const isAdmin = user?.role === "admin";
+  const isStaff = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const tenantSlug = impersonatingTenantSlug ?? user?.tenant_slug ?? "";
 
+  const { data: tenants = [] } = trpc.tenant.list.useQuery(undefined, {
+    enabled: isAdmin || isStaff,
+  });
+
   const { data: clients = [], refetch } = trpc.roster.list.useQuery(
-    { tenantSlug: isAdmin ? tenantSlug : undefined },
-    { enabled: !!tenantSlug || isAdmin }
+    { tenantSlug: isAdmin ? (tenantSlug || undefined) : undefined },
+    { enabled: isAdmin ? !!tenantSlug : true }
   );
+
+  const assignedTenantSlugs = useMemo(() => new Set(tenants.map((t) => t.slug)), [tenants]);
+
+  const clientsWithTenant = useMemo(
+    () => clients as Array<(typeof clients)[number] & { tenant_slug?: string | null }>,
+    [clients],
+  );
+
+  useEffect(() => {
+    if (isStaff) {
+      const assigned = tenants.map((t) => t.slug);
+      console.log("[StaffAssignedClients]", tenants.map((t) => ({ slug: t.slug, company: t.company_name })));
+      console.log("[PortalClientsScope]", {
+        role: user?.role,
+        assignedTenantSlugs: assigned,
+        roster: clients,
+      });
+    }
+  }, [isStaff, tenants, clients, user?.role]);
 
   // ── Filters & Sort ──────────────────────────────────────────────────────────
   const [search, setSearch] = useState("");
@@ -78,7 +105,7 @@ export default function Clients() {
   };
 
   const filtered = useMemo(() => {
-    let rows = [...clients];
+    let rows = [...clientsWithTenant];
     if (search.trim()) {
       const q = search.toLowerCase();
       rows = rows.filter(c =>
@@ -99,12 +126,12 @@ export default function Clients() {
       return 0;
     });
     return rows;
-  }, [clients, search, statusFilter, packageFilter, sortField, sortDir]);
+  }, [clientsWithTenant, search, statusFilter, packageFilter, sortField, sortDir]);
 
   // ── Package summary cards ───────────────────────────────────────────────────
   const packageStats = useMemo(() => {
     return PACKAGES.map(({ name: pkg, defaultAmount }) => {
-      const pkgClients = clients.filter(c => c.package === pkg && c.status === "active");
+      const pkgClients = clientsWithTenant.filter(c => c.package === pkg && c.status === "active");
       const avgMo = pkgClients.length > 0
         ? pkgClients.reduce((s, c) => s + c.monthly_amount, 0) / pkgClients.length
         : defaultAmount;
@@ -116,10 +143,10 @@ export default function Clients() {
         : 0;
       return { pkg, count: pkgClients.length, avgMo, avgTenure, avgLtv };
     });
-  }, [clients]);
+  }, [clientsWithTenant]);
 
-  const activeCount = clients.filter(c => c.status === "active").length;
-  const totalMrr = clients.filter(c => c.status === "active").reduce((s, c) => s + c.monthly_amount, 0);
+  const activeCount = clientsWithTenant.filter(c => c.status === "active").length;
+  const totalMrr = clientsWithTenant.filter(c => c.status === "active").reduce((s, c) => s + c.monthly_amount, 0);
 
   // ── Add/Edit dialog — available to ALL users (client + admin) ───────────────
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -176,7 +203,7 @@ export default function Clients() {
     setDialogOpen(true);
   };
 
-  const openEdit = (c: typeof clients[0]) => {
+  const openEdit = (c: (typeof clientsWithTenant)[number]) => {
     setEditingId(c.id);
     setForm({
       clientName: c.client_name,
@@ -236,44 +263,48 @@ export default function Clients() {
             {totalMrr > 0 && ` · ${fmtDollar(totalMrr)}/mo MRR`}
           </p>
         </div>
-        <Button onClick={openAdd} className="bg-primary text-primary-foreground gap-2 text-sm">
-          <Plus className="w-4 h-4" /> Add Client
-        </Button>
+        {isAdmin && (
+          <Button onClick={openAdd} className="bg-primary text-primary-foreground gap-2 text-sm">
+            <Plus className="w-4 h-4" /> Add Client
+          </Button>
+        )}
       </div>
 
-      {/* Package summary cards — always shown, uses default amounts when empty */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        {packageStats.map(({ pkg, count, avgMo, avgTenure, avgLtv }) => (
-          <Card
-            key={pkg}
-            className={`bg-card border cursor-pointer transition-colors hover:border-primary/40 ${packageFilter === pkg ? "border-primary/60" : "border-border"}`}
-            onClick={() => setPackageFilter(packageFilter === pkg ? "all" : pkg)}
-          >
-            <CardContent className="p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${PACKAGE_COLORS[pkg] ?? "text-muted-foreground border-border"}`}>
-                  {pkg}
-                </span>
-                <span className="text-xs text-muted-foreground">{count} active</span>
-              </div>
-              <div className="space-y-1 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">$ Avg/mo</span>
-                  <span className="font-semibold text-foreground">{fmtDollar(Math.round(avgMo))}</span>
+      {/* Package summary cards — hidden for staff/accountant portfolio views */}
+      {!isStaff && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          {packageStats.map(({ pkg, count, avgMo, avgTenure, avgLtv }) => (
+            <Card
+              key={pkg}
+              className={`bg-card border cursor-pointer transition-colors hover:border-primary/40 ${packageFilter === pkg ? "border-primary/60" : "border-border"}`}
+              onClick={() => setPackageFilter(packageFilter === pkg ? "all" : pkg)}
+            >
+              <CardContent className="p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${PACKAGE_COLORS[pkg] ?? "text-muted-foreground border-border"}`}>
+                    {pkg}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{count} active</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">⏱ Tenure</span>
-                  <span className="font-semibold text-foreground">{avgTenure.toFixed(1)} mo</span>
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">$ Avg/mo</span>
+                    <span className="font-semibold text-foreground">{fmtDollar(Math.round(avgMo))}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">⏱ Tenure</span>
+                    <span className="font-semibold text-foreground">{avgTenure.toFixed(1)} mo</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">↗ LTV</span>
+                    <span className="font-semibold text-primary">{fmtDollar(Math.round(avgLtv))}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">↗ LTV</span>
-                  <span className="font-semibold text-primary">{fmtDollar(Math.round(avgLtv))}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative">
@@ -377,16 +408,43 @@ export default function Clients() {
                   <td className="px-4 py-3 text-right font-semibold text-primary">{fmtDollar(c.ltv)}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => openEdit(c)}>
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost" size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug: tenantSlug || undefined, id: c.id }); }}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                      {isStaff && c.tenant_slug && assignedTenantSlugs.has(c.tenant_slug) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1"
+                          onClick={() => {
+                            console.log("[ViewAsClient]", {
+                              userId: user?.id,
+                              role: user?.role,
+                              tenantSlug: c.tenant_slug,
+                              clientName: c.client_name,
+                            });
+                            setImpersonatingTenantSlug(c.tenant_slug ?? null);
+                            const matchedTenant = tenants.find((t) => t.slug === c.tenant_slug);
+                            if (matchedTenant?.package_tier) setEffectiveTier(matchedTenant.package_tier as any);
+                            navigate("/portal");
+                          }}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          View as
+                        </Button>
+                      )}
+
+                      {isAdmin && (
+                        <>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => openEdit(c)}>
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={() => { if (confirm(`Remove "${c.client_name}"?`)) deleteMutation.mutate({ tenantSlug: tenantSlug || undefined, id: c.id }); }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -396,7 +454,8 @@ export default function Clients() {
         </div>
       </Card>
 
-      {/* Add/Edit Dialog — available to all users */}
+      {/* Add/Edit Dialog — admin only */}
+      {isAdmin && (
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="bg-card border-border max-w-lg">
           <DialogHeader>
@@ -504,6 +563,7 @@ export default function Clients() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
     </div>
   );
 }

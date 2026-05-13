@@ -198,7 +198,7 @@ export type ClientRosterEntry = {
 
 export type Document = {
   id: string;
-  tenant_slug: string;
+  tenant_slug: string | null;
   organization_id: string | null;
   client_id: string | null;
   name: string;
@@ -688,14 +688,49 @@ export async function getDocuments(
   return (data || []) as Document[];
 }
 
+export async function getDocumentsByUploader(
+  uploadedByUserId: string | number,
+  year?: number,
+  month?: number,
+  docType?: string,
+  tenantSlugs?: string[],
+  options?: { tenantIsNullOnly?: boolean },
+): Promise<Document[]> {
+  const userId = String(uploadedByUserId);
+
+  let query = supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .select("*")
+    .eq("uploaded_by_user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (options?.tenantIsNullOnly) {
+    query = query.is("tenant_slug", null);
+  } else if (tenantSlugs && tenantSlugs.length > 0) {
+    query = query.in("tenant_slug", tenantSlugs.map((s) => sanitizeTenantSlug(s)));
+  }
+
+  if (year !== undefined) query = query.eq("year", year);
+  if (month !== undefined) query = query.eq("month", month);
+  if (docType && docType !== "All Types") query = query.eq("doc_type", docType);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(`[getDocumentsByUploader] ${userId}:`, error.message);
+    return [];
+  }
+
+  return (data || []) as Document[];
+}
+
 export async function insertDocument(
-  slug: string,
+  slug: string | null,
   doc: Omit<Document, "id" | "tenant_slug" | "created_at" | "updated_at">,
 ): Promise<Document> {
-  const tenantSlug = sanitizeTenantSlug(slug);
+  const tenantSlug = slug ? sanitizeTenantSlug(slug) : null;
 
   let resolvedOrganizationId = doc.organization_id != null ? String(doc.organization_id) : null;
-  if (!resolvedOrganizationId) {
+  if (!resolvedOrganizationId && tenantSlug) {
     const tenant = await getTenantBySlug(tenantSlug);
     resolvedOrganizationId = tenant?.id != null ? String(tenant.id) : null;
 
@@ -751,7 +786,17 @@ export async function insertDocument(
       serviceRoleKeyExists: Boolean(SUPABASE_SERVICE_KEY),
       serviceRoleKeyLooksValid: isLikelyServiceRoleKey(SUPABASE_SERVICE_KEY),
     });
-    throw new Error(error.message);
+
+    const enrichedMessage = [
+      error.message,
+      error.code ? `code=${error.code}` : null,
+      error.details ? `details=${error.details}` : null,
+      error.hint ? `hint=${error.hint}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    throw new Error(enrichedMessage || "Unknown documents_metadata insert error");
   }
   return data as Document;
 }
@@ -801,6 +846,37 @@ export async function deleteDocuments(slug: string, ids: Array<string | number>)
 
 export async function deleteDocument(slug: string, id: string | number): Promise<void> {
   await deleteDocuments(slug, [id]);
+}
+
+export async function updateDocumentType(
+  slug: string,
+  id: string | number,
+  docType: string,
+): Promise<Document> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  const { data, error } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .update({ doc_type: docType, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", String(id))
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("[updateDocumentType] failed", {
+      tenantSlug,
+      id: String(id),
+      docType,
+      error: error?.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    throw new Error(error?.message || "Failed to update document category");
+  }
+
+  return data as Document;
 }
 
 export async function backfillDocumentsOrganizationIds(): Promise<{
