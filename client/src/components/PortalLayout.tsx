@@ -20,6 +20,7 @@ import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
 import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import ChangePasswordDialog from "./ChangePasswordDialog";
+import FloatingTimerWidget from "./FloatingTimerWidget";
 
 interface NavItem {
   id: string;
@@ -217,6 +218,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         <div className="flex-1 overflow-y-auto">
           {children}
         </div>
+        <FloatingTimerWidget />
       </main>
     </div>
   );

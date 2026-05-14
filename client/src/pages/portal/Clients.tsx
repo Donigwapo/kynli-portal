@@ -62,6 +62,16 @@ export default function Clients() {
 
   const isAdmin = user?.role === "admin";
   const isStaff = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
+  const isImpersonatingClient = !!impersonatingTenantSlug;
+
+  // Impersonation context takes precedence over base role:
+  // - impersonating => client perspective
+  // - otherwise staff => accountant roster
+  // - everyone else => client perspective
+  const portalClientsMode: "staff-roster" | "client-perspective" =
+    isImpersonatingClient ? "client-perspective" : isStaff ? "staff-roster" : "client-perspective";
+
+  const isStaffRosterMode = portalClientsMode === "staff-roster";
   const tenantSlug = impersonatingTenantSlug ?? user?.tenant_slug ?? "";
 
   const { data: tenants = [] } = trpc.tenant.list.useQuery(undefined, {
@@ -69,8 +79,14 @@ export default function Clients() {
   });
 
   const { data: clients = [], refetch } = trpc.roster.list.useQuery(
-    { tenantSlug: isAdmin ? (tenantSlug || undefined) : undefined },
-    { enabled: isAdmin ? !!tenantSlug : true }
+    {
+      // In staff roster mode, use assignment-scoped backend aggregation.
+      // In impersonation mode (or admin/client), scope to the active tenant context.
+      tenantSlug: (isStaffRosterMode ? undefined : (tenantSlug || undefined)),
+    },
+    {
+      enabled: isStaffRosterMode ? true : (!!tenantSlug || isAdmin),
+    }
   );
 
   const assignedTenantSlugs = useMemo(() => new Set(tenants.map((t) => t.slug)), [tenants]);
@@ -86,11 +102,14 @@ export default function Clients() {
       console.log("[StaffAssignedClients]", tenants.map((t) => ({ slug: t.slug, company: t.company_name })));
       console.log("[PortalClientsScope]", {
         role: user?.role,
+        mode: portalClientsMode,
+        impersonatingTenantSlug,
+        tenantSlug,
         assignedTenantSlugs: assigned,
         roster: clients,
       });
     }
-  }, [isStaff, tenants, clients, user?.role]);
+  }, [isStaff, isStaffRosterMode, impersonatingTenantSlug, tenantSlug, tenants, clients, user?.role]);
 
   // ── Filters & Sort ──────────────────────────────────────────────────────────
   const [search, setSearch] = useState("");
@@ -270,8 +289,8 @@ export default function Clients() {
         )}
       </div>
 
-      {/* Package summary cards — hidden for staff/accountant portfolio views */}
-      {!isStaff && (
+      {/* Package summary cards — hidden for staff/accountant roster mode only */}
+      {!isStaffRosterMode && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {packageStats.map(({ pkg, count, avgMo, avgTenure, avgLtv }) => (
             <Card
@@ -376,7 +395,11 @@ export default function Clients() {
                   <td colSpan={8} className="text-center py-12 text-muted-foreground">
                     <Users className="w-8 h-8 mx-auto mb-2 opacity-30" />
                     <p className="text-sm">No clients yet</p>
-                    <p className="text-xs mt-1">Click "+ Add Client" to start tracking your roster</p>
+                    <p className="text-xs mt-1">
+                      {isStaffRosterMode
+                        ? "Assigned clients will appear here."
+                        : "No client records available for this tenant yet."}
+                    </p>
                   </td>
                 </tr>
               ) : filtered.map((c, i) => (
@@ -408,7 +431,7 @@ export default function Clients() {
                   <td className="px-4 py-3 text-right font-semibold text-primary">{fmtDollar(c.ltv)}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {isStaff && c.tenant_slug && assignedTenantSlugs.has(c.tenant_slug) && (
+                      {isStaffRosterMode && c.tenant_slug && assignedTenantSlugs.has(c.tenant_slug) && (
                         <Button
                           variant="ghost"
                           size="sm"

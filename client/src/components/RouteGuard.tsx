@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { usePortal } from "@/contexts/PortalContext";
 import { Loader2 } from "lucide-react";
 import { ReactNode, useEffect } from "react";
 import { useLocation } from "wouter";
@@ -16,6 +17,7 @@ interface RouteGuardProps {
  */
 export default function RouteGuard({ children, requireAdmin = false }: RouteGuardProps) {
   const { user, loading, isAuthenticated } = useAuth();
+  const { impersonatingTenantSlug } = usePortal();
   const [location, navigate] = useLocation();
 
   useEffect(() => {
@@ -51,7 +53,8 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       navigate("/portal/clients");
       return;
     }
-  }, [loading, isAuthenticated, user, requireAdmin, location, navigate]);
+
+  }, [loading, isAuthenticated, user, requireAdmin, location, navigate, impersonatingTenantSlug]);
 
   if (loading) {
     return (

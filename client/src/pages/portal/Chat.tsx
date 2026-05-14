@@ -17,7 +17,6 @@ import {
   File,
   Trash2,
   MessageSquare,
-  Users,
   Search,
   MessageCircleReply,
   ChevronLeft,
@@ -25,11 +24,13 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock3,
+  Circle,
 } from "lucide-react";
+import { PACKAGE_LABELS, type PackageTier } from "@shared/tiers";
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Full timestamp shown in tooltip and thread panel header */
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
 function fmtFull(ts: string | Date) {
   const d = new Date(ts);
   return d.toLocaleString([], {
@@ -42,12 +43,10 @@ function fmtFull(ts: string | Date) {
   });
 }
 
-/** Short time for bubble header (HH:MM) */
 function fmtTime(ts: string | Date) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/** Date divider label — "Today", "Yesterday", or "Apr 15, 2026" */
 function dateDividerLabel(ts: string | Date) {
   const d = new Date(ts);
   const now = new Date();
@@ -60,7 +59,6 @@ function dateDividerLabel(ts: string | Date) {
   return d.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
 }
 
-/** Returns YYYY-MM-DD key for grouping */
 function dayKey(ts: string | Date) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -87,8 +85,9 @@ function humanSize(bytes?: number | null) {
 const MAX_FILE_MB = 16;
 const MAX_ATTACH_FILES = 10;
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
+// ──────────────────────────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────────────────────────
 type Msg = {
   id: number;
   senderName: string;
@@ -101,7 +100,6 @@ type Msg = {
   mimeType?: string | null;
   replyCount: number;
   threadId?: number | null;
-  portalDocId?: number | null;
   createdAt: string | Date;
   localStatus?: "sending" | "failed";
   localError?: string;
@@ -109,24 +107,40 @@ type Msg = {
 
 function normalizeMsg(raw: any): Msg {
   return {
-    id: raw.id,
-    senderName: raw.sender_name,
-    senderRole: raw.sender_role,
-    senderUserId: raw.sender_user_id,
-    body: raw.message,
-    fileUrl: raw.file_url,
-    fileName: raw.file_name,
-    fileSize: raw.file_size,
-    mimeType: raw.mime_type,
+    id: Number(raw.id),
+    senderName: raw.sender_name ?? raw.sender ?? "Unknown",
+    senderRole: (raw.sender_role ?? raw.role ?? "client") as "admin" | "client",
+    senderUserId: raw.sender_user_id != null ? Number(raw.sender_user_id) : null,
+    body: raw.message ?? raw.message_text ?? null,
+    fileUrl: raw.file_url ?? null,
+    fileName: raw.file_name ?? null,
+    fileSize: raw.file_size ?? null,
+    mimeType: raw.mime_type ?? null,
     replyCount: raw.reply_count ?? 0,
     threadId: raw.thread_id ?? null,
-    portalDocId: raw.portal_document_id ?? null,
     createdAt: raw.created_at,
   };
 }
 
-// ─── Message bubble ───────────────────────────────────────────────────────────
+type Conversation = {
+  key: string;
+  tenantSlug?: string;
+  title: string;
+  subtitle: string;
+  groupLabel: string;
+  packageTier?: PackageTier | null;
+};
 
+type ConversationPreview = {
+  body?: string | null;
+  fileName?: string | null;
+  createdAt?: string | null;
+  unreadCount?: number;
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Message bubble
+// ──────────────────────────────────────────────────────────────────────────────
 function MessageBubble({
   msg,
   isMine,
@@ -142,20 +156,17 @@ function MessageBubble({
 }) {
   return (
     <div className={`flex gap-3 group ${isMine ? "flex-row-reverse" : "flex-row"}`}>
-      {/* Avatar */}
       <div
-        className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
+        className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold
           ${msg.senderRole === "admin"
             ? "bg-primary/20 text-primary border border-primary/30"
             : "bg-muted text-muted-foreground border border-border"
           }`}
       >
-        {msg.senderName.charAt(0).toUpperCase()}
+        {(msg.senderName?.charAt(0) || "?").toUpperCase()}
       </div>
 
-      {/* Content */}
-      <div className={`max-w-[70%] flex flex-col gap-1 ${isMine ? "items-end" : "items-start"}`}>
-        {/* Header */}
+      <div className={`max-w-[78%] flex flex-col gap-1.5 ${isMine ? "items-end" : "items-start"}`}>
         <div className={`flex items-center gap-2 text-xs text-muted-foreground ${isMine ? "flex-row-reverse" : ""}`}>
           <span className="font-medium text-foreground">{msg.senderName}</span>
           {msg.senderRole === "admin" && (
@@ -163,21 +174,18 @@ function MessageBubble({
               KynLi
             </Badge>
           )}
-          {/* Timestamp with full date on hover */}
           <span title={fmtFull(msg.createdAt)} className="cursor-default hover:text-foreground transition-colors">
             {fmtTime(msg.createdAt)}
           </span>
         </div>
 
-        {/* Bubble */}
         <div
-          className={`relative rounded-2xl px-4 py-2.5 text-sm leading-relaxed
+          className={`relative rounded-2xl px-4 py-3 text-[13px] leading-relaxed shadow-sm
             ${isMine
               ? "bg-primary text-primary-foreground rounded-tr-sm"
               : "bg-card border border-border text-foreground rounded-tl-sm"
             }`}
         >
-          {/* Local pending status */}
           {msg.localStatus && (
             <div className="mb-2">
               <div
@@ -201,7 +209,6 @@ function MessageBubble({
             </div>
           )}
 
-          {/* File attachment */}
           {msg.fileUrl && (
             <div className="mb-2">
               {isImage(msg.mimeType) ? (
@@ -209,7 +216,7 @@ function MessageBubble({
                   <img
                     src={msg.fileUrl}
                     alt={msg.fileName ?? "image"}
-                    className="max-w-xs max-h-48 rounded-lg object-cover border border-border/50"
+                    className="max-w-xs max-h-56 rounded-lg object-cover border border-border/50"
                   />
                 </a>
               ) : (
@@ -217,7 +224,7 @@ function MessageBubble({
                   href={msg.fileUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className={`flex items-center gap-2 p-2 rounded-lg border transition-colors
+                  className={`flex items-center gap-2.5 p-2.5 rounded-lg border transition-colors
                     ${isMine
                       ? "border-primary-foreground/20 bg-primary-foreground/10 hover:bg-primary-foreground/20"
                       : "border-border bg-muted/30 hover:bg-muted/60"
@@ -225,7 +232,7 @@ function MessageBubble({
                 >
                   {fileIcon(msg.mimeType)}
                   <div className="min-w-0">
-                    <p className="text-xs font-medium truncate max-w-[180px]">{msg.fileName}</p>
+                    <p className="text-xs font-medium truncate max-w-[240px]">{msg.fileName}</p>
                     {msg.fileSize && (
                       <p className={`text-[10px] ${isMine ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                         {humanSize(msg.fileSize)}
@@ -238,20 +245,10 @@ function MessageBubble({
             </div>
           )}
 
-          {/* Text body */}
           {msg.body && <p className="whitespace-pre-wrap break-words">{msg.body}</p>}
-
-          {/* File archive note — only show when portal_document_id confirms archive succeeded */}
-          {msg.fileUrl && msg.portalDocId && (
-            <p className={`text-[10px] mt-1 ${isMine ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-              ✓ Saved to Portal vault
-            </p>
-          )}
         </div>
 
-        {/* Action bar: reply count + delete */}
         <div className={`flex items-center gap-2 ${isMine ? "flex-row-reverse" : ""}`}>
-          {/* Reply thread button */}
           {onReply && (
             <button
               onClick={() => onReply(msg)}
@@ -262,18 +259,13 @@ function MessageBubble({
             </button>
           )}
 
-          {/* Reply count badge (always visible if > 0) */}
           {msg.replyCount > 0 && (
-            <button
-              onClick={() => onReply?.(msg)}
-              className="flex items-center gap-1 text-[11px] text-primary hover:underline"
-            >
+            <button onClick={() => onReply?.(msg)} className="flex items-center gap-1 text-[11px] text-primary hover:underline">
               <MessageCircleReply className="w-3 h-3" />
               {msg.replyCount} {msg.replyCount === 1 ? "reply" : "replies"}
             </button>
           )}
 
-          {/* Delete */}
           {canDelete && (
             <button
               onClick={() => onDelete(msg.id)}
@@ -288,11 +280,9 @@ function MessageBubble({
   );
 }
 
-// ─── Date divider ─────────────────────────────────────────────────────────────
-
 function DateDivider({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-3 my-2">
+    <div className="flex items-center gap-3 my-3">
       <div className="flex-1 h-px bg-border" />
       <span className="text-[11px] text-muted-foreground font-medium px-2 py-0.5 rounded-full bg-muted/30 border border-border/50">
         {label}
@@ -302,15 +292,8 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-// ─── Compose input ────────────────────────────────────────────────────────────
-
 type AttachmentStatus = "pending" | "uploading" | "uploaded" | "failed";
-type PendingAttachment = {
-  id: string;
-  file: File;
-  status: AttachmentStatus;
-  error?: string;
-};
+type PendingAttachment = { id: string; file: File; status: AttachmentStatus; error?: string };
 
 function ComposeBar({
   onSend,
@@ -323,11 +306,7 @@ function ComposeBar({
     files: File[],
     caption?: string,
     onProgress?: (current: number, total: number) => void,
-  ) => Promise<{
-    uploaded: number;
-    failed: number;
-    results: Array<{ fileName: string; success: boolean; error?: string }>;
-  }>;
+  ) => Promise<{ uploaded: number; failed: number; results: Array<{ fileName: string; success: boolean; error?: string }> }>;
   sending: boolean;
   placeholder?: string;
 }) {
@@ -336,7 +315,6 @@ function ComposeBar({
   const [progressIndex, setProgressIndex] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const uploadedCount = attachments.filter((a) => a.status === "uploaded").length;
   const failedCount = attachments.filter((a) => a.status === "failed").length;
@@ -354,64 +332,33 @@ function ComposeBar({
 
     if (attachments.length > 0) {
       const retryable = attachments.filter((a) => a.status === "pending" || a.status === "failed");
-      if (retryable.length === 0) {
-        toast.info("All selected files are already uploaded. Remove them or add new files.");
-        return;
-      }
+      if (retryable.length === 0) return;
 
       setProgressTotal(retryable.length);
       setProgressIndex(0);
-
-      const working = attachments.map((a) => ({ ...a }));
-      for (const target of retryable) {
-        const idx = working.findIndex((a) => a.id === target.id);
-        if (idx < 0) continue;
-        working[idx] = { ...working[idx], status: "pending", error: undefined };
-      }
-      setAttachments([...working]);
 
       const files = retryable.map((r) => r.file);
       const result = await onSendFiles(files, trimmed || undefined, (current, total) => {
         setProgressTotal(total);
         setProgressIndex(current);
-
-        const targetItem = retryable[current - 1];
-        if (!targetItem) return;
-
-        setAttachments((prev) =>
-          prev.map((item) =>
-            item.id === targetItem.id
-              ? { ...item, status: "uploading", error: undefined }
-              : item,
-          ),
-        );
       });
 
-      const resultQueue = [...result.results];
-      const final: PendingAttachment[] = working.map((item) => {
-        if (item.status !== "uploading") return item;
-
-        const r = resultQueue.shift();
-        if (!r) {
-          return { ...item, status: "failed", error: "Upload failed" } as PendingAttachment;
-        }
-
-        if (r.success) {
-          return { ...item, status: "uploaded", error: undefined } as PendingAttachment;
-        }
-
-        return { ...item, status: "failed", error: r.error ?? "Upload failed" } as PendingAttachment;
+      const queue = [...result.results];
+      const next: PendingAttachment[] = attachments.map((item) => {
+        const matched = retryable.find((r) => r.id === item.id);
+        if (!matched) return item;
+        const r = queue.shift();
+        if (!r) return { ...item, status: "failed" as AttachmentStatus, error: "Upload failed" };
+        if (r.success) return { ...item, status: "uploaded" as AttachmentStatus, error: undefined };
+        return { ...item, status: "failed" as AttachmentStatus, error: r.error ?? "Upload failed" };
       });
 
-      // Keep failed visible, clear uploaded after partial failure
       if (result.failed > 0) {
-        setAttachments(final.filter((a) => a.status !== "uploaded"));
+        setAttachments(next.filter((a) => a.status !== "uploaded"));
       } else {
         setAttachments([]);
         setBody("");
-        textareaRef.current?.focus();
       }
-
       setProgressIndex(0);
       setProgressTotal(0);
       return;
@@ -419,7 +366,6 @@ function ComposeBar({
 
     await onSend(trimmed);
     setBody("");
-    textareaRef.current?.focus();
   }, [body, attachments, onSend, onSendFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -431,114 +377,63 @@ function ComposeBar({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
+    if (!files.length) return;
 
-    const validFiles = files.filter((f) => {
+    const valid = files.filter((f) => {
       if (f.size > MAX_FILE_MB * 1024 * 1024) {
-        toast.error(`${f.name}: file too large. Maximum size is ${MAX_FILE_MB} MB.`);
+        toast.error(`${f.name}: file too large. Maximum is ${MAX_FILE_MB} MB.`);
         return false;
       }
       return true;
     });
 
-    if (validFiles.length === 0) {
-      e.target.value = "";
-      return;
+    const limited = valid.slice(0, MAX_ATTACH_FILES);
+    if (valid.length > MAX_ATTACH_FILES) {
+      toast.error(`Max ${MAX_ATTACH_FILES} files at once. Keeping first ${MAX_ATTACH_FILES}.`);
     }
 
-    if (validFiles.length > MAX_ATTACH_FILES) {
-      toast.error(`You can attach up to ${MAX_ATTACH_FILES} files at once. Keeping the first ${MAX_ATTACH_FILES}.`);
-    }
-
-    const limited = validFiles.slice(0, MAX_ATTACH_FILES);
-    const next: PendingAttachment[] = limited.map((file, idx) => ({
-      id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
-      file,
-      status: "pending",
-    }));
-
-    setAttachments(next);
-    setProgressIndex(0);
-    setProgressTotal(0);
+    setAttachments(
+      limited.map((file, idx) => ({
+        id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
+        file,
+        status: "pending",
+      })),
+    );
     e.target.value = "";
-  };
-
-  const removeAttachmentAt = (idx: number) => {
-    setAttachments((prev) => {
-      const item = prev[idx];
-      if (!item || item.status === "uploading") return prev;
-      return prev.filter((_, i) => i !== idx);
-    });
   };
 
   return (
     <div>
       {attachments.length > 0 && (
-        <div className="mx-0 mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
+        <div className="mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>{attachments.length} attached (max {MAX_ATTACH_FILES})</span>
+            <span>{attachments.length} attached</span>
             {progressText && <span>{progressText}</span>}
           </div>
-
           <div className="space-y-1 max-h-40 overflow-auto pr-1">
-            {attachments.map((item, idx) => {
-              const statusIcon = item.status === "uploading"
-                ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
-                : item.status === "uploaded"
-                  ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  : item.status === "failed"
-                    ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                    : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
-
-              const statusLabel = item.status === "uploading"
-                ? "Uploading"
-                : item.status === "uploaded"
-                  ? "Uploaded"
-                  : item.status === "failed"
-                    ? "Failed"
-                    : "Pending";
-
-              return (
-                <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {fileIcon(item.file.type)}
-                      <span className="truncate text-sm">{item.file.name}</span>
-                      <span className="text-muted-foreground text-xs shrink-0">({humanSize(item.file.size)})</span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
-                        {statusIcon}
-                        {statusLabel}
-                      </span>
-                      <button
-                        onClick={() => removeAttachmentAt(idx)}
-                        disabled={item.status === "uploading"}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                        aria-label={`Remove ${item.file.name}`}
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
+            {attachments.map((item, idx) => (
+              <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {fileIcon(item.file.type)}
+                    <span className="truncate text-sm">{item.file.name}</span>
+                    <span className="text-muted-foreground text-xs shrink-0">({humanSize(item.file.size)})</span>
                   </div>
-                  {item.status === "failed" && item.error && (
-                    <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">{item.error}</div>
-                  )}
+                  <button
+                    onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         </div>
       )}
 
       <div className="flex items-end gap-2 bg-card border border-border rounded-2xl px-3 py-2 focus-within:border-primary/50 transition-colors">
-        {/* File attach */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex-shrink-0 mb-1 text-muted-foreground hover:text-primary transition-colors"
-          title="Attach file(s)"
-        >
+        <button type="button" onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 mb-1 text-muted-foreground hover:text-primary transition-colors" title="Attach file(s)">
           <Paperclip className="w-4 h-4" />
         </button>
         <input
@@ -550,18 +445,15 @@ function ComposeBar({
           onChange={handleFileChange}
         />
 
-        {/* Textarea */}
         <Textarea
-          ref={textareaRef}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder ?? "Type a message… (Enter to send, Shift+Enter for new line)"}
-          className="flex-1 min-h-[36px] max-h-32 resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm placeholder:text-muted-foreground/60"
+          placeholder={placeholder ?? "Type a message…"}
+          className="flex-1 min-h-[40px] max-h-36 resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm placeholder:text-muted-foreground/60"
           rows={1}
         />
 
-        {/* Send */}
         <Button
           size="icon"
           className="flex-shrink-0 h-8 w-8 rounded-xl bg-primary hover:bg-primary/90 mb-0.5"
@@ -574,8 +466,6 @@ function ComposeBar({
     </div>
   );
 }
-
-// ─── Thread panel ─────────────────────────────────────────────────────────────
 
 function ThreadPanel({
   parentMsg,
@@ -593,9 +483,9 @@ function ThreadPanel({
   const utils = trpc.useUtils();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const { data: replies = [], refetch } = trpc.chat.getThread.useQuery(
+  const { data: replies = [] } = trpc.chat.getThread.useQuery(
     { tenantSlug, parentId: parentMsg.id },
-    { refetchInterval: 3000, refetchIntervalInBackground: false }
+    { refetchInterval: 3000, refetchIntervalInBackground: false },
   );
 
   useEffect(() => {
@@ -620,68 +510,23 @@ function ThreadPanel({
     onError: (err) => toast.error(err.message),
   });
 
-  const handleSend = async (body: string) => {
-    setSending(true);
-    try {
-      await sendReplyMutation.mutateAsync({ tenantSlug, parentId: parentMsg.id, body });
-    } finally {
-      setSending(false);
-    }
-  };
-
   const normalizedReplies = replies.map(normalizeMsg);
 
   return (
     <div className="flex flex-col h-full border-l border-border bg-background/95">
-      {/* Thread header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-border bg-card/50 flex items-center gap-2">
-        <button
-          onClick={onClose}
-          className="text-muted-foreground hover:text-foreground transition-colors"
-        >
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
           <ChevronLeft className="w-4 h-4" />
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-foreground">Thread</p>
-          <p className="text-[11px] text-muted-foreground truncate">
-            {parentMsg.senderName} · {fmtFull(parentMsg.createdAt)}
-          </p>
+          <p className="text-[11px] text-muted-foreground truncate">{parentMsg.senderName} · {fmtFull(parentMsg.createdAt)}</p>
         </div>
       </div>
 
-      {/* Parent message (quoted) */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-border bg-muted/20">
-        <div className="flex items-start gap-2">
-          <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold
-            ${parentMsg.senderRole === "admin"
-              ? "bg-primary/20 text-primary border border-primary/30"
-              : "bg-muted text-muted-foreground border border-border"
-            }`}
-          >
-            {parentMsg.senderName.charAt(0).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="text-xs font-medium text-foreground">{parentMsg.senderName}</span>
-              {parentMsg.senderRole === "admin" && (
-                <Badge variant="outline" className="text-[10px] px-1 py-0 text-primary border-primary/30 bg-primary/10">KynLi</Badge>
-              )}
-              <span className="text-[10px] text-muted-foreground">{fmtFull(parentMsg.createdAt)}</span>
-            </div>
-            {parentMsg.body && (
-              <p className="text-sm text-foreground/80 whitespace-pre-wrap break-words line-clamp-3">{parentMsg.body}</p>
-            )}
-            {parentMsg.fileUrl && (
-              <p className="text-xs text-muted-foreground mt-0.5">📎 {parentMsg.fileName}</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Replies */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {normalizedReplies.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-6">No replies yet. Be the first to reply.</p>
+          <p className="text-xs text-muted-foreground text-center py-6">No replies yet.</p>
         ) : (
           normalizedReplies.map((reply) => {
             const isMine = reply.senderUserId === currentUserId;
@@ -704,93 +549,193 @@ function ThreadPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Reply compose */}
       <div className="flex-shrink-0 px-4 pb-4 pt-2 border-t border-border">
         <ComposeBar
-          onSend={handleSend}
-          onSendFiles={async () => {
-            toast.info("File uploads in threads coming soon.");
-            return { uploaded: 0, failed: 0, results: [] };
+          onSend={async (body) => {
+            setSending(true);
+            try {
+              await sendReplyMutation.mutateAsync({ tenantSlug, parentId: parentMsg.id, body });
+            } finally {
+              setSending(false);
+            }
           }}
+          onSendFiles={async () => ({ uploaded: 0, failed: 0, results: [] })}
           sending={sending}
-          placeholder="Reply in thread… (Enter to send)"
+          placeholder="Reply in thread…"
         />
       </div>
     </div>
   );
 }
 
-// ─── Main Chat page ───────────────────────────────────────────────────────────
-
 export default function Chat() {
   const { user } = useAuth();
-  const { impersonatingTenantSlug } = usePortal();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug } = usePortal();
+  const utils = trpc.useUtils();
 
-  const tenantSlug = impersonatingTenantSlug ?? undefined;
+  const isStaff = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const currentUserId = (user as any)?.id as number | undefined;
   const isAdmin = user?.role === "admin";
+
+  const { data: tenants = [] } = trpc.tenant.list.useQuery(undefined, {
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
+  const conversations = useMemo<Conversation[]>(() => {
+    const rows: Conversation[] = [];
+
+    if (isStaff) {
+      rows.push({
+        key: "internal",
+        title: "Team Chat",
+        subtitle: "Internal",
+        groupLabel: "INTERNAL",
+      });
+    }
+
+    const tenantConvos = tenants.map((t: any) => ({
+      key: `tenant:${t.slug}`,
+      tenantSlug: t.slug as string,
+      title: t.company_name as string,
+      subtitle: "Bookkeeping Client",
+      groupLabel: (PACKAGE_LABELS[(t.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase(),
+      packageTier: (t.package_tier as PackageTier) ?? null,
+    }));
+
+    return [...rows, ...tenantConvos];
+  }, [isStaff, tenants]);
+
+  const [selectedConversationKey, setSelectedConversationKey] = useState<string>(
+    impersonatingTenantSlug ? `tenant:${impersonatingTenantSlug}` : (isStaff ? "internal" : ""),
+  );
+
+  useEffect(() => {
+    if (!conversations.length) return;
+    if (!selectedConversationKey) {
+      const defaultKey = impersonatingTenantSlug
+        ? `tenant:${impersonatingTenantSlug}`
+        : (isStaff ? "internal" : conversations[0].key);
+      setSelectedConversationKey(defaultKey);
+      return;
+    }
+
+    const exists = conversations.some((c) => c.key === selectedConversationKey);
+    if (!exists) setSelectedConversationKey(conversations[0].key);
+  }, [conversations, selectedConversationKey, impersonatingTenantSlug, isStaff]);
+
+  const activeConversation = useMemo(
+    () => conversations.find((c) => c.key === selectedConversationKey) ?? null,
+    [conversations, selectedConversationKey],
+  );
+
+  const activeTenantSlug = activeConversation?.tenantSlug;
+
+  useEffect(() => {
+    if (!isStaff) return;
+    if (activeConversation?.tenantSlug) {
+      if (impersonatingTenantSlug !== activeConversation.tenantSlug) {
+        setImpersonatingTenantSlug(activeConversation.tenantSlug);
+      }
+    } else if (impersonatingTenantSlug) {
+      setImpersonatingTenantSlug(null);
+    }
+  }, [isStaff, activeConversation?.tenantSlug, impersonatingTenantSlug, setImpersonatingTenantSlug]);
+
+  // Conversation previews (last message, timestamp, unread placeholder)
+  const [previews, setPreviews] = useState<Record<string, ConversationPreview>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreviews() {
+      const entries = await Promise.all(
+        conversations.map(async (c) => {
+          try {
+            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, limit: 1 });
+            const raw = rows?.[0];
+            if (!raw) return [c.key, {}] as const;
+            const m = normalizeMsg(raw as any);
+            return [
+              c.key,
+              {
+                body: m.body,
+                fileName: m.fileName,
+                createdAt: String(m.createdAt),
+                unreadCount: 0,
+              },
+            ] as const;
+          } catch {
+            return [c.key, {}] as const;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setPreviews(Object.fromEntries(entries));
+    }
+
+    if (conversations.length) {
+      void loadPreviews();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversations, utils.chat.list]);
 
   const [sending, setSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
-  const [olderMessages, setOlderMessages] = useState<Msg[]>([]);
   const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true); // optimistic: assume there may be more
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
-  // Debounce search input (300ms)
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    // reset stickiness when switching conversations
+    shouldStickToBottomRef.current = true;
+  }, [activeConversation?.key]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery), 250);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
 
-  // ─── Data fetching ──────────────────────────────────────────────────────────
   const { data: rawMessages = [] } = trpc.chat.list.useQuery(
-    { tenantSlug, limit: 200, search: debouncedSearch || undefined },
+    { tenantSlug: activeTenantSlug, limit: 200, search: debouncedSearch || undefined },
     {
-      refetchInterval: debouncedSearch ? false : 3000, // no polling during search
+      enabled: !!activeConversation,
+      refetchInterval: debouncedSearch ? false : 3000,
       refetchIntervalInBackground: false,
-    }
+    },
   );
 
   const latestMessages = useMemo(() => rawMessages.map(normalizeMsg), [rawMessages]);
 
-  // Merge older (paginated) messages with latest, deduplicating by id
   const messages = useMemo(() => {
-    const latestIds = new Set(latestMessages.map((m) => m.id));
-    const uniqueOlder = olderMessages.filter((m) => !latestIds.has(m.id));
-    const merged = [...uniqueOlder, ...latestMessages];
+    if (pendingMessages.length === 0) return latestMessages;
+    const ids = new Set(latestMessages.map((m) => m.id));
+    const visiblePending = pendingMessages.filter((m) => !ids.has(m.id));
+    return [...latestMessages, ...visiblePending];
+  }, [latestMessages, pendingMessages]);
 
-    if (pendingMessages.length === 0) return merged;
-
-    const mergedIds = new Set(merged.map((m) => m.id));
-    const visiblePending = pendingMessages.filter((m) => !mergedIds.has(m.id));
-
-    return [...merged, ...visiblePending];
-  }, [olderMessages, latestMessages, pendingMessages]);
-
-  const utils = trpc.useUtils();
-
-  // Auto-scroll to bottom on new messages (only when not searching and not paginating)
   useEffect(() => {
-    if (!debouncedSearch && olderMessages.length === 0) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [latestMessages.length, debouncedSearch]);
+    if (debouncedSearch) return;
+    if (!shouldStickToBottomRef.current) return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, debouncedSearch]);
 
-  // Clear older messages when search is active
-  useEffect(() => {
-    if (debouncedSearch) {
-      setOlderMessages([]);
-      setHasMore(true);
-    }
-  }, [debouncedSearch]);
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // If user scrolled up, don't auto-jump to bottom on polling updates.
+    shouldStickToBottomRef.current = distanceFromBottom < 80;
+  }, []);
 
-  // ─── Mutations ──────────────────────────────────────────────────────────────
   const sendMutation = trpc.chat.send.useMutation({
     onSuccess: () => utils.chat.list.invalidate(),
     onError: (err) => toast.error(err.message),
@@ -805,49 +750,6 @@ export default function Chat() {
     onError: (err) => toast.error(err.message),
   });
 
-  // Load older messages (pagination)
-  const loadMoreMessages = trpc.chat.list.useQuery(
-    { tenantSlug, limit: 100, beforeId: messages[0]?.id },
-    { enabled: false } // manual trigger only
-  );
-
-  const handleLoadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || messages.length === 0) return;
-    const oldestId = messages[0]?.id;
-    if (!oldestId) return;
-    setLoadingMore(true);
-    try {
-      // Save scroll position before prepending
-      const container = messagesContainerRef.current;
-      const prevScrollHeight = container?.scrollHeight ?? 0;
-
-      const result = await utils.chat.list.fetch({ tenantSlug, limit: 100, beforeId: oldestId });
-      const older = (result ?? []).map(normalizeMsg);
-      if (older.length === 0) {
-        setHasMore(false);
-      } else {
-        setOlderMessages((prev) => {
-          const existingIds = new Set(prev.map((m) => m.id));
-          const newOnes = older.filter((m) => !existingIds.has(m.id));
-          return [...newOnes, ...prev];
-        });
-        // Restore scroll position after DOM update
-        requestAnimationFrame(() => {
-          if (container) {
-            const newScrollHeight = container.scrollHeight;
-            container.scrollTop = newScrollHeight - prevScrollHeight;
-          }
-        });
-        if (older.length < 100) setHasMore(false);
-      }
-    } catch (_) {
-      // silent
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [loadingMore, hasMore, messages, tenantSlug, utils]);
-
-  // ─── Send handlers ──────────────────────────────────────────────────────────
   const fileToBase64 = useCallback(async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
@@ -859,11 +761,11 @@ export default function Chat() {
   const handleSend = useCallback(async (body: string) => {
     setSending(true);
     try {
-      await sendMutation.mutateAsync({ tenantSlug, body });
+      await sendMutation.mutateAsync({ tenantSlug: activeTenantSlug, body });
     } finally {
       setSending(false);
     }
-  }, [tenantSlug, sendMutation]);
+  }, [activeTenantSlug, sendMutation]);
 
   const handleSendFiles = useCallback(async (
     files: File[],
@@ -893,7 +795,6 @@ export default function Chat() {
           mimeType: file.type || "application/octet-stream",
           replyCount: 0,
           threadId: null,
-          portalDocId: null,
           createdAt: new Date(),
           localStatus: "sending",
         };
@@ -901,8 +802,8 @@ export default function Chat() {
 
         try {
           const base64 = await fileToBase64(file);
-          const sent = await sendFileMutation.mutateAsync({
-            tenantSlug,
+          await sendFileMutation.mutateAsync({
+            tenantSlug: activeTenantSlug,
             body: i === 0 ? caption : undefined,
             fileBase64: base64,
             fileName: file.name,
@@ -912,56 +813,35 @@ export default function Chat() {
 
           uploaded += 1;
           results.push({ fileName: file.name, success: true });
-
           setPendingMessages((prev) => prev.filter((m) => m.id !== tempId));
-          if (sent) {
-            const normalized = normalizeMsg(sent as any);
-            setOlderMessages((prev) => {
-              const exists = prev.some((m) => m.id === normalized.id);
-              return exists ? prev : [...prev, normalized];
-            });
-          }
         } catch (error) {
           const message = error instanceof Error ? error.message : "Upload failed";
           failed += 1;
           results.push({ fileName: file.name, success: false, error: message });
-
-          setPendingMessages((prev) =>
-            prev.map((m) =>
-              m.id === tempId
-                ? { ...m, localStatus: "failed", localError: message }
-                : m,
-            ),
-          );
-
+          setPendingMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, localStatus: "failed", localError: message } : m)));
           toast.error(`Failed: ${file.name} — ${message}`);
         }
       }
 
       await utils.chat.list.invalidate();
-
-      if (uploaded > 0 && failed === 0) {
-        toast.success(`${uploaded} file${uploaded === 1 ? "" : "s"} sent and saved to Portal vault.`);
-      } else if (uploaded > 0 && failed > 0) {
-        toast.success(`${uploaded} uploaded, ${failed} failed.`);
-      }
+      if (uploaded > 0 && failed === 0) toast.success(`${uploaded} file${uploaded === 1 ? "" : "s"} sent.`);
+      if (uploaded > 0 && failed > 0) toast.success(`${uploaded} uploaded, ${failed} failed.`);
 
       setPendingMessages((prev) => prev.filter((m) => m.localStatus === "failed"));
       return { uploaded, failed, results };
     } finally {
       setSending(false);
     }
-  }, [tenantSlug, sendFileMutation, utils.chat.list, fileToBase64, user]);
+  }, [activeTenantSlug, sendFileMutation, fileToBase64, user, utils.chat.list]);
 
-  // ─── Group messages by day for date dividers ────────────────────────────────
   type DayGroup = { key: string; label: string; msgs: Msg[] };
   const dayGroups = useMemo<DayGroup[]>(() => {
     const groups: DayGroup[] = [];
-    let currentKey = "";
+    let current = "";
     for (const msg of messages) {
       const k = dayKey(msg.createdAt);
-      if (k !== currentKey) {
-        currentKey = k;
+      if (k !== current) {
+        current = k;
         groups.push({ key: k, label: dateDividerLabel(msg.createdAt), msgs: [] });
       }
       groups[groups.length - 1].msgs.push(msg);
@@ -969,87 +849,53 @@ export default function Chat() {
     return groups;
   }, [messages]);
 
-  // ─── Render ─────────────────────────────────────────────────────────────────
-  return (
-    <div className="flex h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden">
-      {/* Main chat column */}
-      <div className={`flex flex-col flex-1 min-w-0 transition-all duration-200 ${threadMsg ? "w-[60%]" : "w-full"}`}>
-        {/* Header */}
-        <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-card/50 backdrop-blur-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-              <MessageSquare className="w-4 h-4 text-primary" />
+  const groupedConversations = useMemo(() => {
+    const byGroup = new Map<string, Conversation[]>();
+    for (const c of conversations) {
+      const list = byGroup.get(c.groupLabel) ?? [];
+      list.push(c);
+      byGroup.set(c.groupLabel, list);
+    }
+    return Array.from(byGroup.entries());
+  }, [conversations]);
+
+  const clientHeaderSubtitle = activeConversation?.tenantSlug
+    ? "Bookkeeping Client"
+    : "Internal Team Thread";
+
+  const isOperationalInbox = isAdmin || isStaff;
+
+  const mainConversationPanel = (
+    <div className="min-w-0 min-h-0 h-full flex">
+      <div className={`flex flex-col min-w-0 min-h-0 h-full transition-all duration-200 ${threadMsg ? "w-[68%]" : "w-full"}`}>
+        <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-card/40 backdrop-blur-sm">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+              <MessageSquare className="w-4.5 h-4.5 text-primary" />
             </div>
-            <div>
-              <h1 className="text-base font-semibold text-foreground">Team Chat</h1>
-              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <Users className="w-3 h-3" />
-                Shared room — all team members &amp; KynLi advisors
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-foreground truncate">{activeConversation?.title ?? "Conversation"}</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {isOperationalInbox ? `${clientHeaderSubtitle} · Last active 11m ago` : "Direct communication with your KynLi team"}
               </p>
             </div>
-            <div className="ml-auto flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs text-muted-foreground">Live</span>
-            </div>
-          </div>
-
-          {/* Search bar */}
-          <div className="mt-3 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search messages…"
-              className="pl-8 h-8 text-sm bg-muted/30 border-border/50 focus-visible:border-primary/50"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+            {isOperationalInbox && (
+              <div className="ml-auto text-right">
+                <p className="text-[11px] text-muted-foreground">Unread uploads</p>
+                <p className="text-sm font-semibold text-foreground">0</p>
+              </div>
             )}
           </div>
-          {debouncedSearch && (
-            <p className="text-[11px] text-muted-foreground mt-1.5">
-              {messages.length === 0
-                ? "No messages match your search."
-                : `${messages.length} message${messages.length !== 1 ? "s" : ""} found`}
-            </p>
-          )}
         </div>
 
-        {/* Messages */}
-        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-6 py-4 scroll-smooth">
-          {/* Load earlier messages button */}
-          {!debouncedSearch && messages.length > 0 && hasMore && (
-            <div className="flex justify-center mb-4">
-              <button
-                onClick={handleLoadMore}
-                disabled={loadingMore}
-                className="text-xs text-primary hover:underline disabled:opacity-50 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors"
-              >
-                {loadingMore ? "Loading…" : "Load earlier messages"}
-              </button>
-            </div>
-          )}
-          {!debouncedSearch && messages.length > 0 && !hasMore && (
-            <p className="text-center text-[11px] text-muted-foreground mb-4">You've reached the beginning of this conversation.</p>
-          )}
+        <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 scroll-smooth overscroll-contain">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-16">
               <div className="w-16 h-16 rounded-2xl bg-muted/30 border border-border flex items-center justify-center mb-4">
                 <MessageSquare className="w-7 h-7 text-muted-foreground opacity-50" />
               </div>
-              <p className="text-sm font-medium text-foreground">
-                {debouncedSearch ? "No messages found" : "No messages yet"}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {debouncedSearch
-                  ? "Try a different search term."
-                  : "Start the conversation — your team and KynLi advisors will see it here."}
-              </p>
+              <p className="text-sm font-medium text-foreground">No messages yet</p>
+              <p className="text-xs text-muted-foreground mt-1">Start the conversation{isOperationalInbox ? " in this client workspace." : "."}</p>
             </div>
           ) : (
             <div className="space-y-1">
@@ -1069,7 +915,7 @@ export default function Chat() {
                           onReply={(m) => setThreadMsg(m)}
                           onDelete={(id) => {
                             if (confirm("Delete this message?")) {
-                              deleteMutation.mutate({ tenantSlug, id });
+                              deleteMutation.mutate({ tenantSlug: activeTenantSlug, id });
                             }
                           }}
                         />
@@ -1083,14 +929,9 @@ export default function Chat() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Compose bar */}
         {!debouncedSearch && (
           <div className="flex-shrink-0 px-6 pb-4 pt-2 border-t border-border bg-card/30 backdrop-blur-sm">
-            <ComposeBar
-              onSend={handleSend}
-              onSendFiles={handleSendFiles}
-              sending={sending}
-            />
+            <ComposeBar onSend={handleSend} onSendFiles={handleSendFiles} sending={sending} />
             <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
               Files shared here are automatically saved to the Portal vault · Max {MAX_FILE_MB} MB
             </p>
@@ -1098,18 +939,99 @@ export default function Chat() {
         )}
       </div>
 
-      {/* Thread panel (right side) */}
       {threadMsg && (
-        <div className="w-[40%] min-w-[320px] max-w-[480px] flex-shrink-0">
+        <div className="w-[32%] min-w-[340px] max-w-[520px] flex-shrink-0">
           <ThreadPanel
             parentMsg={threadMsg}
-            tenantSlug={tenantSlug}
+            tenantSlug={activeTenantSlug}
             currentUserId={currentUserId}
             isAdmin={isAdmin}
             onClose={() => setThreadMsg(null)}
           />
         </div>
       )}
+    </div>
+  );
+
+  if (!isOperationalInbox) {
+    return (
+      <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden bg-background">
+        {mainConversationPanel}
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] min-h-0 overflow-hidden grid grid-cols-[320px_minmax(0,1fr)] bg-background">
+      {/* Secondary conversation inbox sidebar (operational roles only) */}
+      <aside className="border-r border-border bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
+        <div className="px-4 py-4 border-b border-border/80">
+          <h1 className="text-sm font-semibold tracking-wide text-foreground">Client Conversations</h1>
+          <p className="text-[11px] text-muted-foreground mt-1">Operational inbox by package & client</p>
+        </div>
+
+        <div className="px-3 py-3 border-b border-border/70">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search messages…"
+              className="pl-8 h-8 text-xs bg-zinc-900/70 border-zinc-800"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
+          {groupedConversations.map(([group, items]) => (
+            <div key={group}>
+              <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
+              <div className="space-y-1">
+                {items.map((conv) => {
+                  const active = conv.key === selectedConversationKey;
+                  const pv = previews[conv.key] ?? {};
+                  return (
+                    <button
+                      key={conv.key}
+                      onClick={() => setSelectedConversationKey(conv.key)}
+                      className={
+                        `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
+                        (active
+                          ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
+                          : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                      }
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                          {(conv.title?.charAt(0) || "?").toUpperCase()}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[13px] font-medium text-foreground truncate">{conv.title}</p>
+                            <span className="text-[10px] text-muted-foreground shrink-0">{pv.createdAt ? fmtTime(pv.createdAt) : ""}</span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                            {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : conv.subtitle)}
+                          </p>
+                        </div>
+                        {(pv.unreadCount ?? 0) > 0 ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
+                            {pv.unreadCount}
+                          </span>
+                        ) : (
+                          <Circle className={`w-2.5 h-2.5 mt-1 ${active ? "text-cyan-400 fill-cyan-400" : "text-transparent"}`} />
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {mainConversationPanel}
     </div>
   );
 }

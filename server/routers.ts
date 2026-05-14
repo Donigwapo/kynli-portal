@@ -168,6 +168,23 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
     throw new TRPCError({ code: "BAD_REQUEST", message: "Admin tenant context required" });
   }
 
+  // Staff/accountants are assignment-scoped even if tenant_slug is present on the user row.
+  if (STAFF_PORTAL_ROLES.has(user.role)) {
+    const assignedSlugs = await getAssignedTenantSlugsForUser(user);
+    if (!assignedSlugs.length) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "No assigned tenants found for this staff member" });
+    }
+
+    if (requested) {
+      if (!assignedSlugs.includes(requested)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+      }
+      return [requested];
+    }
+
+    return assignedSlugs;
+  }
+
   if (user.tenant_slug) {
     const own = sanitizeTenantSlug(user.tenant_slug);
     if (requested && requested !== own) {
@@ -176,20 +193,7 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
     return [own];
   }
 
-  // Staff users can be assigned to multiple tenants via staff_client_assignments.
-  const assignedSlugs = await getAssignedTenantSlugsForUser(user);
-  if (!assignedSlugs.length) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
-  }
-
-  if (requested) {
-    if (!assignedSlugs.includes(requested)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
-    }
-    return [requested];
-  }
-
-  return assignedSlugs;
+  throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
 }
 
 async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
