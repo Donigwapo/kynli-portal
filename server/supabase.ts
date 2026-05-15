@@ -32,6 +32,11 @@ function isLikelyServiceRoleKey(key: string): boolean {
   return payload.role === "service_role" || payload.supabase_admin === true;
 }
 
+function isMissingColumnError(error: unknown, columnName: string): boolean {
+  const msg = String((error as any)?.message ?? error ?? "").toLowerCase();
+  return msg.includes("schema cache") && msg.includes(columnName.toLowerCase());
+}
+
 // Service-role client — bypasses RLS, used for all server-side operations
 export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
@@ -41,6 +46,17 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     },
   },
 });
+
+const PROD_PORTAL_ORIGIN = "https://portal.kynliconsulting.com";
+
+function getInviteRedirectTo(portalOrigin?: string): string {
+  if (process.env.NODE_ENV === "production") {
+    return `${PROD_PORTAL_ORIGIN}/auth/callback`;
+  }
+
+  const origin = (portalOrigin && portalOrigin.trim()) || "http://localhost:3000";
+  return `${origin.replace(/\/$/, "")}/auth/callback`;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,8 +71,21 @@ export type PortalUser = {
   role: UserRole;
   tenant_slug: string | null;
   must_reset_password: boolean;
+  invite_sent_at?: string | null;
+  invite_accepted?: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type TenantMember = {
+  id: number;
+  email: string;
+  name: string | null;
+  role: UserRole;
+  tenant_slug: string | null;
+  invite_sent_at?: string | null;
+  invite_accepted?: boolean;
+  source: "tenant_user" | "staff_assignment";
 };
 
 export type StaffAssignment = {
@@ -175,6 +204,10 @@ export type ChatMessage = {
   archive_year: number | null;
   archive_month: number | null; // 1–12
   portal_document_id: number | null;
+  // Lightweight reply metadata (global chat)
+  reply_to_message_id?: number | null;
+  reply_to_sender_name?: string | null;
+  reply_to_message_preview?: string | null;
   // Thread support
   thread_id: number | null;    // null = top-level message; set = reply to thread_id
   reply_count: number;         // denormalized count of direct replies
@@ -369,23 +402,39 @@ async function sendKynliInviteEmail(params: {
   const { to, companyName, inviteLink, variant } = params;
 
   const isInvite = variant === "invite";
-  const subject = isInvite ? "You’re invited to Kynli Portal" : "Access Your Kynli Portal";
-  const heading = isInvite ? "Kynli Portal Invite" : "Access Your Kynli Portal";
-  const intro = isInvite
-    ? "You're invited to access your Kynli client portal."
-    : "Use the secure link below to access your Kynli client portal.";
-  const buttonLabel = isInvite ? "Accept Invite" : "Access Your Portal";
+  const subject = isInvite
+    ? "You’ve Been Invited to Kynli"
+    : "Your Kynli Workspace Access Link";
+  const heading = "You’ve Been Invited to Kynli";
+  const intro = "You’ve been invited to join the secure workspace for your organization.";
+  const contextLine = isInvite
+    ? "Use the button below to accept your invitation and collaborate securely."
+    : "Use the button below to access your workspace and continue collaborating securely.";
+  const buttonLabel = isInvite ? "Accept Invitation" : "Open Workspace";
 
   const html = `
-    <div style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
-      <div style="padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
-        <h2 style="margin: 0 0 8px; font-size: 22px;">${heading}</h2>
-        <p style="margin: 0 0 16px; color: #4b5563;">${intro}</p>
-        <p style="margin: 0 0 8px;"><strong>Company:</strong> ${companyName}</p>
-        <p style="margin: 0 0 20px; color: #4b5563;">Welcome! Click below to continue.</p>
-        <a href="${inviteLink}" style="display: inline-block; background: #111827; color: #ffffff; text-decoration: none; padding: 12px 18px; border-radius: 8px; font-weight: 600;">${buttonLabel}</a>
-        <p style="margin: 20px 0 8px; color: #6b7280; font-size: 13px;">If the button doesn’t work, use this link:</p>
-        <p style="word-break: break-all; margin: 0; font-size: 13px;"><a href="${inviteLink}">${inviteLink}</a></p>
+    <div style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 620px; margin: 0 auto; color: #E5E7EB; padding: 20px;">
+      <div style="background: linear-gradient(180deg, #0F172A 0%, #0B1220 100%); border: 1px solid #1F2937; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 45px rgba(0,0,0,0.35);">
+        <div style="padding: 24px 24px 20px; border-bottom: 1px solid rgba(148,163,184,0.16);">
+          <p style="margin: 0; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #94A3B8;">Kynli Consulting</p>
+          <h2 style="margin: 10px 0 6px; font-size: 26px; line-height: 1.2; color: #F8FAFC;">${heading}</h2>
+          <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #CBD5E1;">${intro}</p>
+        </div>
+
+        <div style="padding: 22px 24px;">
+          <div style="margin-bottom: 14px; display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.28); color: #BAE6FD; font-size: 12px;">
+            Workspace: <strong style="color: #E0F2FE; font-weight: 600;">${companyName}</strong>
+          </div>
+
+          <p style="margin: 0 0 20px; font-size: 14px; line-height: 1.65; color: #CBD5E1;">${contextLine}</p>
+
+          <a href="${inviteLink}" style="display: inline-block; background: linear-gradient(135deg, #14B8A6 0%, #06B6D4 100%); color: #042f2e; text-decoration: none; padding: 12px 18px; border-radius: 10px; font-weight: 700; font-size: 14px; box-shadow: 0 8px 20px rgba(6,182,212,0.35);">
+            ${buttonLabel}
+          </a>
+
+          <p style="margin: 22px 0 6px; color: #94A3B8; font-size: 12px;">If the button doesn’t work, you can copy and paste this access link:</p>
+          <p style="margin: 0; font-size: 12px; color: #64748B; word-break: break-all;">${inviteLink}</p>
+        </div>
       </div>
     </div>
   `;
@@ -393,9 +442,11 @@ async function sendKynliInviteEmail(params: {
   const text = [
     subject,
     "",
-    `Company: ${companyName}`,
-    `Use this link to continue:`,
-    inviteLink,
+    `Organization: ${companyName}`,
+    intro,
+    contextLine,
+    "",
+    `${buttonLabel}: ${inviteLink}`,
   ].join("\n");
 
   const response = await fetch(RESEND_API_URL, {
@@ -425,10 +476,12 @@ async function sendKynliInviteEmail(params: {
  */
 export async function inviteClientByEmail(
   email: string,
-  name: string,
+  workspaceName: string,
   tenantSlug: string,
   redirectTo: string,
+  inviteeName?: string,
 ): Promise<{ sent: boolean; error?: string }> {
+  const recipientName = inviteeName?.trim() || workspaceName;
   type GeneratedLinkResult = {
     user?: { id?: string | null } | null;
     properties?: {
@@ -447,7 +500,7 @@ export async function inviteClientByEmail(
       email,
       options: {
         redirectTo,
-        data: { name, tenant_slug: tenantSlug },
+        data: { name: recipientName, tenant_slug: tenantSlug },
       },
     });
 
@@ -517,7 +570,7 @@ export async function inviteClientByEmail(
   try {
     await sendKynliInviteEmail({
       to: email,
-      companyName: name,
+      companyName: workspaceName,
       inviteLink,
       variant: emailVariant,
     });
@@ -537,11 +590,13 @@ export async function inviteClientByEmail(
   const supabaseUid = linkData?.user?.id ?? null;
   const nowIso = new Date().toISOString();
 
-  const { error: upsertError } = await supabase.from("portal_users").upsert(
+  let upsertError: any = null;
+
+  ({ error: upsertError } = await supabase.from("portal_users").upsert(
     {
       supabase_uid: supabaseUid,
       email,
-      name,
+      name: recipientName,
       role: "client",
       tenant_slug: tenantSlug,
       must_reset_password: false,
@@ -549,7 +604,24 @@ export async function inviteClientByEmail(
       invite_accepted: false,
     },
     { onConflict: "email" },
-  );
+  ));
+
+  if (upsertError && (isMissingColumnError(upsertError, "invite_sent_at") || isMissingColumnError(upsertError, "invite_accepted"))) {
+    // Backward-compatible fallback for schemas without invite tracking columns on portal_users
+    const fallback = await supabase.from("portal_users").upsert(
+      {
+        supabase_uid: supabaseUid,
+        email,
+        name: recipientName,
+        role: "client",
+        tenant_slug: tenantSlug,
+        must_reset_password: false,
+      },
+      { onConflict: "email" },
+    );
+
+    upsertError = fallback.error ?? null;
+  }
 
   if (upsertError) {
     return { sent: false, error: upsertError.message };
@@ -568,10 +640,15 @@ export async function inviteClientByEmail(
 }
 
 export async function markInviteAccepted(email: string): Promise<void> {
-  await supabase
+  const acceptedUpdate = await supabase
     .from("portal_users")
     .update({ invite_accepted: true })
     .eq("email", email);
+
+  if (acceptedUpdate.error && !isMissingColumnError(acceptedUpdate.error, "invite_accepted")) {
+    console.warn("[markInviteAccepted] portal_users invite_accepted update failed", acceptedUpdate.error.message);
+  }
+
   // Also mark on tenant record (best-effort)
   const { data: user } = await supabase
     .from("portal_users")
@@ -1120,6 +1197,7 @@ const GLOBAL_CHAT_TABLE = "portal_chat_messages";
 type PortalChatMessageRow = {
   id: number;
   tenant_slug: string;
+  assignment_id: number | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
@@ -1132,6 +1210,12 @@ type PortalChatMessageRow = {
   file_size: number | null;
   mime_type: string | null;
   document_metadata_id: string | null;
+  thread_id: number | null;
+  parent_message_id: number | null;
+  reply_count: number | null;
+  reply_to_message_id: number | null;
+  reply_to_sender_name: string | null;
+  reply_to_message_preview: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1155,8 +1239,11 @@ function mapGlobalChatRowToChatMessage(row: PortalChatMessageRow): ChatMessage {
     archive_year: null,
     archive_month: null,
     portal_document_id: null,
-    thread_id: null,
-    reply_count: 0,
+    reply_to_message_id: row.reply_to_message_id ?? null,
+    reply_to_sender_name: row.reply_to_sender_name ?? null,
+    reply_to_message_preview: row.reply_to_message_preview ?? null,
+    thread_id: row.thread_id ?? row.parent_message_id ?? null,
+    reply_count: row.reply_count ?? 0,
     created_at: row.created_at,
   };
 }
@@ -1166,6 +1253,8 @@ export async function getGlobalChatMessages(
   limit = 200,
   beforeId?: number,
   search?: string,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1174,8 +1263,15 @@ export async function getGlobalChatMessages(
     .select("*")
     .eq("tenant_slug", tenantSlug)
     .in("message_type", ["text", "file", "attachment"])
+    .is("thread_id", null)
     .order("id", { ascending: false })
     .limit(limit);
+
+  if (assignmentId != null) {
+    query = query.eq("assignment_id", assignmentId);
+  } else if (assignmentNullOnly) {
+    query = query.is("assignment_id", null);
+  }
 
   if (beforeId !== undefined) {
     query = query.lt("id", beforeId);
@@ -1228,26 +1324,40 @@ async function insertGlobalChatMessage(payload: Record<string, unknown>, label: 
 
 export async function insertGlobalChatTextMessage(input: {
   tenant_slug: string;
+  assignment_id?: number | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
   sender_role: string | null;
   message_text: string;
+  thread_id?: number | null;
+  parent_message_id?: number | null;
+  reply_count?: number | null;
+  reply_to_message_id?: number | null;
+  reply_to_sender_name?: string | null;
+  reply_to_message_preview?: string | null;
 }): Promise<ChatMessage> {
   const payload = {
     tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    assignment_id: input.assignment_id ?? null,
     organization_id: input.organization_id,
     sender_user_id: input.sender_user_id,
     sender_name: input.sender_name,
     sender_role: input.sender_role,
     message_text: input.message_text,
     message_type: "text",
+    thread_id: input.thread_id ?? input.parent_message_id ?? null,
+    parent_message_id: input.parent_message_id ?? input.thread_id ?? null,
+    reply_count: input.reply_count ?? 0,
     file_url: null,
     file_key: null,
     file_name: null,
     file_size: null,
     mime_type: null,
     document_metadata_id: null,
+    reply_to_message_id: input.reply_to_message_id ?? null,
+    reply_to_sender_name: input.reply_to_sender_name ?? null,
+    reply_to_message_preview: input.reply_to_message_preview ?? null,
   };
 
   return insertGlobalChatMessage(payload, "insertGlobalChatTextMessage");
@@ -1255,6 +1365,7 @@ export async function insertGlobalChatTextMessage(input: {
 
 export async function insertGlobalChatFileMessage(input: {
   tenant_slug: string;
+  assignment_id?: number | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
@@ -1267,21 +1378,34 @@ export async function insertGlobalChatFileMessage(input: {
   mime_type: string;
   document_metadata_id: string | null;
   message_type?: "file" | "attachment";
+  thread_id?: number | null;
+  parent_message_id?: number | null;
+  reply_count?: number | null;
+  reply_to_message_id?: number | null;
+  reply_to_sender_name?: string | null;
+  reply_to_message_preview?: string | null;
 }): Promise<ChatMessage> {
   const payload = {
     tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    assignment_id: input.assignment_id ?? null,
     organization_id: input.organization_id,
     sender_user_id: input.sender_user_id,
     sender_name: input.sender_name,
     sender_role: input.sender_role,
     message_text: input.message_text,
     message_type: input.message_type ?? "file",
+    thread_id: input.thread_id ?? input.parent_message_id ?? null,
+    parent_message_id: input.parent_message_id ?? input.thread_id ?? null,
+    reply_count: input.reply_count ?? 0,
     file_url: input.file_url,
     file_key: input.file_key,
     file_name: input.file_name,
     file_size: input.file_size,
     mime_type: input.mime_type,
     document_metadata_id: input.document_metadata_id,
+    reply_to_message_id: input.reply_to_message_id ?? null,
+    reply_to_sender_name: input.reply_to_sender_name ?? null,
+    reply_to_message_preview: input.reply_to_message_preview ?? null,
   };
 
   return insertGlobalChatMessage(payload, "insertGlobalChatFileMessage");
@@ -1291,12 +1415,14 @@ export async function getChatMessages(
   slug: string,
   limit = 200,
   beforeId?: number,
-  search?: string
+  search?: string,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
   try {
-    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search);
+    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search, assignmentId, assignmentNullOnly);
     if (globalMessages.length > 0) return globalMessages;
   } catch (error) {
     console.error("[getChatMessages] global chat query failed; attempting legacy fallback", {
@@ -1305,6 +1431,9 @@ export async function getChatMessages(
     });
   }
 
+  // Legacy fallback is only for unscoped chat reads. Assignment-scoped conversations are global-only.
+  if (assignmentId != null || assignmentNullOnly) return [];
+
   // Legacy fallback: only fetch top-level messages (thread_id IS NULL) from tenant-specific table
   let query = supabase
     .from(`${tenantSlug}_chat`)
@@ -1312,6 +1441,12 @@ export async function getChatMessages(
     .is("thread_id", null)
     .order("created_at", { ascending: false })
     .limit(limit);
+
+  if (assignmentId != null) {
+    query = query.eq("assignment_id", assignmentId);
+  } else if (assignmentNullOnly) {
+    query = query.is("assignment_id", null);
+  }
 
   if (beforeId !== undefined) {
     query = query.lt("id", beforeId);
@@ -1323,13 +1458,16 @@ export async function getChatMessages(
 
   const { data, error } = await query;
   if (error) {
-    console.error("[getChatMessages] legacy fallback query failed", {
-      tenantSlug,
-      error: error.message,
-      code: (error as any)?.code,
-      details: (error as any)?.details,
-      hint: (error as any)?.hint,
-    });
+    const code = (error as any)?.code;
+    if (code !== "42P01") {
+      console.error("[getChatMessages] legacy fallback query failed", {
+        tenantSlug,
+        error: error.message,
+        code,
+        details: (error as any)?.details,
+        hint: (error as any)?.hint,
+      });
+    }
     return [];
   }
 
@@ -1339,31 +1477,129 @@ export async function getChatMessages(
 
 export async function getThreadReplies(
   slug: string,
-  parentId: number
+  parentId: number,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
 ): Promise<ChatMessage[]> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  try {
+    let query = supabase
+      .from(GLOBAL_CHAT_TABLE)
+      .select("*")
+      .eq("tenant_slug", tenantSlug)
+      .or(`thread_id.eq.${parentId},parent_message_id.eq.${parentId}`)
+      .order("created_at", { ascending: true });
+
+    if (assignmentId != null) {
+      query = query.eq("assignment_id", assignmentId);
+    } else if (assignmentNullOnly) {
+      query = query.is("assignment_id", null);
+    }
+
+    const { data, error } = await query;
+
+    if (!error && data) {
+      const rows = (data || []) as PortalChatMessageRow[];
+      if (rows.length > 0) return rows.map(mapGlobalChatRowToChatMessage);
+    }
+
+    if (error) {
+      console.warn("[getThreadReplies] global query failed; falling back to legacy", {
+        tenantSlug,
+        parentId,
+        error: error.message,
+        code: (error as any)?.code,
+      });
+    }
+  } catch (err) {
+    console.warn("[getThreadReplies] global query threw; falling back to legacy", {
+      tenantSlug,
+      parentId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (assignmentId != null || assignmentNullOnly) return [];
+
   const { data, error } = await supabase
-    .from(`${slug}_chat`)
+    .from(`${tenantSlug}_chat`)
     .select("*")
     .eq("thread_id", parentId)
     .order("created_at", { ascending: true });
-  if (error) return [];
+  if (error) {
+    const code = (error as any)?.code;
+    if (code !== "42P01") {
+      console.warn("[getThreadReplies] legacy fallback query failed", {
+        tenantSlug,
+        parentId,
+        error: error.message,
+        code,
+      });
+    }
+    return [];
+  }
   return (data || []) as ChatMessage[];
 }
 
 export async function incrementReplyCount(
   slug: string,
-  parentId: number
+  parentId: number,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
 ): Promise<void> {
-  // Use raw SQL RPC or a simple read-increment-write (Supabase doesn't support atomic increment natively via JS client without RPC)
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  try {
+    let readQuery = supabase
+      .from(GLOBAL_CHAT_TABLE)
+      .select("reply_count")
+      .eq("tenant_slug", tenantSlug)
+      .eq("id", parentId);
+
+    if (assignmentId != null) {
+      readQuery = readQuery.eq("assignment_id", assignmentId);
+    } else if (assignmentNullOnly) {
+      readQuery = readQuery.is("assignment_id", null);
+    }
+
+    const { data: globalRow, error: globalReadErr } = await readQuery.maybeSingle();
+
+    if (!globalReadErr && globalRow) {
+      const current = Number((globalRow as any)?.reply_count ?? 0);
+      let updateQuery = supabase
+        .from(GLOBAL_CHAT_TABLE)
+        .update({ reply_count: Math.max(0, current + 1) })
+        .eq("tenant_slug", tenantSlug)
+        .eq("id", parentId);
+
+      if (assignmentId != null) {
+        updateQuery = updateQuery.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        updateQuery = updateQuery.is("assignment_id", null);
+      }
+
+      const { error: globalUpdateErr } = await updateQuery;
+      if (!globalUpdateErr) return;
+    }
+  } catch {
+    // fall through to legacy
+  }
+
+  // Legacy fallback for unscoped reads only
+  if (assignmentId != null || assignmentNullOnly) return;
+
   const { data: row } = await supabase
-    .from(`${slug}_chat`)
+    .from(`${tenantSlug}_chat`)
     .select("reply_count")
     .eq("id", parentId)
     .single();
-  const current = (row as any)?.reply_count ?? 0;
+
+  const current = Number((row as any)?.reply_count ?? 0);
+
   await supabase
-    .from(`${slug}_chat`)
-    .update({ reply_count: current + 1 })
+    .from(`${tenantSlug}_chat`)
+    .update({ reply_count: Math.max(0, current + 1) })
     .eq("id", parentId);
 }
 
@@ -1461,12 +1697,178 @@ export async function insertChatMessageSupabase(
   }
 }
 
+export async function getGlobalChatMessageById(
+  slug: string,
+  id: number,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
+): Promise<PortalChatMessageRow | null> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+  let query = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("*")
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", id);
+
+  if (assignmentId != null) {
+    query = query.eq("assignment_id", assignmentId);
+  } else if (assignmentNullOnly) {
+    query = query.is("assignment_id", null);
+  }
+
+  const { data, error } = await query.maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data as PortalChatMessageRow | null) ?? null;
+}
+
+export async function decrementReplyCount(
+  slug: string,
+  parentId: number,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
+): Promise<void> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  try {
+    let readQuery = supabase
+      .from(GLOBAL_CHAT_TABLE)
+      .select("reply_count")
+      .eq("tenant_slug", tenantSlug)
+      .eq("id", parentId);
+
+    if (assignmentId != null) {
+      readQuery = readQuery.eq("assignment_id", assignmentId);
+    } else if (assignmentNullOnly) {
+      readQuery = readQuery.is("assignment_id", null);
+    }
+
+    const { data: globalRow, error: globalReadErr } = await readQuery.maybeSingle();
+
+    if (!globalReadErr && globalRow) {
+      const current = Math.max(0, Number((globalRow as any)?.reply_count ?? 0));
+      const next = Math.max(0, current - 1);
+
+      let updateQuery = supabase
+        .from(GLOBAL_CHAT_TABLE)
+        .update({ reply_count: next })
+        .eq("tenant_slug", tenantSlug)
+        .eq("id", parentId);
+
+      if (assignmentId != null) {
+        updateQuery = updateQuery.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        updateQuery = updateQuery.is("assignment_id", null);
+      }
+
+      const { error: globalUpdateErr } = await updateQuery;
+      if (!globalUpdateErr) return;
+    }
+  } catch {
+    // fall through to legacy
+  }
+
+  // Legacy fallback for unscoped reads only
+  if (assignmentId != null || assignmentNullOnly) return;
+
+  const { data: row } = await supabase
+    .from(`${tenantSlug}_chat`)
+    .select("reply_count")
+    .eq("id", parentId)
+    .single();
+
+  const current = Math.max(0, Number((row as any)?.reply_count ?? 0));
+
+  await supabase
+    .from(`${tenantSlug}_chat`)
+    .update({ reply_count: Math.max(0, current - 1) })
+    .eq("id", parentId);
+}
+
+export async function deleteGlobalChatMessage(
+  slug: string,
+  id: number,
+  assignmentId?: number | null,
+  assignmentNullOnly = false,
+): Promise<{ deleted: boolean; parentId: number | null; cascadeDeleted: number }> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  let targetQuery = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("id, thread_id, parent_message_id, assignment_id")
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", id);
+
+  if (assignmentId != null) {
+    targetQuery = targetQuery.eq("assignment_id", assignmentId);
+  } else if (assignmentNullOnly) {
+    targetQuery = targetQuery.is("assignment_id", null);
+  }
+
+  const { data: target, error: targetErr } = await targetQuery.maybeSingle();
+
+  if (targetErr) {
+    throw new Error(targetErr.message);
+  }
+
+  if (!target) {
+    return { deleted: false, parentId: null, cascadeDeleted: 0 };
+  }
+
+  const parentId = (target as any)?.thread_id ?? (target as any)?.parent_message_id ?? null;
+  const targetAssignmentId = (target as any)?.assignment_id ?? null;
+
+  // If deleting a parent message, cascade delete global thread replies for that parent.
+  let cascadeDeleted = 0;
+  if (parentId == null) {
+    const { data: children, error: childrenErr } = await supabase
+      .from(GLOBAL_CHAT_TABLE)
+      .select("id")
+      .eq("tenant_slug", tenantSlug)
+      .or(`thread_id.eq.${id},parent_message_id.eq.${id}`)
+      .eq("assignment_id", targetAssignmentId);
+
+    if (childrenErr) throw new Error(childrenErr.message);
+
+    const childIds = (children || []).map((r: any) => r.id).filter((v: any) => Number.isFinite(Number(v)));
+    if (childIds.length > 0) {
+      const { error: delChildrenErr } = await supabase
+        .from(GLOBAL_CHAT_TABLE)
+        .delete()
+        .eq("tenant_slug", tenantSlug)
+        .in("id", childIds);
+      if (delChildrenErr) throw new Error(delChildrenErr.message);
+      cascadeDeleted = childIds.length;
+    }
+  }
+
+  const { error: delErr } = await supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .delete()
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", id);
+
+  if (delErr) throw new Error(delErr.message);
+
+  return { deleted: true, parentId, cascadeDeleted };
+}
+
 export async function deleteChatMessageSupabase(
   slug: string,
   id: number
 ): Promise<void> {
-  const { error } = await supabase.from(`${slug}_chat`).delete().eq("id", id);
-  if (error) throw new Error(error.message);
+  const tenantSlug = sanitizeTenantSlug(slug);
+  const { error } = await supabase.from(`${tenantSlug}_chat`).delete().eq("id", id);
+
+  if (error) {
+    const code = (error as any)?.code;
+    // Missing legacy table should fail gracefully now.
+    if (code === "42P01") return;
+    throw new Error(error.message);
+  }
 }
 
 // ─── Client Roster ────────────────────────────────────────────────────────────
@@ -1954,4 +2356,198 @@ export async function unassignStaffFromClient(staffId: number, tenantSlug: strin
     .eq("staff_id", staffId)
     .eq("tenant_slug", tenantSlug);
   if (error) throw new Error(`unassignStaffFromClient: ${error.message}`);
+}
+
+export async function listTenantMembers(tenantSlug: string): Promise<TenantMember[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+
+  type TenantUserSelectRow = {
+    id: number | string;
+    email: string | null;
+    name: string | null;
+    role: UserRole | null;
+    tenant_slug: string | null;
+    invite_sent_at?: string | null;
+    invite_accepted?: boolean | null;
+  };
+
+  // 1) Direct tenant-linked members (client users and any explicitly tenant-bound users)
+  const withInviteUsers = await supabase
+    .from("portal_users")
+    .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
+    .eq("tenant_slug", safeSlug)
+    .order("created_at", { ascending: true });
+
+  const usersResult =
+    withInviteUsers.error &&
+    (isMissingColumnError(withInviteUsers.error, "invite_sent_at") ||
+      isMissingColumnError(withInviteUsers.error, "invite_accepted"))
+      ? await supabase
+          .from("portal_users")
+          .select("id,email,name,role,tenant_slug")
+          .eq("tenant_slug", safeSlug)
+          .order("created_at", { ascending: true })
+      : withInviteUsers;
+
+  if (usersResult.error) {
+    throw new Error(`listTenantMembers.portal_users: ${usersResult.error.message}`);
+  }
+
+  // 2) Staff assignments for this tenant (query IDs first to avoid FK-join dependency issues)
+  const assignments = await supabase
+    .from("staff_client_assignments")
+    .select("staff_id")
+    .eq("tenant_slug", safeSlug);
+
+  if (assignments.error) {
+    throw new Error(`listTenantMembers.staff_client_assignments: ${assignments.error.message}`);
+  }
+
+  const staffIds = Array.from(
+    new Set(
+      ((assignments.data ?? []) as Array<{ staff_id: number | null }>).map((r) => Number(r.staff_id ?? 0)).filter((id) => id > 0)
+    )
+  );
+
+  let assignedStaffUsers: TenantUserSelectRow[] = [];
+  if (staffIds.length > 0) {
+    const withInviteStaff = await supabase
+      .from("portal_users")
+      .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
+      .in("id", staffIds);
+
+    const staffResult =
+      withInviteStaff.error &&
+      (isMissingColumnError(withInviteStaff.error, "invite_sent_at") ||
+        isMissingColumnError(withInviteStaff.error, "invite_accepted"))
+        ? await supabase
+            .from("portal_users")
+            .select("id,email,name,role,tenant_slug")
+            .in("id", staffIds)
+        : withInviteStaff;
+
+    if (staffResult.error) {
+      throw new Error(`listTenantMembers.assigned_staff_users: ${staffResult.error.message}`);
+    }
+
+    assignedStaffUsers = (staffResult.data ?? []) as unknown as TenantUserSelectRow[];
+  }
+
+  const tenantUsers = (usersResult.data ?? []) as unknown as TenantUserSelectRow[];
+  const map = new Map<number, TenantMember>();
+
+  for (const u of tenantUsers) {
+    const id = Number(u.id ?? 0);
+    if (!id) continue;
+    map.set(id, {
+      id,
+      email: String(u.email ?? ""),
+      name: u.name ?? null,
+      role: (u.role ?? "client") as UserRole,
+      tenant_slug: u.tenant_slug ?? null,
+      invite_sent_at: u.invite_sent_at ?? null,
+      invite_accepted: Boolean(u.invite_accepted),
+      source: "tenant_user",
+    });
+  }
+
+  for (const u of assignedStaffUsers) {
+    const id = Number(u.id ?? 0);
+    if (!id) continue;
+    if (map.has(id)) continue;
+
+    map.set(id, {
+      id,
+      email: String(u.email ?? ""),
+      name: u.name ?? null,
+      role: (u.role ?? "accountant") as UserRole,
+      tenant_slug: safeSlug,
+      invite_sent_at: u.invite_sent_at ?? null,
+      invite_accepted: Boolean(u.invite_accepted),
+      source: "staff_assignment",
+    });
+  }
+
+  return Array.from(map.values());
+}
+
+export async function upsertTenantMember(params: {
+  tenantSlug: string;
+  fullName: string;
+  email: string;
+  title?: string;
+  portalOrigin?: string;
+}): Promise<{ member: PortalUser; invited: boolean; inviteError?: string }> {
+  const safeSlug = sanitizeTenantSlug(params.tenantSlug);
+  const normalizedEmail = params.email.trim().toLowerCase();
+
+  const existing = await getPortalUserByEmail(normalizedEmail);
+
+  // Business member invites are always client-scoped members.
+  const member = await upsertPortalUser({
+    email: normalizedEmail,
+    name: params.fullName,
+    role: "client",
+    tenant_slug: safeSlug,
+    must_reset_password: existing?.must_reset_password ?? true,
+  });
+
+  if (!member) throw new Error("Failed to upsert member");
+
+  // Invite is always sent on submit for this UX flow.
+  const redirectTo = getInviteRedirectTo(params.portalOrigin);
+  const tenant = await getTenantBySlug(safeSlug);
+  const workspaceName = tenant?.company_name ?? safeSlug;
+  const invite = await inviteClientByEmail(normalizedEmail, workspaceName, safeSlug, redirectTo, params.fullName);
+
+  return {
+    member,
+    invited: invite.sent,
+    inviteError: invite.sent ? undefined : invite.error ?? "Invite failed",
+  };
+}
+
+export async function resendTenantMemberInvite(params: {
+  tenantSlug: string;
+  email: string;
+  fullName?: string | null;
+  portalOrigin?: string;
+}): Promise<{ sent: boolean; error?: string }> {
+  const safeSlug = sanitizeTenantSlug(params.tenantSlug);
+  const redirectTo = getInviteRedirectTo(params.portalOrigin);
+  const tenant = await getTenantBySlug(safeSlug);
+  const workspaceName = tenant?.company_name ?? safeSlug;
+  return inviteClientByEmail(
+    params.email.trim().toLowerCase(),
+    workspaceName,
+    safeSlug,
+    redirectTo,
+    params.fullName ?? params.email,
+  );
+}
+
+export async function removeTenantMember(params: {
+  tenantSlug: string;
+  memberId: number;
+}): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(params.tenantSlug);
+  const { data: member, error } = await supabase
+    .from("portal_users")
+    .select("id, role, tenant_slug")
+    .eq("id", params.memberId)
+    .single();
+
+  if (error || !member) throw new Error(`removeTenantMember: member not found`);
+
+  if ((member.role as UserRole) === "client") {
+    // Safe MVP behavior: detach client account from this tenant so they no longer appear/access it.
+    const { error: detachErr } = await supabase
+      .from("portal_users")
+      .update({ tenant_slug: null })
+      .eq("id", params.memberId);
+    if (detachErr) throw new Error(`removeTenantMember.detachClient: ${detachErr.message}`);
+    return;
+  }
+
+  await unassignStaffFromClient(params.memberId, safeSlug);
 }

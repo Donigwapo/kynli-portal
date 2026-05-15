@@ -69,9 +69,12 @@ import {
   getChatMessages,
   getThreadReplies,
   incrementReplyCount,
+  decrementReplyCount,
   insertChatMessageSupabase,
   insertGlobalChatTextMessage,
   insertGlobalChatFileMessage,
+  getGlobalChatMessageById,
+  deleteGlobalChatMessage,
   deleteChatMessageSupabase,
   type PortalUser,
   type StaffRole,
@@ -84,6 +87,10 @@ import {
   getStaffAssignments,
   assignStaffToClient,
   unassignStaffFromClient,
+  listTenantMembers,
+  upsertTenantMember,
+  resendTenantMemberInvite,
+  removeTenantMember,
   inviteClientByEmail,
   markInviteAccepted,
   archiveTenant,
@@ -199,6 +206,84 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
 async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
   const slugs = await resolveTenantSlugsForUser(user, impersonateSlug);
   return slugs[0];
+}
+
+async function resolveChatAssignmentIdForUser(
+  user: PortalUser,
+  tenantSlug: string,
+  requestedAssignmentId?: number,
+): Promise<{ assignmentId: number | null; assignmentNullOnly: boolean }> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+
+  const loadAssignmentById = async (id: number) => {
+    const { data, error } = await supabase
+      .from("staff_client_assignments")
+      .select("id, staff_id, tenant_slug")
+      .eq("id", id)
+      .eq("tenant_slug", safeSlug)
+      .maybeSingle();
+    if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Assignment lookup failed: ${error.message}` });
+    return data as { id: number; staff_id: number; tenant_slug: string } | null;
+  };
+
+  const loadAssignmentsForTenant = async () => {
+    const { data, error } = await supabase
+      .from("staff_client_assignments")
+      .select("id, staff_id, tenant_slug")
+      .eq("tenant_slug", safeSlug)
+      .order("assigned_at", { ascending: true });
+    if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Assignment list failed: ${error.message}` });
+    return (data || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
+  };
+
+  // Staff/accountants are bound to their own assignment for the tenant.
+  if (STAFF_PORTAL_ROLES.has(user.role)) {
+    const assignments = await getStaffAssignments(user.id);
+    const match = assignments.find((a) => sanitizeTenantSlug(a.tenant_slug) === safeSlug);
+    if (!match) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+    }
+
+    const ownAssignmentId = Number(match.id);
+    if (requestedAssignmentId != null && Number(requestedAssignmentId) !== ownAssignmentId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own assignment conversation." });
+    }
+
+    return { assignmentId: ownAssignmentId, assignmentNullOnly: false };
+  }
+
+  // Clients can choose one of the tenant's assigned accountant/staff lanes.
+  if (user.role === "client") {
+    if (requestedAssignmentId != null) {
+      const assignment = await loadAssignmentById(Number(requestedAssignmentId));
+      if (!assignment) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Selected assignment is invalid for this tenant." });
+      }
+      return { assignmentId: Number(assignment.id), assignmentNullOnly: false };
+    }
+
+    const allAssignments = await loadAssignmentsForTenant();
+    if (!allAssignments.length) {
+      // No assigned accountant lanes yet; return a scope that yields no assignment-scoped rows.
+      return { assignmentId: -1, assignmentNullOnly: false };
+    }
+
+    return { assignmentId: Number(allAssignments[0].id), assignmentNullOnly: false };
+  }
+
+  // Admin/internal shared chat stays tenant-level unless explicitly narrowed by assignment.
+  if (user.role === "admin") {
+    if (requestedAssignmentId != null) {
+      const assignment = await loadAssignmentById(Number(requestedAssignmentId));
+      if (!assignment) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Selected assignment is invalid for this tenant." });
+      }
+      return { assignmentId: Number(assignment.id), assignmentNullOnly: false };
+    }
+    return { assignmentId: null, assignmentNullOnly: true };
+  }
+
+  return { assignmentId: null, assignmentNullOnly: true };
 }
 
 async function authorizeDocumentDeleteScope(
@@ -340,6 +425,60 @@ export const appRouter = router({
       if (!slugs.length) return null;
       return getTenantBySlug(slugs[0]);
     }),
+    members: adminProcedure
+      .input(z.object({ slug: z.string() }))
+      .query(async ({ input }) => listTenantMembers(input.slug)),
+    addMember: adminProcedure
+      .input(z.object({
+        slug: z.string(),
+        fullName: z.string().min(1),
+        email: z.string().email(),
+        title: z.string().optional(),
+        portalOrigin: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const result = await upsertTenantMember({
+          tenantSlug: input.slug,
+          fullName: input.fullName,
+          email: input.email,
+          title: input.title,
+          portalOrigin: input.portalOrigin,
+        });
+
+        if (!result.invited) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: result.inviteError ?? "Invite failed" });
+        }
+
+        return { success: true, invited: result.invited };
+      }),
+    resendMemberInvite: adminProcedure
+      .input(z.object({
+        slug: z.string(),
+        email: z.string().email(),
+        fullName: z.string().optional(),
+        portalOrigin: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const result = await resendTenantMemberInvite({
+          tenantSlug: input.slug,
+          email: input.email,
+          fullName: input.fullName,
+          portalOrigin: input.portalOrigin,
+        });
+        if (!result.sent) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: result.error ?? "Failed to resend invite" });
+        }
+        return { success: true };
+      }),
+    removeMember: adminProcedure
+      .input(z.object({
+        slug: z.string(),
+        memberId: z.number(),
+      }))
+      .mutation(async ({ input }) => {
+        await removeTenantMember({ tenantSlug: input.slug, memberId: input.memberId });
+        return { success: true };
+      }),
     getBySlug: adminProcedure
       .input(z.object({ slug: z.string() }))
       .query(async ({ input }) => getTenantBySlug(input.slug)),
@@ -1555,10 +1694,94 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
   // ─── Chat ─────────────────────────────────────────────────────────────────
   chat: router({
+    assignments: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const safeSlug = sanitizeTenantSlug(slug);
+
+        if (STAFF_PORTAL_ROLES.has(ctx.user.role)) {
+          const assignments = await getStaffAssignments(ctx.user.id);
+          const mapped = assignments
+            .filter((a) => sanitizeTenantSlug(a.tenant_slug) === safeSlug)
+            .map((a) => ({
+              assignmentId: Number(a.id),
+              tenantSlug: safeSlug,
+              staffId: Number(a.staff_id),
+              name: ctx.user.name ?? ctx.user.email ?? "Assigned Accountant",
+              email: ctx.user.email ?? null,
+              role: ctx.user.role,
+            }));
+
+          console.log("[ChatAssignments] staff mapped", {
+            userId: ctx.user.id,
+            role: ctx.user.role,
+            tenantSlug: safeSlug,
+            count: mapped.length,
+            lanes: mapped,
+          });
+
+          return mapped;
+        }
+
+        // Client/admin view: list all assigned staff lanes for this tenant
+        const { data: rows, error } = await supabase
+          .from("staff_client_assignments")
+          .select("id, staff_id, tenant_slug")
+          .eq("tenant_slug", safeSlug)
+          .order("assigned_at", { ascending: true });
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+
+        const assignmentRows = (rows || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
+
+        console.log("[ChatAssignments] raw assignments", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          tenantSlug: safeSlug,
+          count: assignmentRows.length,
+          rows: assignmentRows,
+        });
+
+        const staffIds = Array.from(new Set(assignmentRows.map((r) => Number(r.staff_id)).filter((n) => Number.isFinite(n))));
+
+        let users: Array<{ id: number; name: string | null; email: string; role: string }> = [];
+        if (staffIds.length) {
+          const { data: userRows, error: usersErr } = await supabase
+            .from("portal_users")
+            .select("id, name, email, role")
+            .in("id", staffIds);
+          if (usersErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: usersErr.message });
+          users = (userRows || []) as Array<{ id: number; name: string | null; email: string; role: string }>;
+        }
+
+        const byId = new Map(users.map((u) => [Number(u.id), u]));
+        const mapped = assignmentRows.map((a) => {
+          const u = byId.get(Number(a.staff_id));
+          return {
+            assignmentId: Number(a.id),
+            tenantSlug: safeSlug,
+            staffId: Number(a.staff_id),
+            name: u?.name ?? u?.email ?? `Accountant #${a.staff_id}`,
+            email: u?.email ?? null,
+            role: u?.role ?? "accountant",
+          };
+        });
+
+        console.log("[ChatAssignments] mapped lanes", {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          tenantSlug: safeSlug,
+          count: mapped.length,
+          lanes: mapped,
+        });
+
+        return mapped;
+      }),
     // List recent messages for the tenant's room (top-level only)
     list: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
         limit: z.number().min(1).max(500).default(200),
         beforeId: z.number().optional(),
         search: z.string().optional(),
@@ -1567,25 +1790,32 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        return getChatMessages(slug, input.limit, input.beforeId, input.search);
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        return getChatMessages(slug, input.limit, input.beforeId, input.search, scope.assignmentId, scope.assignmentNullOnly);
       }),
 
     // Fetch all replies for a thread (parent message)
     getThread: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
         parentId: z.number(),
       }))
       .query(async ({ ctx, input }) => {
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        return getThreadReplies(slug, input.parentId);
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        return getThreadReplies(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly);
       }),
 
     // Send a text message (Phase 1 global chat table)
     send: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
         body: z.string().min(1).max(4000),
+        replyToMessageId: z.number().optional(),
+        replyToSenderName: z.string().optional(),
+        replyToMessagePreview: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
@@ -1593,13 +1823,18 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
 
         try {
+          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
           const msg = await insertGlobalChatTextMessage({
             tenant_slug: slug,
+            assignment_id: scope.assignmentId,
             organization_id: tenant?.id != null ? String(tenant.id) : null,
             sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
             sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
             sender_role: ctx.user.role === "admin" ? "admin" : "client",
             message_text: input.body,
+            reply_to_message_id: input.replyToMessageId ?? null,
+            reply_to_sender_name: input.replyToSenderName ?? null,
+            reply_to_message_preview: input.replyToMessagePreview ?? null,
           });
           return msg;
         } catch (error) {
@@ -1620,6 +1855,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
     sendReply: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
         parentId: z.number(),
         body: z.string().min(1).max(4000),
       }))
@@ -1627,35 +1863,32 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const now = new Date();
-        const reply = await insertChatMessageSupabase(slug, {
-          sender_user_id: ctx.user.id ?? null,
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        const reply = await insertGlobalChatTextMessage({
+          tenant_slug: slug,
+          assignment_id: scope.assignmentId,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
           sender_role: ctx.user.role === "admin" ? "admin" : "client",
-          message: input.body,
-          read: false,
-          file_key: null,
-          file_url: null,
-          file_name: null,
-          file_size: null,
-          mime_type: null,
-          archive_year: now.getFullYear(),
-          archive_month: now.getMonth() + 1,
-          portal_document_id: null,
+          message_text: input.body,
+          parent_message_id: input.parentId,
           thread_id: input.parentId,
           reply_count: 0,
         });
         // Increment reply count on parent (non-blocking)
-        await incrementReplyCount(slug, input.parentId).catch(() => {});
+        await incrementReplyCount(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
         return reply;
       }),
 
-    // Upload a file attachment — saves to S3, archives to documents table, and records in chat
-    sendFile: protectedProcedure
+    // Reply to a thread with a file attachment (legacy thread-safe path)
+    sendReplyFile: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
-        body: z.string().optional(), // optional caption
-        fileBase64: z.string(), // base64-encoded file content
+        assignmentId: z.number().optional(),
+        parentId: z.number(),
+        body: z.string().optional(),
+        fileBase64: z.string(),
         fileName: z.string(),
         mimeType: z.string(),
         fileSize: z.number(),
@@ -1664,6 +1897,97 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+
+        const now = new Date();
+        const archiveYear = now.getFullYear();
+        const archiveMonth = now.getMonth() + 1;
+
+        const ext = input.mimeType.split("/")[1]
+          ?.replace("vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+          .replace("vnd.openxmlformats-officedocument.wordprocessingml.document", "docx") || "bin";
+        const safeDocType = "chat_attachment";
+        const safeYear = String(archiveYear);
+        const safeMonth = String(archiveMonth).padStart(2, "0");
+        const timestamp = Date.now();
+        const rand = Math.random().toString(36).slice(2);
+        const originalFileName = input.fileName || `attachment-${timestamp}.${ext}`;
+        const sanitizedFileName = sanitizeStorageFileName(originalFileName, ext);
+        const fileKey = `${slug}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
+
+        const fileBuffer = Buffer.from(input.fileBase64, "base64");
+        const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.mimeType);
+
+        // Best-effort archive into documents vault
+        try {
+          await insertDocument(slug, {
+            organization_id: tenant?.id != null ? String(tenant.id) : null,
+            client_id: null,
+            name: input.fileName,
+            description: `Shared via thread by ${ctx.user.name ?? ctx.user.email ?? "Unknown"}`,
+            doc_type: "chat_attachment",
+            file_key: fileKey,
+            file_url: fileUrl,
+            file_name: input.fileName,
+            file_size: input.fileSize,
+            mime_type: input.mimeType,
+            year: archiveYear,
+            month: archiveMonth,
+            uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+            uploaded_by_user_id: ctx.user.id ? String(ctx.user.id) : null,
+          });
+        } catch (archiveErr) {
+          console.error("[chat.sendReplyFile] documents_metadata archive failed (non-blocking)", {
+            slug,
+            fileKey,
+            fileName: input.fileName,
+            error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
+          });
+        }
+
+        const reply = await insertGlobalChatFileMessage({
+          tenant_slug: slug,
+          assignment_id: scope.assignmentId,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
+          sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
+          sender_role: ctx.user.role === "admin" ? "admin" : "client",
+          message_text: input.body ?? null,
+          file_url: fileUrl,
+          file_key: fileKey,
+          file_name: input.fileName,
+          file_size: input.fileSize,
+          mime_type: input.mimeType,
+          document_metadata_id: null,
+          message_type: "file",
+          parent_message_id: input.parentId,
+          thread_id: input.parentId,
+          reply_count: 0,
+        });
+
+        await incrementReplyCount(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
+        return reply;
+      }),
+
+    // Upload a file attachment — saves to S3, archives to documents table, and records in chat
+    sendFile: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
+        body: z.string().optional(), // optional caption
+        fileBase64: z.string(), // base64-encoded file content
+        fileName: z.string(),
+        mimeType: z.string(),
+        fileSize: z.number(),
+        replyToMessageId: z.number().optional(),
+        replyToSenderName: z.string().optional(),
+        replyToMessagePreview: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = await getTenantBySlug(slug);
+        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
 
         const now = new Date();
         const archiveYear = now.getFullYear();
@@ -1724,6 +2048,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         let msg;
         const chatInsertPayload = {
           tenant_slug: slug,
+          assignment_id: scope.assignmentId,
           organization_id: tenant?.id != null ? String(tenant.id) : null,
           sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
@@ -1736,6 +2061,9 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           mime_type: input.mimeType,
           document_metadata_id: insertedDocMetadataId,
           message_type: "file" as const,
+          reply_to_message_id: input.replyToMessageId ?? null,
+          reply_to_sender_name: input.replyToSenderName ?? null,
+          reply_to_message_preview: input.replyToMessagePreview ?? null,
         };
 
         console.info("[chat.sendFile] global chat insert payload", {
@@ -1779,18 +2107,50 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         return msg;
       }),
 
-    // Delete a message (admin or own message only)
+    // Delete a message (sender or admin), global-first with legacy fallback
     delete: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
         id: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
         const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
         const tenant = await getTenantBySlug(slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+
+        // Global-first delete path
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        const globalMsg = await getGlobalChatMessageById(slug, input.id, scope.assignmentId, scope.assignmentNullOnly).catch(() => null);
+
+        if (globalMsg) {
+          const senderUserId = globalMsg.sender_user_id != null ? Number(globalMsg.sender_user_id) : null;
+          const isOwner = senderUserId != null && ctx.user.id != null && senderUserId === ctx.user.id;
+          const isAdminRole = ctx.user.role === "admin";
+
+          if (!isOwner && !isAdminRole) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete your own messages." });
+          }
+
+          const result = await deleteGlobalChatMessage(slug, input.id, scope.assignmentId, scope.assignmentNullOnly);
+
+          if (result.parentId != null) {
+            await decrementReplyCount(slug, result.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
+          }
+
+          return {
+            success: true,
+            source: "global",
+            cascadeDeleted: result.cascadeDeleted,
+          };
+        }
+
+        // Legacy fallback path only for shared (non-assignment-scoped) conversations.
+        if (scope.assignmentId != null || scope.assignmentNullOnly) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Message not found in conversation scope" });
+        }
         await deleteChatMessageSupabase(slug, input.id);
-        return { success: true };
+        return { success: true, source: "legacy", cascadeDeleted: 0 };
       }),
   }),
   // ─── Staff / Team Management ───────────────────────────────────────────────

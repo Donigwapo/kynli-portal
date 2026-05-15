@@ -100,6 +100,9 @@ type Msg = {
   mimeType?: string | null;
   replyCount: number;
   threadId?: number | null;
+  replyToMessageId?: number | null;
+  replyToSenderName?: string | null;
+  replyToMessagePreview?: string | null;
   createdAt: string | Date;
   localStatus?: "sending" | "failed";
   localError?: string;
@@ -118,6 +121,9 @@ function normalizeMsg(raw: any): Msg {
     mimeType: raw.mime_type ?? null,
     replyCount: raw.reply_count ?? 0,
     threadId: raw.thread_id ?? null,
+    replyToMessageId: raw.reply_to_message_id ?? null,
+    replyToSenderName: raw.reply_to_sender_name ?? null,
+    replyToMessagePreview: raw.reply_to_message_preview ?? null,
     createdAt: raw.created_at,
   };
 }
@@ -125,6 +131,8 @@ function normalizeMsg(raw: any): Msg {
 type Conversation = {
   key: string;
   tenantSlug?: string;
+  assignmentId?: number;
+  staffName?: string;
   title: string;
   subtitle: string;
   groupLabel: string;
@@ -138,6 +146,13 @@ type ConversationPreview = {
   unreadCount?: number;
 };
 
+function roleLabel(raw?: string | null) {
+  if (!raw) return "Accountant";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Message bubble
 // ──────────────────────────────────────────────────────────────────────────────
@@ -147,12 +162,20 @@ function MessageBubble({
   onDelete,
   canDelete,
   onReply,
+  onOpenThread,
+  onJumpToMessage,
+  highlighted,
+  threadActive,
 }: {
   msg: Msg;
   isMine: boolean;
   onDelete: (id: number) => void;
   canDelete: boolean;
   onReply?: (msg: Msg) => void;
+  onOpenThread?: (msg: Msg) => void;
+  onJumpToMessage?: (id: number) => void;
+  highlighted?: boolean;
+  threadActive?: boolean;
 }) {
   return (
     <div className={`flex gap-3 group ${isMine ? "flex-row-reverse" : "flex-row"}`}>
@@ -180,12 +203,36 @@ function MessageBubble({
         </div>
 
         <div
-          className={`relative rounded-2xl px-4 py-3 text-[13px] leading-relaxed shadow-sm
+          id={`chat-msg-${msg.id}`}
+          className={`relative rounded-2xl px-4 py-3 text-[13px] leading-relaxed shadow-sm transition-all ${
+            highlighted ? "ring-2 ring-cyan-400/70 ring-offset-1 ring-offset-background" : ""
+          }
             ${isMine
               ? "bg-primary text-primary-foreground rounded-tr-sm"
               : "bg-card border border-border text-foreground rounded-tl-sm"
             }`}
         >
+          {(msg.replyToMessageId || msg.replyToSenderName || msg.replyToMessagePreview) && (
+            <button
+              type="button"
+              onClick={() => msg.replyToMessageId && onJumpToMessage?.(msg.replyToMessageId)}
+              className={`mb-2 w-full text-left rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors ${
+                isMine
+                  ? "border-primary-foreground/25 bg-primary-foreground/10 hover:bg-primary-foreground/15"
+                  : "border-border bg-muted/40 hover:bg-muted/60"
+              }`}
+            >
+              <p className={`font-medium ${isMine ? "text-primary-foreground/90" : "text-foreground/90"}`}>
+                Replying to {msg.replyToSenderName ?? "message"}
+              </p>
+              {msg.replyToMessagePreview && (
+                <p className={`${isMine ? "text-primary-foreground/75" : "text-muted-foreground"} truncate`}>
+                  {msg.replyToMessagePreview}
+                </p>
+              )}
+            </button>
+          )}
+
           {msg.localStatus && (
             <div className="mb-2">
               <div
@@ -260,9 +307,17 @@ function MessageBubble({
           )}
 
           {msg.replyCount > 0 && (
-            <button onClick={() => onReply?.(msg)} className="flex items-center gap-1 text-[11px] text-primary hover:underline">
+            <button
+              onClick={() => onOpenThread?.(msg)}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+                threadActive
+                  ? "bg-cyan-500/15 text-cyan-300 border border-cyan-400/30"
+                  : "bg-muted/40 text-primary hover:bg-muted/60 border border-border"
+              }`}
+            >
               <MessageCircleReply className="w-3 h-3" />
               {msg.replyCount} {msg.replyCount === 1 ? "reply" : "replies"}
+              {threadActive ? "• viewing" : "• open thread"}
             </button>
           )}
 
@@ -300,6 +355,8 @@ function ComposeBar({
   onSendFiles,
   sending,
   placeholder,
+  replyTo,
+  onCancelReply,
 }: {
   onSend: (body: string) => Promise<void> | void;
   onSendFiles: (
@@ -309,6 +366,8 @@ function ComposeBar({
   ) => Promise<{ uploaded: number; failed: number; results: Array<{ fileName: string; success: boolean; error?: string }> }>;
   sending: boolean;
   placeholder?: string;
+  replyTo?: { senderName: string; preview: string } | null;
+  onCancelReply?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -404,6 +463,23 @@ function ComposeBar({
 
   return (
     <div>
+      {replyTo && (
+        <div className="mb-2 px-3 py-2 rounded-xl border border-primary/25 bg-primary/10 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-medium text-primary">Replying to {replyTo.senderName}</p>
+            <p className="text-[11px] text-muted-foreground truncate">{replyTo.preview}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Cancel reply"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div className="mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
@@ -470,12 +546,14 @@ function ComposeBar({
 function ThreadPanel({
   parentMsg,
   tenantSlug,
+  assignmentId,
   currentUserId,
   isAdmin,
   onClose,
 }: {
   parentMsg: Msg;
   tenantSlug: string | undefined;
+  assignmentId?: number;
   currentUserId: number | undefined;
   isAdmin: boolean;
   onClose: () => void;
@@ -484,7 +562,7 @@ function ThreadPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { data: replies = [] } = trpc.chat.getThread.useQuery(
-    { tenantSlug, parentId: parentMsg.id },
+    { tenantSlug, assignmentId, parentId: parentMsg.id },
     { refetchInterval: 3000, refetchIntervalInBackground: false },
   );
 
@@ -502,6 +580,14 @@ function ThreadPanel({
     onError: (err) => toast.error(err.message),
   });
 
+  const sendReplyFileMutation = trpc.chat.sendReplyFile.useMutation({
+    onSuccess: () => {
+      utils.chat.getThread.invalidate({ parentId: parentMsg.id });
+      utils.chat.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const deleteMutation = trpc.chat.delete.useMutation({
     onSuccess: () => {
       utils.chat.getThread.invalidate({ parentId: parentMsg.id });
@@ -509,6 +595,14 @@ function ThreadPanel({
     },
     onError: (err) => toast.error(err.message),
   });
+
+  const fileToBase64 = useCallback(async (file: File): Promise<string> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
+    let binary = "";
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    return btoa(binary);
+  }, []);
 
   const normalizedReplies = replies.map(normalizeMsg);
 
@@ -525,6 +619,13 @@ function ThreadPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        <div className="rounded-xl border border-border bg-card/60 px-3 py-2.5">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Parent message</p>
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-foreground">{parentMsg.senderName}</p>
+            <p className="text-xs text-muted-foreground">{parentMsg.body ?? (parentMsg.fileName ? `📎 ${parentMsg.fileName}` : "Attachment")}</p>
+          </div>
+        </div>
         {normalizedReplies.length === 0 ? (
           <p className="text-xs text-muted-foreground text-center py-6">No replies yet.</p>
         ) : (
@@ -539,7 +640,7 @@ function ThreadPanel({
                 canDelete={canDelete}
                 onDelete={(id) => {
                   if (confirm("Delete this reply?")) {
-                    deleteMutation.mutate({ tenantSlug, id });
+                    deleteMutation.mutate({ tenantSlug, assignmentId, id });
                   }
                 }}
               />
@@ -554,12 +655,44 @@ function ThreadPanel({
           onSend={async (body) => {
             setSending(true);
             try {
-              await sendReplyMutation.mutateAsync({ tenantSlug, parentId: parentMsg.id, body });
+              await sendReplyMutation.mutateAsync({ tenantSlug, assignmentId, parentId: parentMsg.id, body });
             } finally {
               setSending(false);
             }
           }}
-          onSendFiles={async () => ({ uploaded: 0, failed: 0, results: [] })}
+          onSendFiles={async (files, caption) => {
+            const results: Array<{ fileName: string; success: boolean; error?: string }> = [];
+            let uploaded = 0;
+            let failed = 0;
+
+            for (let i = 0; i < files.length; i++) {
+              const file = files[i];
+              try {
+                const base64 = await fileToBase64(file);
+                await sendReplyFileMutation.mutateAsync({
+                  tenantSlug,
+                  assignmentId,
+                  parentId: parentMsg.id,
+                  body: i === 0 ? (caption || undefined) : undefined,
+                  fileBase64: base64,
+                  fileName: file.name,
+                  mimeType: file.type || "application/octet-stream",
+                  fileSize: file.size,
+                });
+                uploaded += 1;
+                results.push({ fileName: file.name, success: true });
+              } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : "Upload failed";
+                failed += 1;
+                results.push({ fileName: file.name, success: false, error: msg });
+              }
+            }
+
+            if (uploaded > 0 && failed === 0) toast.success(`${uploaded} thread file${uploaded === 1 ? "" : "s"} sent.`);
+            if (uploaded > 0 && failed > 0) toast.success(`${uploaded} uploaded, ${failed} failed.`);
+
+            return { uploaded, failed, results };
+          }}
           sending={sending}
           placeholder="Reply in thread…"
         />
@@ -570,7 +703,7 @@ function ThreadPanel({
 
 export default function Chat() {
   const { user } = useAuth();
-  const { impersonatingTenantSlug, setImpersonatingTenantSlug } = usePortal();
+  const { impersonatingTenantSlug } = usePortal();
   const utils = trpc.useUtils();
 
   const isStaff = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
@@ -581,6 +714,19 @@ export default function Chat() {
     enabled: !!user,
     staleTime: 60_000,
   });
+  const { data: assignments = [] } = trpc.chat.assignments.useQuery(
+    { tenantSlug: impersonatingTenantSlug ?? undefined },
+    { enabled: !!user && user.role === "client", staleTime: 30_000 },
+  );
+
+  useEffect(() => {
+    if (user?.role !== "client") return;
+    console.log("[ClientChatAssignments] raw", {
+      tenantSlug: impersonatingTenantSlug ?? null,
+      count: assignments.length,
+      assignments,
+    });
+  }, [assignments, impersonatingTenantSlug, user?.role]);
 
   const conversations = useMemo<Conversation[]>(() => {
     const rows: Conversation[] = [];
@@ -594,6 +740,36 @@ export default function Chat() {
       });
     }
 
+    if (user?.role === "client") {
+      const baseSlug = impersonatingTenantSlug || (tenants[0]?.slug as string | undefined);
+      const lanes = assignments.map((a: any, idx: number) => {
+        const aid = Number(a.assignmentId);
+        const sid = Number(a.staffId);
+        const fallback = Number.isFinite(aid) && aid > 0
+          ? aid
+          : (Number.isFinite(sid) && sid > 0 ? sid : idx + 1);
+        const safeKey = `lane:${fallback}`;
+
+        return {
+          key: safeKey,
+          tenantSlug: (a.tenantSlug as string) || baseSlug,
+          assignmentId: Number.isFinite(aid) && aid > 0 ? aid : undefined,
+          staffName: a.name as string,
+          title: (a.name as string) || (a.email as string) || `Accountant ${idx + 1}`,
+          subtitle: `${roleLabel(a.role)}${a.email ? ` • ${a.email}` : ""}`,
+          groupLabel: "ASSIGNED ACCOUNTANTS",
+        } as Conversation;
+      });
+
+      console.log("[ClientChatAssignments] mapped lanes", {
+        count: lanes.length,
+        laneKeys: lanes.map((l) => l.key),
+        lanes,
+      });
+
+      return lanes;
+    }
+
     const tenantConvos = tenants.map((t: any) => ({
       key: `tenant:${t.slug}`,
       tenantSlug: t.slug as string,
@@ -604,7 +780,13 @@ export default function Chat() {
     }));
 
     return [...rows, ...tenantConvos];
-  }, [isStaff, tenants]);
+  }, [isStaff, tenants, user?.role, assignments, impersonatingTenantSlug]);
+
+  const laneStorageKey = useMemo(() => {
+    const tenantPart = impersonatingTenantSlug || "tenant";
+    const userPart = user?.id ?? "anon";
+    return `kynli-chat-selected-lane:${userPart}:${tenantPart}`;
+  }, [user?.id, impersonatingTenantSlug]);
 
   const [selectedConversationKey, setSelectedConversationKey] = useState<string>(
     impersonatingTenantSlug ? `tenant:${impersonatingTenantSlug}` : (isStaff ? "internal" : ""),
@@ -612,7 +794,16 @@ export default function Chat() {
 
   useEffect(() => {
     if (!conversations.length) return;
+
+    const savedKey = typeof window !== "undefined" ? window.localStorage.getItem(laneStorageKey) : null;
+
     if (!selectedConversationKey) {
+      const savedExists = !!savedKey && conversations.some((c) => c.key === savedKey);
+      if (savedExists) {
+        setSelectedConversationKey(savedKey as string);
+        return;
+      }
+
       const defaultKey = impersonatingTenantSlug
         ? `tenant:${impersonatingTenantSlug}`
         : (isStaff ? "internal" : conversations[0].key);
@@ -621,8 +812,19 @@ export default function Chat() {
     }
 
     const exists = conversations.some((c) => c.key === selectedConversationKey);
-    if (!exists) setSelectedConversationKey(conversations[0].key);
-  }, [conversations, selectedConversationKey, impersonatingTenantSlug, isStaff]);
+    if (!exists) {
+      const fallback = (!!savedKey && conversations.some((c) => c.key === savedKey))
+        ? (savedKey as string)
+        : conversations[0].key;
+      setSelectedConversationKey(fallback);
+    }
+  }, [conversations, selectedConversationKey, impersonatingTenantSlug, isStaff, laneStorageKey]);
+
+  useEffect(() => {
+    if (!selectedConversationKey) return;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(laneStorageKey, selectedConversationKey);
+  }, [selectedConversationKey, laneStorageKey]);
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.key === selectedConversationKey) ?? null,
@@ -630,17 +832,21 @@ export default function Chat() {
   );
 
   const activeTenantSlug = activeConversation?.tenantSlug;
+  const activeAssignmentId = activeConversation?.assignmentId;
 
   useEffect(() => {
-    if (!isStaff) return;
-    if (activeConversation?.tenantSlug) {
-      if (impersonatingTenantSlug !== activeConversation.tenantSlug) {
-        setImpersonatingTenantSlug(activeConversation.tenantSlug);
-      }
-    } else if (impersonatingTenantSlug) {
-      setImpersonatingTenantSlug(null);
-    }
-  }, [isStaff, activeConversation?.tenantSlug, impersonatingTenantSlug, setImpersonatingTenantSlug]);
+    console.log("[ChatConversationSelect]", {
+      selectedConversationKey,
+      activeTenantSlug: activeConversation?.tenantSlug ?? null,
+      isStaff,
+    });
+  }, [selectedConversationKey, activeConversation?.tenantSlug, isStaff]);
+
+  useEffect(() => {
+    console.log("[ChatScopeState] impersonation", {
+      impersonatingTenantSlug,
+    });
+  }, [impersonatingTenantSlug]);
 
   // Conversation previews (last message, timestamp, unread placeholder)
   const [previews, setPreviews] = useState<Record<string, ConversationPreview>>({});
@@ -652,7 +858,7 @@ export default function Chat() {
       const entries = await Promise.all(
         conversations.map(async (c) => {
           try {
-            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, limit: 1 });
+            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, limit: 1 });
             const raw = rows?.[0];
             if (!raw) return [c.key, {}] as const;
             const m = normalizeMsg(raw as any);
@@ -689,10 +895,14 @@ export default function Chat() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
   const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
+  const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   useEffect(() => {
-    // reset stickiness when switching conversations
+    // reset stickiness and transient compose/thread state when switching conversations
     shouldStickToBottomRef.current = true;
+    setReplyTarget(null);
+    setThreadMsg(null);
   }, [activeConversation?.key]);
 
   useEffect(() => {
@@ -705,7 +915,7 @@ export default function Chat() {
   const shouldStickToBottomRef = useRef(true);
 
   const { data: rawMessages = [] } = trpc.chat.list.useQuery(
-    { tenantSlug: activeTenantSlug, limit: 200, search: debouncedSearch || undefined },
+    { tenantSlug: activeTenantSlug, assignmentId: activeAssignmentId, limit: 200, search: debouncedSearch || undefined },
     {
       enabled: !!activeConversation,
       refetchInterval: debouncedSearch ? false : 3000,
@@ -721,6 +931,22 @@ export default function Chat() {
     const visiblePending = pendingMessages.filter((m) => !ids.has(m.id));
     return [...latestMessages, ...visiblePending];
   }, [latestMessages, pendingMessages]);
+  const handleJumpToMessage = useCallback((id: number) => {
+    const el = document.getElementById(`chat-msg-${id}`);
+    if (!el) {
+      toast.info("Original message is not in the current loaded history.");
+      return;
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessageId(id);
+    setTimeout(() => setHighlightedMessageId((prev) => (prev === id ? null : prev)), 1800);
+  }, []);
+
+  useEffect(() => {
+    if (highlightedMessageId == null) return;
+    const exists = messages.some((m) => m.id === highlightedMessageId);
+    if (!exists) setHighlightedMessageId(null);
+  }, [messages, highlightedMessageId]);
 
   useEffect(() => {
     if (debouncedSearch) return;
@@ -734,6 +960,11 @@ export default function Chat() {
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     // If user scrolled up, don't auto-jump to bottom on polling updates.
     shouldStickToBottomRef.current = distanceFromBottom < 80;
+  }, []);
+  const openThreadForMessage = useCallback((m: Msg) => {
+    setThreadMsg(m);
+    setHighlightedMessageId(m.id);
+    setTimeout(() => setHighlightedMessageId((prev) => (prev === m.id ? null : prev)), 1200);
   }, []);
 
   const sendMutation = trpc.chat.send.useMutation({
@@ -761,11 +992,21 @@ export default function Chat() {
   const handleSend = useCallback(async (body: string) => {
     setSending(true);
     try {
-      await sendMutation.mutateAsync({ tenantSlug: activeTenantSlug, body });
+      await sendMutation.mutateAsync({
+        tenantSlug: activeTenantSlug,
+        assignmentId: activeAssignmentId,
+        body,
+        replyToMessageId: replyTarget?.id,
+        replyToSenderName: replyTarget?.senderName,
+        replyToMessagePreview: replyTarget
+          ? (replyTarget.body?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment"))
+          : undefined,
+      });
+      setReplyTarget(null);
     } finally {
       setSending(false);
     }
-  }, [activeTenantSlug, sendMutation]);
+  }, [activeTenantSlug, sendMutation, replyTarget]);
 
   const handleSendFiles = useCallback(async (
     files: File[],
@@ -804,11 +1045,17 @@ export default function Chat() {
           const base64 = await fileToBase64(file);
           await sendFileMutation.mutateAsync({
             tenantSlug: activeTenantSlug,
+        assignmentId: activeAssignmentId,
             body: i === 0 ? caption : undefined,
             fileBase64: base64,
             fileName: file.name,
             mimeType: file.type || "application/octet-stream",
             fileSize: file.size,
+            replyToMessageId: i === 0 ? (replyTarget?.id ?? undefined) : undefined,
+            replyToSenderName: i === 0 ? (replyTarget?.senderName ?? undefined) : undefined,
+            replyToMessagePreview: i === 0
+              ? (replyTarget ? (replyTarget.body?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment")) : undefined)
+              : undefined,
           });
 
           uploaded += 1;
@@ -828,6 +1075,7 @@ export default function Chat() {
       if (uploaded > 0 && failed > 0) toast.success(`${uploaded} uploaded, ${failed} failed.`);
 
       setPendingMessages((prev) => prev.filter((m) => m.localStatus === "failed"));
+      if (uploaded > 0) setReplyTarget(null);
       return { uploaded, failed, results };
     } finally {
       setSending(false);
@@ -864,6 +1112,7 @@ export default function Chat() {
     : "Internal Team Thread";
 
   const isOperationalInbox = isAdmin || isStaff;
+  const hasConversationSidebar = isOperationalInbox || user?.role === "client";
 
   const mainConversationPanel = (
     <div className="min-w-0 min-h-0 h-full flex">
@@ -912,10 +1161,15 @@ export default function Chat() {
                           msg={msg}
                           isMine={isMine}
                           canDelete={canDelete}
-                          onReply={(m) => setThreadMsg(m)}
+                          onReply={openThreadForMessage}
+                          onOpenThread={openThreadForMessage}
+                          onJumpToMessage={handleJumpToMessage}
+                          highlighted={highlightedMessageId === msg.id}
+                          threadActive={threadMsg?.id === msg.id}
                           onDelete={(id) => {
                             if (confirm("Delete this message?")) {
-                              deleteMutation.mutate({ tenantSlug: activeTenantSlug, id });
+                              deleteMutation.mutate({ tenantSlug: activeTenantSlug,
+        assignmentId: activeAssignmentId, id });
                             }
                           }}
                         />
@@ -931,7 +1185,13 @@ export default function Chat() {
 
         {!debouncedSearch && (
           <div className="flex-shrink-0 px-6 pb-4 pt-2 border-t border-border bg-card/30 backdrop-blur-sm">
-            <ComposeBar onSend={handleSend} onSendFiles={handleSendFiles} sending={sending} />
+            <ComposeBar
+              onSend={handleSend}
+              onSendFiles={handleSendFiles}
+              sending={sending}
+              replyTo={null}
+              onCancelReply={() => setReplyTarget(null)}
+            />
             <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
               Files shared here are automatically saved to the Portal vault · Max {MAX_FILE_MB} MB
             </p>
@@ -944,6 +1204,7 @@ export default function Chat() {
           <ThreadPanel
             parentMsg={threadMsg}
             tenantSlug={activeTenantSlug}
+            assignmentId={activeAssignmentId}
             currentUserId={currentUserId}
             isAdmin={isAdmin}
             onClose={() => setThreadMsg(null)}
@@ -953,7 +1214,93 @@ export default function Chat() {
     </div>
   );
 
-  if (!isOperationalInbox) {
+  const conversationSidebar = (
+    <aside className="border-r border-border bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
+      <div className="px-4 py-4 border-b border-border/80">
+        <h1 className="text-sm font-semibold tracking-wide text-foreground">
+          {user?.role === "client" ? "Assigned Accountants" : "Client Conversations"}
+        </h1>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {user?.role === "client" ? "Select an accountant conversation lane" : "Operational inbox by package & client"}
+        </p>
+      </div>
+
+      <div className="px-3 py-3 border-b border-border/70">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search messages…"
+            className="pl-8 h-8 text-xs bg-zinc-900/70 border-zinc-800"
+          />
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
+        {groupedConversations.map(([group, items]) => (
+          <div key={group}>
+            <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
+            <div className="space-y-1">
+              {items.map((conv) => {
+                const active = conv.key === selectedConversationKey;
+                const pv = previews[conv.key] ?? {};
+                return (
+                  <button
+                    key={conv.key}
+                    onClick={() => setSelectedConversationKey(conv.key)}
+                    className={
+                      `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
+                      (active
+                        ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
+                        : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                    }
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                        {(conv.title?.charAt(0) || "?").toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[13px] font-medium text-foreground truncate">{conv.title}</p>
+                          <span className="text-[10px] text-muted-foreground shrink-0">{pv.createdAt ? fmtTime(pv.createdAt) : ""}</span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                          {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : conv.subtitle)}
+                        </p>
+                      </div>
+                      {(pv.unreadCount ?? 0) > 0 ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
+                          {pv.unreadCount}
+                        </span>
+                      ) : (
+                        <Circle className={`w-2.5 h-2.5 mt-1 ${active ? "text-cyan-400 fill-cyan-400" : "text-transparent"}`} />
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+
+  if (user?.role === "client" && conversations.length === 0) {
+    return (
+      <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden bg-background">
+        <div className="h-full flex items-center justify-center text-center px-6">
+          <div>
+            <p className="text-sm font-medium text-foreground">No assigned accountants yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Once your accountant is assigned, conversations will appear here.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasConversationSidebar) {
     return (
       <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden bg-background">
         {mainConversationPanel}
@@ -963,74 +1310,7 @@ export default function Chat() {
 
   return (
     <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] min-h-0 overflow-hidden grid grid-cols-[320px_minmax(0,1fr)] bg-background">
-      {/* Secondary conversation inbox sidebar (operational roles only) */}
-      <aside className="border-r border-border bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
-        <div className="px-4 py-4 border-b border-border/80">
-          <h1 className="text-sm font-semibold tracking-wide text-foreground">Client Conversations</h1>
-          <p className="text-[11px] text-muted-foreground mt-1">Operational inbox by package & client</p>
-        </div>
-
-        <div className="px-3 py-3 border-b border-border/70">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search messages…"
-              className="pl-8 h-8 text-xs bg-zinc-900/70 border-zinc-800"
-            />
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
-          {groupedConversations.map(([group, items]) => (
-            <div key={group}>
-              <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
-              <div className="space-y-1">
-                {items.map((conv) => {
-                  const active = conv.key === selectedConversationKey;
-                  const pv = previews[conv.key] ?? {};
-                  return (
-                    <button
-                      key={conv.key}
-                      onClick={() => setSelectedConversationKey(conv.key)}
-                      className={
-                        `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
-                        (active
-                          ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
-                          : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
-                      }
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
-                          {(conv.title?.charAt(0) || "?").toUpperCase()}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-[13px] font-medium text-foreground truncate">{conv.title}</p>
-                            <span className="text-[10px] text-muted-foreground shrink-0">{pv.createdAt ? fmtTime(pv.createdAt) : ""}</span>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground truncate mt-0.5">
-                            {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : conv.subtitle)}
-                          </p>
-                        </div>
-                        {(pv.unreadCount ?? 0) > 0 ? (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
-                            {pv.unreadCount}
-                          </span>
-                        ) : (
-                          <Circle className={`w-2.5 h-2.5 mt-1 ${active ? "text-cyan-400 fill-cyan-400" : "text-transparent"}`} />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </aside>
-
+      {conversationSidebar}
       {mainConversationPanel}
     </div>
   );

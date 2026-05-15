@@ -34,6 +34,9 @@ type Msg = {
   portalDocId?: number | null;
   threadId?: number | null;
   replyCount?: number;
+  replyToMessageId?: number | null;
+  replyToSenderName?: string | null;
+  replyToMessagePreview?: string | null;
 };
 
 function normalizeMsg(m: Record<string, unknown>): Msg {
@@ -70,6 +73,9 @@ function normalizeMsg(m: Record<string, unknown>): Msg {
     portalDocId: (m.portal_document_id as number | null | undefined) ?? (m.portalDocId as number | null | undefined) ?? null,
     threadId: (m.thread_id as number | null | undefined) ?? (m.threadId as number | null | undefined) ?? null,
     replyCount: (m.reply_count as number | undefined) ?? (m.replyCount as number | undefined) ?? 0,
+    replyToMessageId: (m.reply_to_message_id as number | null | undefined) ?? null,
+    replyToSenderName: (m.reply_to_sender_name as string | null | undefined) ?? null,
+    replyToMessagePreview: (m.reply_to_message_preview as string | null | undefined) ?? null,
   };
 }
 
@@ -129,6 +135,8 @@ export default function AdminChat() {
   const [sendingCompose, setSendingCompose] = useState(false);
   const [attachProgressIndex, setAttachProgressIndex] = useState(0);
   const [attachProgressTotal, setAttachProgressTotal] = useState(0);
+  const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -248,6 +256,8 @@ export default function AdminChat() {
     setSearchQuery("");
     setSearchActive(false);
     setThreadMsg(null);
+    setReplyTarget(null);
+    setHighlightedMessageId(null);
     setHasMore(true);
     setBeforeId(undefined);
   }, [selectedSlug]);
@@ -258,6 +268,18 @@ export default function AdminChat() {
     let binary = "";
     for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
     return btoa(binary);
+  }, []);
+
+
+  const handleJumpToMessage = useCallback((id: number) => {
+    const el = document.getElementById(`admin-chat-msg-${id}`);
+    if (!el) {
+      toast.info("Original message is not in the current loaded history.");
+      return;
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessageId(id);
+    setTimeout(() => setHighlightedMessageId((prev) => (prev === id ? null : prev)), 1800);
   }, []);
 
   const handleSend = useCallback(async () => {
@@ -273,7 +295,16 @@ export default function AdminChat() {
       setSendingCompose(true);
       setText("");
       try {
-        await sendMsg.mutateAsync({ tenantSlug: selectedSlug, body });
+        await sendMsg.mutateAsync({
+          tenantSlug: selectedSlug,
+          body,
+          replyToMessageId: replyTarget?.id,
+          replyToSenderName: replyTarget?.sender,
+          replyToMessagePreview: replyTarget
+            ? (replyTarget.message?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment"))
+            : undefined,
+        });
+        setReplyTarget(null);
         listQuery.refetch();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to send";
@@ -317,6 +348,11 @@ export default function AdminChat() {
             fileName: target.file.name,
             mimeType: target.file.type || "application/octet-stream",
             fileSize: target.file.size,
+            replyToMessageId: i === 0 ? (replyTarget?.id ?? undefined) : undefined,
+            replyToSenderName: i === 0 ? (replyTarget?.sender ?? undefined) : undefined,
+            replyToMessagePreview: i === 0
+              ? (replyTarget ? (replyTarget.message?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment")) : undefined)
+              : undefined,
           });
           results.push({ id: target.id, success: true });
         } catch (err: unknown) {
@@ -353,6 +389,7 @@ export default function AdminChat() {
         toast.success(`${uploaded} uploaded, ${failed} failed`);
       }
 
+      if (uploaded > 0) setReplyTarget(null);
       listQuery.refetch();
     } finally {
       setSendingCompose(false);
@@ -541,7 +578,8 @@ export default function AdminChat() {
                   return (
                     <div
                       key={msg.id}
-                      className={`group flex gap-3 py-1 px-2 rounded-lg hover:bg-accent/20 transition-colors ${admin ? "flex-row-reverse" : "flex-row"}`}
+                      id={`admin-chat-msg-${msg.id}`}
+                      className={`group flex gap-3 py-1 px-2 rounded-lg hover:bg-accent/20 transition-colors ${highlightedMessageId === msg.id ? "ring-2 ring-cyan-400/70 ring-offset-1 ring-offset-background" : ""} ${admin ? "flex-row-reverse" : "flex-row"}`}
                     >
                       {/* Avatar */}
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${admin ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>
@@ -556,6 +594,17 @@ export default function AdminChat() {
                             {formatTime(msg.createdAt)}
                           </span>
                         </div>
+
+                        {(msg.replyToMessageId || msg.replyToSenderName || msg.replyToMessagePreview) && (
+                          <button
+                            type="button"
+                            onClick={() => msg.replyToMessageId && handleJumpToMessage(msg.replyToMessageId)}
+                            className={`w-full text-left rounded-lg border px-2 py-1.5 text-[11px] ${admin ? "bg-primary/10 border-primary/20 text-primary-foreground/90" : "bg-muted/40 border-border text-muted-foreground"}`}
+                          >
+                            <p className="font-medium">Replying to {msg.replyToSenderName ?? "message"}</p>
+                            {msg.replyToMessagePreview && <p className="truncate opacity-80">{msg.replyToMessagePreview}</p>}
+                          </button>
+                        )}
 
                         {msg.fileUrl ? (
                           <div className={`rounded-xl overflow-hidden border border-border/50 ${admin ? "bg-primary/10" : "bg-muted/40"}`}>
@@ -585,7 +634,7 @@ export default function AdminChat() {
                         {(msg.replyCount ?? 0) > 0 && (
                           <button
                             className="text-[10px] text-primary/70 hover:text-primary flex items-center gap-1 mt-0.5"
-                            onClick={() => setThreadMsg(msg)}
+                            onClick={() => { setThreadMsg(msg); setHighlightedMessageId(msg.id); setTimeout(() => setHighlightedMessageId((prev) => (prev === msg.id ? null : prev)), 1200); }}
                           >
                             <MessageSquare size={10} />
                             {msg.replyCount} {msg.replyCount === 1 ? "reply" : "replies"}
@@ -597,7 +646,7 @@ export default function AdminChat() {
                       <div className={`opacity-0 group-hover:opacity-100 transition-opacity flex items-start pt-1 ${admin ? "mr-1" : "ml-1"}`}>
                         <button
                           className="text-[10px] text-muted-foreground hover:text-primary px-1.5 py-0.5 rounded border border-transparent hover:border-border"
-                          onClick={() => setThreadMsg(msg)}
+                          onClick={() => setReplyTarget(msg)}
                         >
                           Reply
                         </button>
@@ -613,6 +662,23 @@ export default function AdminChat() {
           {/* Compose */}
           {!searchActive && (
             <div className="px-5 py-3 border-t border-border bg-card/30 shrink-0">
+              {replyTarget && (
+                <div className="mb-2 px-3 py-2 rounded-xl border border-primary/25 bg-primary/10 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-primary">Replying to {replyTarget.sender}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{replyTarget.message?.slice(0, 160) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment")}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplyTarget(null)}
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="Cancel reply"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               {attachments.length > 0 && (
                 <div className="mb-2 px-3 py-2 bg-muted/40 border border-border rounded-xl space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
