@@ -837,6 +837,39 @@ export const appRouter = router({
       }),
   }),
 
+  notifications: router({
+    registerPushToken: protectedProcedure
+      .input(z.object({
+        fcmToken: z.string().min(16).max(4096),
+        deviceType: z.string().default("web"),
+        userAgent: z.string().max(2000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const now = new Date().toISOString();
+        const payload = {
+          portal_user_id: Number(ctx.user.id),
+          fcm_token: input.fcmToken,
+          device_type: input.deviceType || "web",
+          user_agent: input.userAgent ?? null,
+          is_active: true,
+          updated_at: now,
+          last_seen_at: now,
+        };
+
+        const { data, error } = await supabase
+          .from("portal_push_tokens")
+          .upsert(payload, { onConflict: "fcm_token" })
+          .select("id, portal_user_id, is_active, updated_at, last_seen_at")
+          .single();
+
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+
+        return { success: true, token: data };
+      }),
+  }),
+
   documentsAdmin: router({
     backfillOrganizationIds: adminProcedure
       .mutation(async () => {

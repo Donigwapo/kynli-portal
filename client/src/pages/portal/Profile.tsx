@@ -1,7 +1,14 @@
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
+import {
+  getFcmToken,
+  getNotificationPermissionDiagnostics,
+  requestNotificationPermission,
+} from "@/lib/firebase";
 import { PACKAGE_LABELS } from "@shared/tiers";
-import { AlertCircle, Building2, CheckCircle2, Loader2, User } from "lucide-react";
+import { AlertCircle, Bell, Building2, CheckCircle2, Loader2, User } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -14,6 +21,10 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export default function Profile() {
   const { impersonatingTenantSlug } = usePortal();
+  const [isEnablingNotifications, setIsEnablingNotifications] = useState(false);
+
+  const utils = trpc.useUtils();
+  const registerPushToken = trpc.notifications.registerPushToken.useMutation();
 
   const {
     data: authUser,
@@ -29,6 +40,70 @@ export default function Profile() {
 
   const isLoading = userLoading || (!impersonatingTenantSlug && tenantLoading);
   const error = userError ?? tenantError;
+
+  const permissionDiagnostics = useMemo(() => getNotificationPermissionDiagnostics(), [authUser?.id]);
+  const permissionState = permissionDiagnostics.permission;
+
+  const handleEnableNotifications = async () => {
+    if (!authUser?.id) {
+      toast.error("You must be signed in to enable notifications.");
+      return;
+    }
+
+    if (!permissionDiagnostics.supported) {
+      toast.error("This browser does not support push notifications.");
+      return;
+    }
+
+    if (!permissionDiagnostics.secureContext) {
+      toast.error("Notifications require HTTPS (localhost is allowed for development).");
+      return;
+    }
+
+    if (permissionState === "denied") {
+      toast.error("Notifications are blocked. Re-enable them in browser Site Settings for this site.");
+      return;
+    }
+
+    setIsEnablingNotifications(true);
+    try {
+      const before = Notification.permission;
+      const permission = await requestNotificationPermission();
+
+      if (permission === "denied") {
+        if (before === "default") {
+          toast.error("Notification permission was denied. In Chrome: click the lock icon in the address bar → Site settings → Notifications → Allow, then refresh.");
+        } else {
+          toast.error("Notifications are blocked. Update browser Site Settings to Allow notifications for this site.");
+        }
+        return;
+      }
+
+      if (permission !== "granted") {
+        toast.message("Notification permission not granted.");
+        return;
+      }
+
+      const token = await getFcmToken();
+      if (!token) {
+        toast.error("Unable to retrieve notification token. Confirm Firebase env + VAPID key and service worker setup.");
+        return;
+      }
+
+      await registerPushToken.mutateAsync({
+        fcmToken: token,
+        deviceType: "web",
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      });
+
+      await utils.notifications.invalidate();
+      toast.success("Notifications enabled for this browser.");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to enable notifications.");
+    } finally {
+      setIsEnablingNotifications(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -99,6 +174,35 @@ export default function Profile() {
       <div className="rounded-xl border border-border bg-card p-4 flex items-center gap-2 text-sm text-muted-foreground">
         <User size={16} />
         Signed in as <span className="text-foreground font-medium">{authUser?.email ?? "Unknown user"}</span>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-3">
+        <div className="flex items-center gap-2 text-sm text-foreground font-medium">
+          <Bell size={16} />
+          Browser Notifications
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Permission: <span className="text-foreground font-medium">{permissionState}</span>
+        </p>
+        {!permissionDiagnostics.secureContext && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            Notifications require HTTPS in production. For local development, use <span className="font-semibold">localhost</span>.
+          </div>
+        )}
+        {permissionState === "denied" && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            Notifications are currently blocked by your browser. In Chrome: click the lock icon → Site settings → Notifications → Allow, then refresh.
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={handleEnableNotifications}
+          disabled={isEnablingNotifications || permissionState === "denied" || !permissionDiagnostics.supported || !permissionDiagnostics.secureContext}
+          className="inline-flex w-fit items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {isEnablingNotifications ? <Loader2 size={14} className="animate-spin" /> : <Bell size={14} />}
+          Enable notifications
+        </button>
       </div>
     </div>
   );

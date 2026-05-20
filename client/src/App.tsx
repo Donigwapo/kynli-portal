@@ -90,6 +90,7 @@ function Router() {
       <Route path="/admin/chat" component={() => <AdminRoute component={AdminChat} />} />
       <Route path="/admin/data-entry" component={() => <AdminRoute component={AdminDataEntry} />} />
       <Route path="/admin/team" component={() => <AdminRoute component={AdminTeam} />} />
+      <Route path="/admin/profile" component={() => <AdminRoute component={Profile} />} />
 
       {/* 404 */}
       <Route path="/404" component={NotFound} />
