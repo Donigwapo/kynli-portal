@@ -1198,6 +1198,7 @@ type PortalChatMessageRow = {
   id: number;
   tenant_slug: string;
   assignment_id: number | null;
+  dm_key: string | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
@@ -1255,22 +1256,34 @@ export async function getGlobalChatMessages(
   search?: string,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
   let query = supabase
     .from(GLOBAL_CHAT_TABLE)
-    .select("*")
-    .eq("tenant_slug", tenantSlug)
+    .select("*");
+
+  if (dmKey) {
+    query = query.eq("dm_key", dmKey);
+  } else {
+    query = query.eq("tenant_slug", tenantSlug).is("dm_key", null);
+  }
+
+  query = query
     .in("message_type", ["text", "file", "attachment"])
     .is("thread_id", null)
     .order("id", { ascending: false })
     .limit(limit);
 
-  if (assignmentId != null) {
-    query = query.eq("assignment_id", assignmentId);
-  } else if (assignmentNullOnly) {
-    query = query.is("assignment_id", null);
+  if (!dmKey) {
+    if (!dmKey) {
+      if (assignmentId != null) {
+        query = query.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        query = query.is("assignment_id", null);
+      }
+    }
   }
 
   if (beforeId !== undefined) {
@@ -1325,6 +1338,7 @@ async function insertGlobalChatMessage(payload: Record<string, unknown>, label: 
 export async function insertGlobalChatTextMessage(input: {
   tenant_slug: string;
   assignment_id?: number | null;
+  dm_key?: string | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
@@ -1340,6 +1354,7 @@ export async function insertGlobalChatTextMessage(input: {
   const payload = {
     tenant_slug: sanitizeTenantSlug(input.tenant_slug),
     assignment_id: input.assignment_id ?? null,
+    dm_key: input.dm_key ?? null,
     organization_id: input.organization_id,
     sender_user_id: input.sender_user_id,
     sender_name: input.sender_name,
@@ -1366,6 +1381,7 @@ export async function insertGlobalChatTextMessage(input: {
 export async function insertGlobalChatFileMessage(input: {
   tenant_slug: string;
   assignment_id?: number | null;
+  dm_key?: string | null;
   organization_id: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
@@ -1388,6 +1404,7 @@ export async function insertGlobalChatFileMessage(input: {
   const payload = {
     tenant_slug: sanitizeTenantSlug(input.tenant_slug),
     assignment_id: input.assignment_id ?? null,
+    dm_key: input.dm_key ?? null,
     organization_id: input.organization_id,
     sender_user_id: input.sender_user_id,
     sender_name: input.sender_name,
@@ -1418,11 +1435,12 @@ export async function getChatMessages(
   search?: string,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
   try {
-    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search, assignmentId, assignmentNullOnly);
+    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search, assignmentId, assignmentNullOnly, dmKey);
     if (globalMessages.length > 0) return globalMessages;
   } catch (error) {
     console.error("[getChatMessages] global chat query failed; attempting legacy fallback", {
@@ -1432,7 +1450,7 @@ export async function getChatMessages(
   }
 
   // Legacy fallback is only for unscoped chat reads. Assignment-scoped conversations are global-only.
-  if (assignmentId != null || assignmentNullOnly) return [];
+  if (dmKey || assignmentId != null || assignmentNullOnly) return [];
 
   // Legacy fallback: only fetch top-level messages (thread_id IS NULL) from tenant-specific table
   let query = supabase
@@ -1442,10 +1460,14 @@ export async function getChatMessages(
     .order("created_at", { ascending: false })
     .limit(limit);
 
-  if (assignmentId != null) {
-    query = query.eq("assignment_id", assignmentId);
-  } else if (assignmentNullOnly) {
-    query = query.is("assignment_id", null);
+  if (!dmKey) {
+    if (!dmKey) {
+      if (assignmentId != null) {
+        query = query.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        query = query.is("assignment_id", null);
+      }
+    }
   }
 
   if (beforeId !== undefined) {
@@ -1480,6 +1502,7 @@ export async function getThreadReplies(
   parentId: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1487,14 +1510,22 @@ export async function getThreadReplies(
     let query = supabase
       .from(GLOBAL_CHAT_TABLE)
       .select("*")
-      .eq("tenant_slug", tenantSlug)
-      .or(`thread_id.eq.${parentId},parent_message_id.eq.${parentId}`)
-      .order("created_at", { ascending: true });
+      .or(`thread_id.eq.${parentId},parent_message_id.eq.${parentId}`);
 
-    if (assignmentId != null) {
-      query = query.eq("assignment_id", assignmentId);
-    } else if (assignmentNullOnly) {
-      query = query.is("assignment_id", null);
+    if (dmKey) {
+      query = query.eq("dm_key", dmKey);
+    } else {
+      query = query.eq("tenant_slug", tenantSlug);
+    }
+
+    query = query.order("created_at", { ascending: true });
+
+    if (!dmKey) {
+      if (assignmentId != null) {
+        query = query.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        query = query.is("assignment_id", null);
+      }
     }
 
     const { data, error } = await query;
@@ -1520,7 +1551,7 @@ export async function getThreadReplies(
     });
   }
 
-  if (assignmentId != null || assignmentNullOnly) return [];
+  if (dmKey || assignmentId != null || assignmentNullOnly) return [];
 
   const { data, error } = await supabase
     .from(`${tenantSlug}_chat`)
@@ -1547,6 +1578,7 @@ export async function incrementReplyCount(
   parentId: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<void> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1554,13 +1586,20 @@ export async function incrementReplyCount(
     let readQuery = supabase
       .from(GLOBAL_CHAT_TABLE)
       .select("reply_count")
-      .eq("tenant_slug", tenantSlug)
       .eq("id", parentId);
 
-    if (assignmentId != null) {
-      readQuery = readQuery.eq("assignment_id", assignmentId);
-    } else if (assignmentNullOnly) {
-      readQuery = readQuery.is("assignment_id", null);
+    if (dmKey) {
+      readQuery = readQuery.eq("dm_key", dmKey);
+    } else {
+      readQuery = readQuery.eq("tenant_slug", tenantSlug);
+    }
+
+    if (!dmKey) {
+      if (assignmentId != null) {
+        readQuery = readQuery.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        readQuery = readQuery.is("assignment_id", null);
+      }
     }
 
     const { data: globalRow, error: globalReadErr } = await readQuery.maybeSingle();
@@ -1570,13 +1609,20 @@ export async function incrementReplyCount(
       let updateQuery = supabase
         .from(GLOBAL_CHAT_TABLE)
         .update({ reply_count: Math.max(0, current + 1) })
-        .eq("tenant_slug", tenantSlug)
         .eq("id", parentId);
 
-      if (assignmentId != null) {
+      if (dmKey) {
+        updateQuery = updateQuery.eq("dm_key", dmKey);
+      } else {
+        updateQuery = updateQuery.eq("tenant_slug", tenantSlug);
+      }
+
+      if (!dmKey) {
+        if (assignmentId != null) {
         updateQuery = updateQuery.eq("assignment_id", assignmentId);
       } else if (assignmentNullOnly) {
         updateQuery = updateQuery.is("assignment_id", null);
+      }
       }
 
       const { error: globalUpdateErr } = await updateQuery;
@@ -1587,7 +1633,7 @@ export async function incrementReplyCount(
   }
 
   // Legacy fallback for unscoped reads only
-  if (assignmentId != null || assignmentNullOnly) return;
+  if (dmKey || assignmentId != null || assignmentNullOnly) return;
 
   const { data: row } = await supabase
     .from(`${tenantSlug}_chat`)
@@ -1702,18 +1748,28 @@ export async function getGlobalChatMessageById(
   id: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<PortalChatMessageRow | null> {
   const tenantSlug = sanitizeTenantSlug(slug);
   let query = supabase
     .from(GLOBAL_CHAT_TABLE)
     .select("*")
-    .eq("tenant_slug", tenantSlug)
     .eq("id", id);
 
-  if (assignmentId != null) {
-    query = query.eq("assignment_id", assignmentId);
-  } else if (assignmentNullOnly) {
-    query = query.is("assignment_id", null);
+  if (dmKey) {
+    query = query.eq("dm_key", dmKey);
+  } else {
+    query = query.eq("tenant_slug", tenantSlug).is("dm_key", null);
+  }
+
+  if (!dmKey) {
+    if (!dmKey) {
+      if (assignmentId != null) {
+        query = query.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        query = query.is("assignment_id", null);
+      }
+    }
   }
 
   const { data, error } = await query.maybeSingle();
@@ -1730,6 +1786,7 @@ export async function decrementReplyCount(
   parentId: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<void> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1737,13 +1794,20 @@ export async function decrementReplyCount(
     let readQuery = supabase
       .from(GLOBAL_CHAT_TABLE)
       .select("reply_count")
-      .eq("tenant_slug", tenantSlug)
       .eq("id", parentId);
 
-    if (assignmentId != null) {
-      readQuery = readQuery.eq("assignment_id", assignmentId);
-    } else if (assignmentNullOnly) {
-      readQuery = readQuery.is("assignment_id", null);
+    if (dmKey) {
+      readQuery = readQuery.eq("dm_key", dmKey);
+    } else {
+      readQuery = readQuery.eq("tenant_slug", tenantSlug);
+    }
+
+    if (!dmKey) {
+      if (assignmentId != null) {
+        readQuery = readQuery.eq("assignment_id", assignmentId);
+      } else if (assignmentNullOnly) {
+        readQuery = readQuery.is("assignment_id", null);
+      }
     }
 
     const { data: globalRow, error: globalReadErr } = await readQuery.maybeSingle();
@@ -1755,13 +1819,20 @@ export async function decrementReplyCount(
       let updateQuery = supabase
         .from(GLOBAL_CHAT_TABLE)
         .update({ reply_count: next })
-        .eq("tenant_slug", tenantSlug)
         .eq("id", parentId);
 
-      if (assignmentId != null) {
+      if (dmKey) {
+        updateQuery = updateQuery.eq("dm_key", dmKey);
+      } else {
+        updateQuery = updateQuery.eq("tenant_slug", tenantSlug);
+      }
+
+      if (!dmKey) {
+        if (assignmentId != null) {
         updateQuery = updateQuery.eq("assignment_id", assignmentId);
       } else if (assignmentNullOnly) {
         updateQuery = updateQuery.is("assignment_id", null);
+      }
       }
 
       const { error: globalUpdateErr } = await updateQuery;
@@ -1772,7 +1843,7 @@ export async function decrementReplyCount(
   }
 
   // Legacy fallback for unscoped reads only
-  if (assignmentId != null || assignmentNullOnly) return;
+  if (dmKey || assignmentId != null || assignmentNullOnly) return;
 
   const { data: row } = await supabase
     .from(`${tenantSlug}_chat`)
@@ -1793,30 +1864,29 @@ export async function deleteGlobalChatMessage(
   id: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
+  dmKey?: string | null,
 ): Promise<{ deleted: boolean; parentId: number | null; cascadeDeleted: number }> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
   let targetQuery = supabase
     .from(GLOBAL_CHAT_TABLE)
     .select("id, thread_id, parent_message_id, assignment_id")
-    .eq("tenant_slug", tenantSlug)
     .eq("id", id);
 
-  if (assignmentId != null) {
-    targetQuery = targetQuery.eq("assignment_id", assignmentId);
-  } else if (assignmentNullOnly) {
-    targetQuery = targetQuery.is("assignment_id", null);
+  if (dmKey) {
+    targetQuery = targetQuery.eq("dm_key", dmKey);
+  } else {
+    targetQuery = targetQuery.eq("tenant_slug", tenantSlug);
+    if (assignmentId != null) {
+      targetQuery = targetQuery.eq("assignment_id", assignmentId);
+    } else if (assignmentNullOnly) {
+      targetQuery = targetQuery.is("assignment_id", null);
+    }
   }
 
   const { data: target, error: targetErr } = await targetQuery.maybeSingle();
-
-  if (targetErr) {
-    throw new Error(targetErr.message);
-  }
-
-  if (!target) {
-    return { deleted: false, parentId: null, cascadeDeleted: 0 };
-  }
+  if (targetErr) throw new Error(targetErr.message);
+  if (!target) return { deleted: false, parentId: null, cascadeDeleted: 0 };
 
   const parentId = (target as any)?.thread_id ?? (target as any)?.parent_message_id ?? null;
   const targetAssignmentId = (target as any)?.assignment_id ?? null;
@@ -1824,33 +1894,47 @@ export async function deleteGlobalChatMessage(
   // If deleting a parent message, cascade delete global thread replies for that parent.
   let cascadeDeleted = 0;
   if (parentId == null) {
-    const { data: children, error: childrenErr } = await supabase
+    let childrenQuery = supabase
       .from(GLOBAL_CHAT_TABLE)
       .select("id")
-      .eq("tenant_slug", tenantSlug)
-      .or(`thread_id.eq.${id},parent_message_id.eq.${id}`)
-      .eq("assignment_id", targetAssignmentId);
+      .or(`thread_id.eq.${id},parent_message_id.eq.${id}`);
 
+    if (dmKey) {
+      childrenQuery = childrenQuery.eq("dm_key", dmKey);
+    } else {
+      childrenQuery = childrenQuery.eq("tenant_slug", tenantSlug).eq("assignment_id", targetAssignmentId);
+    }
+
+    const { data: children, error: childrenErr } = await childrenQuery;
     if (childrenErr) throw new Error(childrenErr.message);
 
     const childIds = (children || []).map((r: any) => r.id).filter((v: any) => Number.isFinite(Number(v)));
     if (childIds.length > 0) {
-      const { error: delChildrenErr } = await supabase
-        .from(GLOBAL_CHAT_TABLE)
-        .delete()
-        .eq("tenant_slug", tenantSlug)
-        .in("id", childIds);
+      let delChildren = supabase.from(GLOBAL_CHAT_TABLE).delete().in("id", childIds);
+      if (dmKey) {
+        delChildren = delChildren.eq("dm_key", dmKey);
+      } else {
+        delChildren = delChildren.eq("tenant_slug", tenantSlug).eq("assignment_id", targetAssignmentId);
+      }
+      const { error: delChildrenErr } = await delChildren;
       if (delChildrenErr) throw new Error(delChildrenErr.message);
       cascadeDeleted = childIds.length;
     }
   }
 
-  const { error: delErr } = await supabase
-    .from(GLOBAL_CHAT_TABLE)
-    .delete()
-    .eq("tenant_slug", tenantSlug)
-    .eq("id", id);
+  let delQuery = supabase.from(GLOBAL_CHAT_TABLE).delete().eq("id", id);
+  if (dmKey) {
+    delQuery = delQuery.eq("dm_key", dmKey);
+  } else {
+    delQuery = delQuery.eq("tenant_slug", tenantSlug);
+    if (assignmentId != null) {
+      delQuery = delQuery.eq("assignment_id", assignmentId);
+    } else if (assignmentNullOnly) {
+      delQuery = delQuery.is("assignment_id", null);
+    }
+  }
 
+  const { error: delErr } = await delQuery;
   if (delErr) throw new Error(delErr.message);
 
   return { deleted: true, parentId, cascadeDeleted };

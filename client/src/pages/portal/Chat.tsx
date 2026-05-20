@@ -27,6 +27,7 @@ import {
   Circle,
 } from "lucide-react";
 import { PACKAGE_LABELS, type PackageTier } from "@shared/tiers";
+import { buildMentionLabels, renderMessageWithMentions } from "@/lib/chatMentions";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -132,6 +133,7 @@ type Conversation = {
   key: string;
   tenantSlug?: string;
   assignmentId?: number;
+  dmKey?: string;
   staffName?: string;
   title: string;
   subtitle: string;
@@ -145,6 +147,18 @@ type ConversationPreview = {
   createdAt?: string | null;
   unreadCount?: number;
 };
+
+type MentionCandidate = {
+  id: number;
+  displayName: string;
+  email?: string | null;
+  role?: string | null;
+  source: "accountant" | "internal" | "guest" | "client";
+  initials?: string;
+  assignmentId?: number | null;
+};
+
+const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 
 function roleLabel(raw?: string | null) {
   if (!raw) return "Accountant";
@@ -166,6 +180,7 @@ function MessageBubble({
   onJumpToMessage,
   highlighted,
   threadActive,
+  mentionLabels = [],
 }: {
   msg: Msg;
   isMine: boolean;
@@ -176,6 +191,7 @@ function MessageBubble({
   onJumpToMessage?: (id: number) => void;
   highlighted?: boolean;
   threadActive?: boolean;
+  mentionLabels?: string[];
 }) {
   return (
     <div className={`flex gap-3 group ${isMine ? "flex-row-reverse" : "flex-row"}`}>
@@ -227,7 +243,7 @@ function MessageBubble({
               </p>
               {msg.replyToMessagePreview && (
                 <p className={`${isMine ? "text-primary-foreground/75" : "text-muted-foreground"} truncate`}>
-                  {msg.replyToMessagePreview}
+                  {renderMessageWithMentions(msg.replyToMessagePreview, mentionLabels)}
                 </p>
               )}
             </button>
@@ -292,7 +308,9 @@ function MessageBubble({
             </div>
           )}
 
-          {msg.body && <p className="whitespace-pre-wrap break-words">{msg.body}</p>}
+          {msg.body && (
+            <div className="whitespace-pre-wrap break-words leading-relaxed">{renderMessageWithMentions(msg.body, mentionLabels)}</div>
+          )}
         </div>
 
         <div className={`flex items-center gap-2 ${isMine ? "flex-row-reverse" : ""}`}>
@@ -357,6 +375,8 @@ function ComposeBar({
   placeholder,
   replyTo,
   onCancelReply,
+  mentionCandidates = [],
+  mentionAssignmentId,
 }: {
   onSend: (body: string) => Promise<void> | void;
   onSendFiles: (
@@ -368,12 +388,19 @@ function ComposeBar({
   placeholder?: string;
   replyTo?: { senderName: string; preview: string } | null;
   onCancelReply?: () => void;
+  mentionCandidates?: MentionCandidate[];
+  mentionAssignmentId?: number | null;
 }) {
   const [body, setBody] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [progressIndex, setProgressIndex] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mentionListRef = useRef<HTMLDivElement>(null);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionStart, setMentionStart] = useState<number | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   const uploadedCount = attachments.filter((a) => a.status === "uploaded").length;
   const failedCount = attachments.filter((a) => a.status === "failed").length;
@@ -384,6 +411,33 @@ function ComposeBar({
       : uploadedCount > 0
         ? `${uploadedCount} uploaded`
         : null;
+
+  const filteredMentions = useMemo(() => {
+    const q = mentionQuery.trim().toLowerCase();
+    const base = mentionCandidates.filter((c) => {
+      if (mentionAssignmentId != null) {
+        return c.assignmentId == null || Number(c.assignmentId) === Number(mentionAssignmentId);
+      }
+      return true;
+    });
+    if (!q) return base.slice(0, 8);
+    return base
+      .filter((c) => c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false))
+      .slice(0, 8);
+  }, [mentionCandidates, mentionQuery, mentionAssignmentId]);
+
+  const applyMention = useCallback((candidate: MentionCandidate) => {
+    if (mentionStart == null) return;
+    const before = body.slice(0, mentionStart);
+    const after = body.slice(mentionStart + 1 + mentionQuery.length);
+    const insert = `@${candidate.displayName}`;
+    const next = `${before}${insert} ${after}`;
+    setBody(next);
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionStart(null);
+    setMentionIndex(0);
+  }, [body, mentionStart, mentionQuery]);
 
   const handleSend = useCallback(async () => {
     const trimmed = body.trim();
@@ -427,7 +481,52 @@ function ComposeBar({
     setBody("");
   }, [body, attachments, onSend, onSendFiles]);
 
+  const handleBodyChange = useCallback((next: string, caretPos: number) => {
+    setBody(next);
+
+    const left = next.slice(0, caretPos);
+    const at = left.lastIndexOf("@");
+    if (at >= 0) {
+      const between = left.slice(at + 1);
+      // open mention only for the current token after @ (no whitespace)
+      if (!/\s/.test(between)) {
+        setMentionStart(at);
+        setMentionQuery(between);
+        setMentionOpen(true);
+        setMentionIndex(0);
+        return;
+      }
+    }
+
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionStart(null);
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen && filteredMentions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % filteredMentions.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        applyMention(filteredMentions[mentionIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionOpen(false);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -521,14 +620,44 @@ function ComposeBar({
           onChange={handleFileChange}
         />
 
-        <Textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder ?? "Type a message…"}
-          className="flex-1 min-h-[40px] max-h-36 resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm placeholder:text-muted-foreground/60"
-          rows={1}
-        />
+        <div className="relative flex-1">
+          <Textarea
+            value={body}
+            onChange={(e) => handleBodyChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder ?? "Type a message…"}
+            className="flex-1 min-h-[40px] max-h-36 resize-none border-0 bg-transparent p-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm placeholder:text-muted-foreground/60"
+            rows={1}
+          />
+
+          {mentionOpen && (
+            <div
+              ref={mentionListRef}
+              className="absolute left-0 right-0 bottom-full mb-2 rounded-xl border border-border bg-card shadow-xl p-1 max-h-56 overflow-y-auto z-50"
+            >
+              {filteredMentions.length === 0 ? (
+                <div className="px-2.5 py-2 text-xs text-muted-foreground">No matching members</div>
+              ) : (
+                filteredMentions.map((c, idx) => (
+                  <button
+                    type="button"
+                    key={`${c.source}-${c.id}-${idx}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => applyMention(c)}
+                    className={`w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 ${idx===mentionIndex ? "bg-cyan-500/15 border border-cyan-400/30" : "hover:bg-muted/60"}`}
+                  >
+                    <div className="w-7 h-7 rounded-full bg-muted border border-border text-[11px] font-semibold flex items-center justify-center">{(c.initials || c.displayName.charAt(0) || "?").toUpperCase()}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-foreground truncate">{c.displayName}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{roleLabel(c.role)}{c.email ? ` • ${c.email}` : ""}</p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] capitalize">{c.source}</Badge>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
 
         <Button
           size="icon"
@@ -547,22 +676,28 @@ function ThreadPanel({
   parentMsg,
   tenantSlug,
   assignmentId,
+  dmKey,
   currentUserId,
   isAdmin,
   onClose,
+  mentionCandidates,
+  mentionLabels,
 }: {
   parentMsg: Msg;
   tenantSlug: string | undefined;
   assignmentId?: number;
+  dmKey?: string;
   currentUserId: number | undefined;
   isAdmin: boolean;
   onClose: () => void;
+  mentionCandidates: MentionCandidate[];
+  mentionLabels: string[];
 }) {
   const utils = trpc.useUtils();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { data: replies = [] } = trpc.chat.getThread.useQuery(
-    { tenantSlug, assignmentId, parentId: parentMsg.id },
+    { tenantSlug, assignmentId, dmKey, parentId: parentMsg.id },
     { refetchInterval: 3000, refetchIntervalInBackground: false },
   );
 
@@ -640,9 +775,10 @@ function ThreadPanel({
                 canDelete={canDelete}
                 onDelete={(id) => {
                   if (confirm("Delete this reply?")) {
-                    deleteMutation.mutate({ tenantSlug, assignmentId, id });
+                    deleteMutation.mutate({ tenantSlug, assignmentId, dmKey, id });
                   }
                 }}
+                mentionLabels={mentionLabels}
               />
             );
           })
@@ -655,7 +791,7 @@ function ThreadPanel({
           onSend={async (body) => {
             setSending(true);
             try {
-              await sendReplyMutation.mutateAsync({ tenantSlug, assignmentId, parentId: parentMsg.id, body });
+              await sendReplyMutation.mutateAsync({ tenantSlug, assignmentId, dmKey, parentId: parentMsg.id, body });
             } finally {
               setSending(false);
             }
@@ -672,6 +808,7 @@ function ThreadPanel({
                 await sendReplyFileMutation.mutateAsync({
                   tenantSlug,
                   assignmentId,
+                  dmKey,
                   parentId: parentMsg.id,
                   body: i === 0 ? (caption || undefined) : undefined,
                   fileBase64: base64,
@@ -695,6 +832,8 @@ function ThreadPanel({
           }}
           sending={sending}
           placeholder="Reply in thread…"
+          mentionCandidates={mentionCandidates}
+          mentionAssignmentId={assignmentId ?? null}
         />
       </div>
     </div>
@@ -716,24 +855,47 @@ export default function Chat() {
   });
   const { data: assignments = [] } = trpc.chat.assignments.useQuery(
     { tenantSlug: impersonatingTenantSlug ?? undefined },
-    { enabled: !!user && user.role === "client", staleTime: 30_000 },
+    { enabled: !!user && (user.role === "client" || isStaff), staleTime: 30_000 },
   );
 
+  const [conversationsOverride, setConversationsOverride] = useState<Conversation[]>([]);
+
+  const dmLaneStorageKey = useMemo(() => {
+    const tenantPart = impersonatingTenantSlug || "tenant";
+    const userPart = user?.id ?? "anon";
+    return `kynli-chat-dm-lanes:${userPart}:${tenantPart}`;
+  }, [user?.id, impersonatingTenantSlug]);
+
   useEffect(() => {
-    if (user?.role !== "client") return;
-    console.log("[ClientChatAssignments] raw", {
-      tenantSlug: impersonatingTenantSlug ?? null,
-      count: assignments.length,
-      assignments,
-    });
-  }, [assignments, impersonatingTenantSlug, user?.role]);
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(dmLaneStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Conversation[];
+      if (!Array.isArray(parsed)) return;
+      setConversationsOverride(parsed.filter((c) => c && typeof c.key === "string" && c.key.startsWith("dm:")));
+    } catch {
+      // ignore malformed cache
+    }
+  }, [dmLaneStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const onlyDm = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
+      window.localStorage.setItem(dmLaneStorageKey, JSON.stringify(onlyDm));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [conversationsOverride, dmLaneStorageKey]);
 
   const conversations = useMemo<Conversation[]>(() => {
     const rows: Conversation[] = [];
 
-    if (isStaff) {
+    if (isStaff || isAdmin) {
       rows.push({
         key: "internal",
+        tenantSlug: INTERNAL_CHAT_TENANT_SLUG,
         title: "Team Chat",
         subtitle: "Internal",
         groupLabel: "INTERNAL",
@@ -741,7 +903,20 @@ export default function Chat() {
     }
 
     if (user?.role === "client") {
-      const baseSlug = impersonatingTenantSlug || (tenants[0]?.slug as string | undefined);
+      const baseTenant = (tenants.find((t: any) => t.slug === impersonatingTenantSlug) as any) || (tenants[0] as any);
+      const baseSlug = (baseTenant?.slug as string | undefined) || impersonatingTenantSlug;
+      const baseTitle = ((baseTenant?.company_name as string | undefined) || baseSlug || "Workspace");
+
+      const groupLane: Conversation[] = baseSlug
+        ? [{
+            key: `tenant:${baseSlug}`,
+            tenantSlug: baseSlug,
+            title: `${baseTitle} Group Chat`,
+            subtitle: "Shared workspace conversation",
+            groupLabel: "GROUP",
+          }]
+        : [];
+
       const lanes = assignments.map((a: any, idx: number) => {
         const aid = Number(a.assignmentId);
         const sid = Number(a.staffId);
@@ -761,13 +936,74 @@ export default function Chat() {
         } as Conversation;
       });
 
-      console.log("[ClientChatAssignments] mapped lanes", {
-        count: lanes.length,
-        laneKeys: lanes.map((l) => l.key),
-        lanes,
-      });
+      const finalLanes = [...groupLane, ...lanes];
+      const map = new Map(finalLanes.map((r) => [r.key, r] as const));
+      const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
+      console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+      for (const ov of dmOverrides) {
+        if (!map.has(ov.key)) map.set(ov.key, ov);
+      }
+      const merged = Array.from(map.values());
+      console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
+      return merged;
+    }
 
-      return lanes;
+    // Staff/accountants: show per-tenant Group lane + per-assignment personal lane.
+    if (isStaff) {
+      const byTenant = new Map<string, any[]>();
+      for (const a of assignments as any[]) {
+        const slug = String(a.tenantSlug || "");
+        if (!slug) continue;
+        const list = byTenant.get(slug) ?? [];
+        list.push(a);
+        byTenant.set(slug, list);
+      }
+
+      const staffRows: Conversation[] = [...rows];
+      for (const t of tenants as any[]) {
+        const slug = String(t.slug || "");
+        if (!slug) continue;
+        const pkgLabel = (PACKAGE_LABELS[(t.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
+        const companyName = String(t.company_name || slug);
+
+        // tenant-wide shared lane (assignment_id = null)
+        staffRows.push({
+          key: `tenant:${slug}`,
+          tenantSlug: slug,
+          title: `${companyName} Group Chat`,
+          subtitle: "Shared workspace conversation",
+          groupLabel: pkgLabel,
+          packageTier: (t.package_tier as PackageTier) ?? null,
+        });
+
+        // personal assignment lanes under same section
+        const tenantAssignments = byTenant.get(slug) ?? [];
+        for (const a of tenantAssignments) {
+          const aid = Number(a.assignmentId);
+          if (!Number.isFinite(aid) || aid <= 0) continue;
+          const personName = String(a.clientDisplayName || a.name || a.email || companyName);
+          staffRows.push({
+            key: `lane:${aid}`,
+            tenantSlug: slug,
+            assignmentId: aid,
+            staffName: String(a.name || a.email || "Assigned Accountant"),
+            title: personName,
+            subtitle: `${companyName} • Personal client conversation`,
+            groupLabel: pkgLabel,
+            packageTier: (t.package_tier as PackageTier) ?? null,
+          });
+        }
+      }
+
+      const map = new Map(staffRows.map((r) => [r.key, r] as const));
+      const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
+      console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+      for (const ov of dmOverrides) {
+        if (!map.has(ov.key)) map.set(ov.key, ov);
+      }
+      const merged = Array.from(map.values());
+      console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
+      return merged;
     }
 
     const tenantConvos = tenants.map((t: any) => ({
@@ -779,8 +1015,17 @@ export default function Chat() {
       packageTier: (t.package_tier as PackageTier) ?? null,
     }));
 
-    return [...rows, ...tenantConvos];
-  }, [isStaff, tenants, user?.role, assignments, impersonatingTenantSlug]);
+    const base = [...rows, ...tenantConvos];
+    const map = new Map(base.map((r) => [r.key, r] as const));
+    const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
+    console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+    for (const ov of dmOverrides) {
+      if (!map.has(ov.key)) map.set(ov.key, ov);
+    }
+    const merged = Array.from(map.values());
+    console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
+    return merged;
+  }, [isStaff, tenants, user?.role, assignments, impersonatingTenantSlug, conversationsOverride]);
 
   const laneStorageKey = useMemo(() => {
     const tenantPart = impersonatingTenantSlug || "tenant";
@@ -789,7 +1034,7 @@ export default function Chat() {
   }, [user?.id, impersonatingTenantSlug]);
 
   const [selectedConversationKey, setSelectedConversationKey] = useState<string>(
-    impersonatingTenantSlug ? `tenant:${impersonatingTenantSlug}` : (isStaff ? "internal" : ""),
+    impersonatingTenantSlug ? `tenant:${impersonatingTenantSlug}` : ((isStaff || isAdmin) ? "internal" : ""),
   );
 
   useEffect(() => {
@@ -806,8 +1051,9 @@ export default function Chat() {
 
       const defaultKey = impersonatingTenantSlug
         ? `tenant:${impersonatingTenantSlug}`
-        : (isStaff ? "internal" : conversations[0].key);
+        : ((isStaff || isAdmin) ? "internal" : conversations[0].key);
       setSelectedConversationKey(defaultKey);
+      console.log("[DM_SELECTED_KEY_AFTER_REFETCH]", { selectedConversationKey: defaultKey, reason: "initial-default" });
       return;
     }
 
@@ -817,8 +1063,9 @@ export default function Chat() {
         ? (savedKey as string)
         : conversations[0].key;
       setSelectedConversationKey(fallback);
+      console.log("[DM_SELECTED_KEY_AFTER_REFETCH]", { selectedConversationKey: fallback, reason: "fallback-after-rebuild" });
     }
-  }, [conversations, selectedConversationKey, impersonatingTenantSlug, isStaff, laneStorageKey]);
+  }, [conversations, selectedConversationKey, impersonatingTenantSlug, isStaff, isAdmin, laneStorageKey]);
 
   useEffect(() => {
     if (!selectedConversationKey) return;
@@ -833,20 +1080,46 @@ export default function Chat() {
 
   const activeTenantSlug = activeConversation?.tenantSlug;
   const activeAssignmentId = activeConversation?.assignmentId;
+  const activeDmKey = activeConversation?.dmKey;
+  console.log("[DM_ACTIVE_KEY]", {
+    selectedConversationKey,
+    activeDmKey: activeDmKey ?? null,
+    tenantSlug: activeTenantSlug ?? null,
+    assignmentId: activeAssignmentId ?? null,
+  });
 
-  useEffect(() => {
-    console.log("[ChatConversationSelect]", {
-      selectedConversationKey,
-      activeTenantSlug: activeConversation?.tenantSlug ?? null,
-      isStaff,
-    });
-  }, [selectedConversationKey, activeConversation?.tenantSlug, isStaff]);
+  const [sending, setSending] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [cmdTab, setCmdTab] = useState<"all"|"people"|"messages"|"files">("all");
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
+  const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
-  useEffect(() => {
-    console.log("[ChatScopeState] impersonation", {
-      impersonatingTenantSlug,
-    });
-  }, [impersonatingTenantSlug]);
+  const { data: mentionCandidates = [] } = trpc.chat.mentionCandidates.useQuery(
+    { tenantSlug: activeTenantSlug, assignmentId: activeAssignmentId, q: undefined },
+    { enabled: !!activeConversation && !!activeTenantSlug, staleTime: 20_000 },
+  );
+  const mentionLabels = useMemo(
+    () => buildMentionLabels(mentionCandidates as MentionCandidate[]),
+    [mentionCandidates],
+  );
+
+  const unifiedSearchEnabled = isAdmin || isStaff;
+  const peopleSearchQuery = useMemo(() => {
+    if (!unifiedSearchEnabled) return "";
+    const raw = searchQuery.trim();
+    if (!raw.startsWith("@")) return "";
+    return raw.slice(1).trim();
+  }, [unifiedSearchEnabled, searchQuery]);
+
+  const { data: peopleSearchResults = [] } = trpc.chat.peopleSearch.useQuery(
+    { tenantSlug: activeTenantSlug, q: peopleSearchQuery || undefined },
+    { enabled: unifiedSearchEnabled && !!activeTenantSlug && cmdOpen && (cmdTab === "all" || cmdTab === "people"), staleTime: 15_000 },
+  );
 
   // Conversation previews (last message, timestamp, unread placeholder)
   const [previews, setPreviews] = useState<Record<string, ConversationPreview>>({});
@@ -858,7 +1131,7 @@ export default function Chat() {
       const entries = await Promise.all(
         conversations.map(async (c) => {
           try {
-            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, limit: 1 });
+            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, dmKey: c.dmKey, limit: 1 });
             const raw = rows?.[0];
             if (!raw) return [c.key, {}] as const;
             const m = normalizeMsg(raw as any);
@@ -890,14 +1163,6 @@ export default function Chat() {
     };
   }, [conversations, utils.chat.list]);
 
-  const [sending, setSending] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
-  const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
-  const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
-
   useEffect(() => {
     // reset stickiness and transient compose/thread state when switching conversations
     shouldStickToBottomRef.current = true;
@@ -906,16 +1171,41 @@ export default function Chat() {
   }, [activeConversation?.key]);
 
   useEffect(() => {
+    if (unifiedSearchEnabled && searchQuery.trim().startsWith("@")) {
+      setDebouncedSearch("");
+      return;
+    }
     const t = setTimeout(() => setDebouncedSearch(searchQuery), 250);
     return () => clearTimeout(t);
-  }, [searchQuery]);
+  }, [searchQuery, unifiedSearchEnabled]);
+
+  useEffect(() => {
+    if (!cmdOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-chat-search-root="1"]')) return;
+      setCmdOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [cmdOpen]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
 
+  const listPayload = {
+    tenantSlug: activeTenantSlug,
+    assignmentId: activeAssignmentId,
+    dmKey: activeDmKey,
+    limit: 200,
+    search: debouncedSearch || undefined,
+  };
+  console.log("[DM_CHAT_LIST_PAYLOAD]", listPayload);
+
   const { data: rawMessages = [] } = trpc.chat.list.useQuery(
-    { tenantSlug: activeTenantSlug, assignmentId: activeAssignmentId, limit: 200, search: debouncedSearch || undefined },
+    listPayload,
     {
       enabled: !!activeConversation,
       refetchInterval: debouncedSearch ? false : 3000,
@@ -981,6 +1271,8 @@ export default function Chat() {
     onError: (err) => toast.error(err.message),
   });
 
+  const resolveDmMutation = trpc.chat.resolveDm.useMutation();
+
   const fileToBase64 = useCallback(async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
@@ -995,6 +1287,7 @@ export default function Chat() {
       await sendMutation.mutateAsync({
         tenantSlug: activeTenantSlug,
         assignmentId: activeAssignmentId,
+        dmKey: activeDmKey,
         body,
         replyToMessageId: replyTarget?.id,
         replyToSenderName: replyTarget?.senderName,
@@ -1006,7 +1299,7 @@ export default function Chat() {
     } finally {
       setSending(false);
     }
-  }, [activeTenantSlug, sendMutation, replyTarget]);
+  }, [activeTenantSlug, activeAssignmentId, activeDmKey, sendMutation, replyTarget]);
 
   const handleSendFiles = useCallback(async (
     files: File[],
@@ -1045,7 +1338,8 @@ export default function Chat() {
           const base64 = await fileToBase64(file);
           await sendFileMutation.mutateAsync({
             tenantSlug: activeTenantSlug,
-        assignmentId: activeAssignmentId,
+            assignmentId: activeAssignmentId,
+            dmKey: activeDmKey,
             body: i === 0 ? caption : undefined,
             fileBase64: base64,
             fileName: file.name,
@@ -1080,7 +1374,7 @@ export default function Chat() {
     } finally {
       setSending(false);
     }
-  }, [activeTenantSlug, sendFileMutation, fileToBase64, user, utils.chat.list]);
+  }, [activeTenantSlug, activeAssignmentId, activeDmKey, sendFileMutation, fileToBase64, user, utils.chat.list, replyTarget]);
 
   type DayGroup = { key: string; label: string; msgs: Msg[] };
   const dayGroups = useMemo<DayGroup[]>(() => {
@@ -1104,15 +1398,57 @@ export default function Chat() {
       list.push(c);
       byGroup.set(c.groupLabel, list);
     }
-    return Array.from(byGroup.entries());
+    const result = Array.from(byGroup.entries());
+    console.log("[DM_LANE_RENDERED]", {
+      sections: result.map(([group, items]) => ({
+        group,
+        keys: items.map((i) => i.key),
+      })),
+      hasDirectMessages: result.some(([g]) => g === "DIRECT MESSAGES"),
+    });
+    return result;
   }, [conversations]);
 
-  const clientHeaderSubtitle = activeConversation?.tenantSlug
-    ? "Bookkeeping Client"
-    : "Internal Team Thread";
+
+  const isDmConversation = !!activeDmKey || !!selectedConversationKey?.startsWith("dm:");
+  const isGroupConversation = !!activeConversation?.tenantSlug && activeAssignmentId == null && !isDmConversation;
+
+  const groupMembers = useMemo(() => {
+    if (!isGroupConversation) return [] as MentionCandidate[];
+    const seen = new Set<string>();
+    const list: MentionCandidate[] = [];
+    for (const c of (mentionCandidates as MentionCandidate[])) {
+      const key = `${c.source}:${c.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push(c);
+    }
+    return list.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [isGroupConversation, mentionCandidates]);
+
+  const groupMembersSummary = useMemo(() => {
+    if (!groupMembers.length) return "No members yet";
+    const names = groupMembers.map((m) => m.displayName).filter(Boolean);
+    const shown = names.slice(0, 4);
+    const remaining = Math.max(0, names.length - shown.length);
+    return `${names.length} member${names.length === 1 ? "" : "s"} • ${shown.join(", ")}${remaining > 0 ? `, +${remaining} more` : ""}`;
+  }, [groupMembers]);
+
+  const dmHandle = useMemo(() => {
+    const base = (activeConversation?.title || "").trim();
+    if (!base) return "";
+    return `@${base.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "")}`;
+  }, [activeConversation?.title]);
+
+  const clientHeaderSubtitle = isDmConversation
+    ? `Direct Message${dmHandle ? ` • ${dmHandle}` : ""}`
+    : activeConversation?.tenantSlug
+      ? (isGroupConversation ? groupMembersSummary : "Bookkeeping Client")
+      : "Internal Team Thread";
 
   const isOperationalInbox = isAdmin || isStaff;
   const hasConversationSidebar = isOperationalInbox || user?.role === "client";
+
 
   const mainConversationPanel = (
     <div className="min-w-0 min-h-0 h-full flex">
@@ -1125,10 +1461,28 @@ export default function Chat() {
             <div className="min-w-0">
               <h2 className="text-base font-semibold text-foreground truncate">{activeConversation?.title ?? "Conversation"}</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {isOperationalInbox ? `${clientHeaderSubtitle} · Last active 11m ago` : "Direct communication with your KynLi team"}
+                {isOperationalInbox ? `${clientHeaderSubtitle} · Last active 11m ago` : clientHeaderSubtitle}
               </p>
             </div>
-            {isOperationalInbox && (
+            {isGroupConversation && groupMembers.length > 0 && (
+              <div className="ml-auto flex items-center gap-2">
+                <div className="flex -space-x-2">
+                  {groupMembers.slice(0, 5).map((m) => (
+                    <div
+                      key={`gm-${m.source}-${m.id}`}
+                      title={`${m.displayName}${m.role ? ` • ${roleLabel(m.role)}` : ""}`}
+                      className="w-7 h-7 rounded-full border border-background bg-muted text-[10px] font-semibold text-foreground flex items-center justify-center"
+                    >
+                      {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
+                    </div>
+                  ))}
+                </div>
+                {groupMembers.length > 5 && (
+                  <span className="text-[11px] text-muted-foreground">+{groupMembers.length - 5}</span>
+                )}
+              </div>
+            )}
+            {!isGroupConversation && !isDmConversation && isOperationalInbox && (
               <div className="ml-auto text-right">
                 <p className="text-[11px] text-muted-foreground">Unread uploads</p>
                 <p className="text-sm font-semibold text-foreground">0</p>
@@ -1144,7 +1498,11 @@ export default function Chat() {
                 <MessageSquare className="w-7 h-7 text-muted-foreground opacity-50" />
               </div>
               <p className="text-sm font-medium text-foreground">No messages yet</p>
-              <p className="text-xs text-muted-foreground mt-1">Start the conversation{isOperationalInbox ? " in this client workspace." : "."}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {isDmConversation
+                  ? `This is the beginning of your direct conversation${activeConversation?.title ? ` with ${activeConversation.title}` : ""}.`
+                  : `Start the conversation${isOperationalInbox ? " in this client workspace." : "."}`}
+              </p>
             </div>
           ) : (
             <div className="space-y-1">
@@ -1166,10 +1524,11 @@ export default function Chat() {
                           onJumpToMessage={handleJumpToMessage}
                           highlighted={highlightedMessageId === msg.id}
                           threadActive={threadMsg?.id === msg.id}
+                          mentionLabels={mentionLabels}
                           onDelete={(id) => {
                             if (confirm("Delete this message?")) {
                               deleteMutation.mutate({ tenantSlug: activeTenantSlug,
-        assignmentId: activeAssignmentId, id });
+        assignmentId: activeAssignmentId, dmKey: activeDmKey, id });
                             }
                           }}
                         />
@@ -1189,8 +1548,10 @@ export default function Chat() {
               onSend={handleSend}
               onSendFiles={handleSendFiles}
               sending={sending}
-              replyTo={null}
+              replyTo={replyTarget ? { senderName: replyTarget.senderName, preview: replyTarget.body?.slice(0, 160) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment") } : null}
               onCancelReply={() => setReplyTarget(null)}
+              mentionCandidates={mentionCandidates as MentionCandidate[]}
+              mentionAssignmentId={activeAssignmentId ?? null}
             />
             <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
               Files shared here are automatically saved to the Portal vault · Max {MAX_FILE_MB} MB
@@ -1205,9 +1566,12 @@ export default function Chat() {
             parentMsg={threadMsg}
             tenantSlug={activeTenantSlug}
             assignmentId={activeAssignmentId}
+            dmKey={activeDmKey}
             currentUserId={currentUserId}
             isAdmin={isAdmin}
             onClose={() => setThreadMsg(null)}
+            mentionCandidates={mentionCandidates as MentionCandidate[]}
+            mentionLabels={mentionLabels}
           />
         </div>
       )}
@@ -1225,15 +1589,140 @@ export default function Chat() {
         </p>
       </div>
 
-      <div className="px-3 py-3 border-b border-border/70">
+      <div className="px-3 py-3 border-b border-border/70" data-chat-search-root="1">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search messages…"
+            onChange={(e) => {
+              const next = e.target.value;
+              setSearchQuery(next);
+              if (unifiedSearchEnabled && next.trim().startsWith("@")) {
+                setCmdOpen(true);
+                setCmdTab("people");
+              } else if (unifiedSearchEnabled) {
+                setCmdOpen(next.trim().length > 0);
+                setCmdTab("all");
+              }
+              setCmdIndex(0);
+            }}
+            onFocus={() => {
+              if (!unifiedSearchEnabled) return;
+              const raw = searchQuery.trim();
+              if (raw.length > 0) setCmdOpen(true);
+            }}
+            onKeyDown={async (e) => {
+              if (!unifiedSearchEnabled || !cmdOpen) return;
+              const list = (cmdTab === "people" || cmdTab === "all") ? (peopleSearchResults as any[]) : [];
+              if (!list.length) {
+                if (e.key === "Escape") setCmdOpen(false);
+                return;
+              }
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setCmdIndex((i) => (i + 1) % list.length);
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setCmdIndex((i) => (i - 1 + list.length) % list.length);
+              } else if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                const picked = list[cmdIndex] as any;
+                if (!picked) return;
+                console.log("[DM_SELECT_CLICKED]", picked);
+                try {
+                  const peerUserId = Number(picked.id);
+                  console.log("[DM_RESOLVE_START]", { peerUserId, tenantSlug: activeTenantSlug });
+                  const resolved = await resolveDmMutation.mutateAsync({ tenantSlug: activeTenantSlug, peerUserId });
+                  const dmKey = String((resolved as any).dmKey);
+                  const laneKey = `dm:${dmKey}`;
+                  const displayName = String(picked.displayName || picked.email || `User ${picked.id}`);
+                  console.log("[DM_RESOLVE_SUCCESS]", { dmKey, laneKey, displayName });
+                  setConversationsOverride((prev) => {
+                    const has = prev.some((c) => c.key === laneKey);
+                    if (has) return prev;
+                    const lane = { key: laneKey, title: displayName, subtitle: "Direct message", tenantSlug: activeTenantSlug, dmKey, groupLabel: "DIRECT MESSAGES" } as Conversation;
+                    console.log("[DM_LANE_ADDED]", lane);
+                    return [...prev, lane];
+                  });
+                  setSelectedConversationKey(laneKey);
+                  console.log("[DM_SELECTED_KEY]", laneKey);
+                } catch (e: any) {
+                  toast.error(e?.message || "Unable to open DM");
+                }
+                setSearchQuery("");
+                setCmdOpen(false);
+              } else if (e.key === "Escape") {
+                setCmdOpen(false);
+              }
+            }}
+            placeholder={unifiedSearchEnabled ? "Search messages or @people..." : "Search messages..."}
             className="pl-8 h-8 text-xs bg-zinc-900/70 border-zinc-800"
           />
+          {unifiedSearchEnabled && cmdOpen && (
+            <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-cyan-400/20 bg-zinc-900/80 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+              <div className="px-2 pt-2 pb-1 flex items-center gap-1">
+                {(["all","people","messages","files"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => { setCmdTab(tab); setCmdIndex(0); }}
+                    className={"text-[10px] uppercase tracking-wide rounded-md px-2 py-1 transition " + (cmdTab===tab ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/20" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/70")}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              <div className="max-h-64 overflow-y-auto p-1">
+                {(cmdTab === "all" || cmdTab === "people") && (peopleSearchResults as any[]).slice(0,12).map((u: any, idx: number) => {
+                  const active = idx === cmdIndex;
+                  return (
+                    <button
+                      key={`user:${u.id}:${u.assignmentId ?? 'group'}`}
+                      onClick={async () => {
+                        console.log("[DM_SELECT_CLICKED]", u);
+                        try {
+                          const peerUserId = Number(u.id);
+                          console.log("[DM_RESOLVE_START]", { peerUserId, tenantSlug: activeTenantSlug });
+                          const resolved = await resolveDmMutation.mutateAsync({ tenantSlug: activeTenantSlug, peerUserId });
+                          const dmKey = String((resolved as any).dmKey);
+                          const laneKey = `dm:${dmKey}`;
+                          const displayName = String(u.displayName || u.email || `User ${u.id}`);
+                          console.log("[DM_RESOLVE_SUCCESS]", { dmKey, laneKey, displayName });
+                          setConversationsOverride((prev) => {
+                            const has = prev.some((c) => c.key === laneKey);
+                            if (has) return prev;
+                            const lane = { key: laneKey, title: displayName, subtitle: "Direct message", tenantSlug: activeTenantSlug, dmKey, groupLabel: "DIRECT MESSAGES" } as Conversation;
+                            console.log("[DM_LANE_ADDED]", lane);
+                            return [...prev, lane];
+                          });
+                          setSelectedConversationKey(laneKey);
+                          console.log("[DM_SELECTED_KEY]", laneKey);
+                        } catch (e: any) {
+                          toast.error(e?.message || "Unable to open DM");
+                        }
+                        setSearchQuery("");
+                        setCmdOpen(false);
+                      }}
+                      className={"w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 transition " + (active ? "bg-cyan-500/15 border border-cyan-400/25" : "hover:bg-zinc-800/80 border border-transparent")}
+                    >
+                      <div className="w-7 h-7 rounded-full bg-zinc-800 text-zinc-200 text-xs font-semibold flex items-center justify-center">{(u.initials || u.displayName?.charAt(0) || "?").toUpperCase()}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs text-zinc-100 truncate">{u.displayName}</div>
+                        <div className="text-[11px] text-zinc-400 truncate">@{String((u.displayName||"").toLowerCase().replace(/\s+/g,'.'))}</div>
+                      </div>
+                      <span className="w-2 h-2 rounded-full bg-emerald-400/70" />
+                    </button>
+                  );
+                })}
+                {(cmdTab === "all" || cmdTab === "people") && (peopleSearchResults as any[]).length === 0 && (
+                  <div className="px-3 py-3 text-xs text-zinc-400">No people found</div>
+                )}
+              </div>
+              <button className="w-full px-3 py-2 border-t border-zinc-800 text-left hover:bg-zinc-800/60 transition">
+                <div className="text-xs text-cyan-200">+ Start a new DM</div>
+                <div className="text-[11px] text-zinc-400">Message someone new</div>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

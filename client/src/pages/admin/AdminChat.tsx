@@ -14,12 +14,24 @@ import {
   AlertTriangle,
   Clock3,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "../../lib/trpc";
 import { useAuth } from "../../_core/hooks/useAuth";
+import { buildMentionLabels, renderMessageWithMentions } from "@/lib/chatMentions";
+import { PACKAGE_LABELS, type PackageTier } from "@shared/tiers";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+type MentionCandidate = {
+  id: number;
+  displayName: string;
+  email?: string | null;
+  role?: string | null;
+  source: "accountant" | "internal" | "guest" | "client";
+  initials?: string;
+  assignmentId?: number | null;
+};
 
 type Msg = {
   id: number;
@@ -85,6 +97,14 @@ function formatTime(d: Date) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function roleLabel(raw?: string | null) {
+  if (!raw) return "Member";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+
 function formatDateLabel(d: Date): string {
   const today = new Date();
   const yesterday = new Date(today);
@@ -120,8 +140,12 @@ type PendingAttachment = {
 
 export default function AdminChat() {
   const { user } = useAuth();
+  const utils = trpc.useUtils();
   const [location, navigate] = useLocation();
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [selectedConversationKey, setSelectedConversationKey] = useState<string | null>(null);
+  const [activeDmKey, setActiveDmKey] = useState<string | null>(null);
+  const [dmLanes, setDmLanes] = useState<Array<{ key: string; dmKey: string; title: string; tenantSlug: string; subtitle: string; groupLabel: string }>>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -129,12 +153,22 @@ export default function AdminChat() {
   const [threadMsg, setThreadMsg] = useState<Msg | null>(null);
   const [threadReplies, setThreadReplies] = useState<Msg[]>([]);
   const [threadReplyText, setThreadReplyText] = useState("");
+  const [threadMentionOpen, setThreadMentionOpen] = useState(false);
+  const [threadMentionQuery, setThreadMentionQuery] = useState("");
+  const [threadMentionStart, setThreadMentionStart] = useState<number | null>(null);
+  const [threadMentionIndex, setThreadMentionIndex] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sendingCompose, setSendingCompose] = useState(false);
   const [attachProgressIndex, setAttachProgressIndex] = useState(0);
   const [attachProgressTotal, setAttachProgressTotal] = useState(0);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionStart, setMentionStart] = useState<number | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [dmCmdOpen, setDmCmdOpen] = useState(false);
+  const [dmCmdIndex, setDmCmdIndex] = useState(0);
   const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
@@ -153,6 +187,84 @@ export default function AdminChat() {
     return value && value.trim().length > 0 ? value.trim() : null;
   }, []);
 
+  const dmLaneStorageKey = useMemo(() => {
+    const userPart = user?.id ?? "anon";
+    return `kynli-admin-chat-dm-lanes:${userPart}`;
+  }, [user?.id]);
+
+  const laneStorageKey = useMemo(() => {
+    const userPart = user?.id ?? "anon";
+    const tenantPart = selectedSlug ?? "all";
+    return `kynli-admin-chat-selected-lane:${userPart}:${tenantPart}`;
+  }, [user?.id, selectedSlug]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(dmLaneStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Array<{ key: string; dmKey: string; title: string; tenantSlug: string; subtitle: string; groupLabel?: string }>;
+      if (!Array.isArray(parsed)) return;
+      setDmLanes(parsed
+        .filter((d) => d && typeof d.key === "string" && d.key.startsWith("dm:"))
+        .map((d) => ({ ...d, groupLabel: d.groupLabel ?? "DIRECT MESSAGES" })));
+    } catch {
+      // ignore malformed cache
+    }
+  }, [dmLaneStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(dmLaneStorageKey, JSON.stringify(dmLanes));
+    } catch {
+      // ignore
+    }
+  }, [dmLanes, dmLaneStorageKey]);
+
+  useEffect(() => {
+    if (!selectedConversationKey) return;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(laneStorageKey, selectedConversationKey);
+  }, [selectedConversationKey, laneStorageKey]);
+
+  const [previews, setPreviews] = useState<Record<string, { body?: string | null; fileName?: string | null; createdAt?: string }>>({});
+  const laneScopeKey = useMemo(() => `${selectedSlug ?? ""}::${activeDmKey ?? "__team__"}::${searchActive ? "search" : "list"}`,
+    [selectedSlug, activeDmKey, searchActive]);
+  const lastLaneScopeRef = useRef<string>(laneScopeKey);
+  const getActiveLaneKey = useCallback(() => {
+    if (selectedConversationKey) return selectedConversationKey;
+    if (activeDmKey) return `dm:${activeDmKey}`;
+    if (selectedSlug) return `tenant:${selectedSlug}`;
+    return null;
+  }, [selectedConversationKey, activeDmKey, selectedSlug]);
+  const updateActiveLanePreview = useCallback((msg: Msg) => {
+    const laneKey = getActiveLaneKey();
+    if (!laneKey) return;
+    setPreviews((prev) => ({
+      ...prev,
+      [laneKey]: {
+        body: msg.message,
+        fileName: msg.fileName ?? null,
+        createdAt: msg.createdAt.toISOString(),
+      },
+    }));
+  }, [getActiveLaneKey]);
+
+  useEffect(() => {
+    if (!selectedConversationKey) return;
+
+    if (selectedConversationKey.startsWith("dm:")) {
+      const dmFromLane = dmLanes.find((d) => d.key === selectedConversationKey)?.dmKey ?? null;
+      const dmFromKey = selectedConversationKey.slice(3) || null;
+      const nextDmKey = dmFromLane ?? dmFromKey;
+      if (activeDmKey !== nextDmKey) setActiveDmKey(nextDmKey);
+      return;
+    }
+
+    if (activeDmKey !== null) setActiveDmKey(null);
+  }, [selectedConversationKey, dmLanes, activeDmKey]);
+
   const setClientInUrl = useCallback((clientSlug: string) => {
     const [pathname] = location.split("?");
     const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
@@ -165,37 +277,62 @@ export default function AdminChat() {
   // Chat procedures
   const [beforeId, setBeforeId] = useState<number | undefined>(undefined);
 
+  const isPeopleSearch = searchActive && searchQuery.trim().startsWith("@");
   const listQuery = trpc.chat.list.useQuery(
-    { tenantSlug: selectedSlug ?? "", limit: 200 },
+    { tenantSlug: selectedSlug ?? "", dmKey: activeDmKey ?? undefined, limit: 200 },
     { enabled: !!selectedSlug && !searchActive }
   );
+  const previewQuery = trpc.chat.list.useQuery(
+    { tenantSlug: selectedSlug ?? "", dmKey: activeDmKey ?? undefined, limit: 1 },
+    { enabled: !!selectedSlug && !searchActive, refetchInterval: 4000 }
+  );
   const searchQueryResult = trpc.chat.list.useQuery(
-    { tenantSlug: selectedSlug ?? "", search: searchQuery, limit: 100 },
-    { enabled: !!selectedSlug && searchActive && searchQuery.length > 1 }
+    { tenantSlug: selectedSlug ?? "", dmKey: activeDmKey ?? undefined, search: searchQuery, limit: 100 },
+    { enabled: !!selectedSlug && searchActive && !isPeopleSearch && searchQuery.length > 1 }
   );
   const sendMsg = trpc.chat.send.useMutation();
   const sendFile = trpc.chat.sendFile.useMutation();
   const sendReply = trpc.chat.sendReply.useMutation();
+  const resolveDmMutation = trpc.chat.resolveDm.useMutation();
+  const peopleSearchQuery = useMemo(() => {
+    const raw = searchQuery.trim();
+    if (!raw.startsWith("@")) return "";
+    return raw.slice(1).trim();
+  }, [searchQuery]);
+  const { data: peopleSearchResults = [] } = trpc.chat.peopleSearch.useQuery(
+    { tenantSlug: selectedSlug ?? "", q: peopleSearchQuery || undefined },
+    { enabled: !!selectedSlug && searchActive && searchQuery.trim().startsWith("@"), staleTime: 15_000 },
+  );
+  const { data: mentionCandidates = [] } = trpc.chat.mentionCandidates.useQuery(
+    { tenantSlug: selectedSlug ?? "", q: undefined },
+    { enabled: !!selectedSlug, staleTime: 20_000 },
+  );
+  const mentionLabels = useMemo(
+    () => buildMentionLabels(mentionCandidates as MentionCandidate[]),
+    [mentionCandidates],
+  );
   const getThread = trpc.chat.getThread.useQuery(
-    { tenantSlug: selectedSlug ?? "", parentId: threadMsg?.id ?? 0 },
+    { tenantSlug: selectedSlug ?? "", dmKey: activeDmKey ?? undefined, parentId: threadMsg?.id ?? 0 },
     { enabled: !!selectedSlug && !!threadMsg, refetchInterval: 3000 }
   );
+
+  // Reset message pane immediately when lane scope changes to avoid cross-lane leakage
+  useEffect(() => {
+    if (lastLaneScopeRef.current === laneScopeKey) return;
+    lastLaneScopeRef.current = laneScopeKey;
+    setMessages([]);
+    setHasMore(true);
+    setBeforeId(undefined);
+  }, [laneScopeKey]);
 
   // Sync messages from query
   useEffect(() => {
     const raw = searchActive ? searchQueryResult.data : listQuery.data;
     if (raw !== undefined) {
       const normalized = (raw as Record<string, unknown>[]).map(normalizeMsg);
-      if (normalized.length > 0) {
-        console.info("[AdminChat] normalized message sample", normalized.slice(0, 3));
-      }
-      console.log("[AdminChat] messages loaded", {
-        selectedClientId: selectedSlug,
-        count: normalized.length,
-      });
       setMessages(normalized);
     }
-  }, [listQuery.data, searchQueryResult.data, searchActive, selectedSlug]);
+  }, [listQuery.data, searchQueryResult.data, searchActive, laneScopeKey]);
 
   // Sync thread replies
   useEffect(() => {
@@ -250,17 +387,34 @@ export default function AdminChat() {
 
   // Reset only ancillary state when switching clients (keep messages until new payload arrives)
   useEffect(() => {
-    console.log("[AdminChat] selected client changed", {
-      selectedClientId: selectedSlug,
-    });
     setSearchQuery("");
     setSearchActive(false);
+    setDmCmdOpen(false);
     setThreadMsg(null);
     setReplyTarget(null);
     setHighlightedMessageId(null);
     setHasMore(true);
     setBeforeId(undefined);
   }, [selectedSlug]);
+
+  const filteredMentions = useMemo(() => {
+    const q = mentionQuery.trim().toLowerCase();
+    const base = mentionCandidates as MentionCandidate[];
+    if (!q) return base.slice(0, 8);
+    return base.filter((c) => c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false)).slice(0, 8);
+  }, [mentionCandidates, mentionQuery]);
+
+  const applyMention = useCallback((candidate: MentionCandidate) => {
+    if (mentionStart == null) return;
+    const before = text.slice(0, mentionStart);
+    const after = text.slice(mentionStart + 1 + mentionQuery.length);
+    const next = `${before}@${candidate.displayName} ${after}`;
+    setText(next);
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionStart(null);
+    setMentionIndex(0);
+  }, [text, mentionStart, mentionQuery]);
 
   const fileToBase64 = useCallback(async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
@@ -294,9 +448,28 @@ export default function AdminChat() {
     if (retryable.length === 0 && body) {
       setSendingCompose(true);
       setText("");
+
+      const optimisticId = -Date.now();
+      const optimisticMsg: Msg = {
+        id: optimisticId,
+        sender: user?.name ?? user?.email ?? "You",
+        message: body,
+        role: user?.role === "admin" ? "admin" : "client",
+        createdAt: new Date(),
+        replyToMessageId: replyTarget?.id ?? null,
+        replyToSenderName: replyTarget?.sender ?? null,
+        replyToMessagePreview: replyTarget
+          ? (replyTarget.message?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment"))
+          : null,
+      };
+
+      setMessages((prev) => [...prev, optimisticMsg]);
+      updateActiveLanePreview(optimisticMsg);
+
       try {
-        await sendMsg.mutateAsync({
+        const saved = await sendMsg.mutateAsync({
           tenantSlug: selectedSlug,
+          dmKey: activeDmKey ?? undefined,
           body,
           replyToMessageId: replyTarget?.id,
           replyToSenderName: replyTarget?.sender,
@@ -304,11 +477,15 @@ export default function AdminChat() {
             ? (replyTarget.message?.slice(0, 140) || (replyTarget.fileName ? `📎 ${replyTarget.fileName}` : "Attachment"))
             : undefined,
         });
+        const normalizedSaved = normalizeMsg(saved as unknown as Record<string, unknown>);
+        setMessages((prev) => prev.map((m) => (m.id === optimisticId ? normalizedSaved : m)));
+        updateActiveLanePreview(normalizedSaved);
         setReplyTarget(null);
         listQuery.refetch();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to send";
         toast.error(msg);
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         setText(body);
       } finally {
         setSendingCompose(false);
@@ -343,6 +520,7 @@ export default function AdminChat() {
           const base64 = await fileToBase64(target.file);
           await sendFile.mutateAsync({
             tenantSlug: selectedSlug,
+            dmKey: activeDmKey ?? undefined,
             body: i === 0 ? (body || undefined) : undefined,
             fileBase64: base64,
             fileName: target.file.name,
@@ -396,7 +574,26 @@ export default function AdminChat() {
       setAttachProgressIndex(0);
       setAttachProgressTotal(0);
     }
-  }, [selectedSlug, text, attachments, sendMsg, sendFile, listQuery, fileToBase64]);
+  }, [selectedSlug, activeDmKey, text, attachments, sendMsg, sendFile, listQuery, fileToBase64, replyTarget, user, updateActiveLanePreview]);
+
+  const threadFilteredMentions = useMemo(() => {
+    const q = threadMentionQuery.trim().toLowerCase();
+    const base = mentionCandidates as MentionCandidate[];
+    if (!q) return base.slice(0, 8);
+    return base.filter((c) => c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false)).slice(0, 8);
+  }, [mentionCandidates, threadMentionQuery]);
+
+  const applyThreadMention = useCallback((candidate: MentionCandidate) => {
+    if (threadMentionStart == null) return;
+    const before = threadReplyText.slice(0, threadMentionStart);
+    const after = threadReplyText.slice(threadMentionStart + 1 + threadMentionQuery.length);
+    const next = `${before}@${candidate.displayName} ${after}`;
+    setThreadReplyText(next);
+    setThreadMentionOpen(false);
+    setThreadMentionQuery("");
+    setThreadMentionStart(null);
+    setThreadMentionIndex(0);
+  }, [threadReplyText, threadMentionStart, threadMentionQuery]);
 
   const handleThreadReply = useCallback(async () => {
     if (!threadReplyText.trim() || !selectedSlug || !threadMsg) return;
@@ -405,6 +602,7 @@ export default function AdminChat() {
     try {
       await sendReply.mutateAsync({
         tenantSlug: selectedSlug,
+        dmKey: activeDmKey ?? undefined,
         parentId: threadMsg.id,
         body,
       });
@@ -415,10 +613,10 @@ export default function AdminChat() {
       toast.error(msg);
       setThreadReplyText(body);
     }
-  }, [threadReplyText, selectedSlug, threadMsg, user, sendReply, getThread, listQuery]);
+  }, [threadReplyText, selectedSlug, activeDmKey, threadMsg, user, sendReply, getThread, listQuery]);
 
   const loadMoreQuery = trpc.chat.list.useQuery(
-    { tenantSlug: selectedSlug ?? "", limit: 100, beforeId },
+    { tenantSlug: selectedSlug ?? "", dmKey: activeDmKey ?? undefined, limit: 100, beforeId },
     { enabled: !!selectedSlug && beforeId !== undefined }
   );
 
@@ -448,6 +646,12 @@ export default function AdminChat() {
   }, [selectedSlug, messages, loadingMore]);
 
   // Group messages by date
+  useEffect(() => {
+    if (!searchActive || !searchQuery.trim().startsWith("@")) return;
+    setDmCmdOpen(true);
+    setDmCmdIndex(0);
+  }, [searchActive, searchQuery]);
+
   const grouped: { label: string; msgs: Msg[] }[] = [];
   for (const msg of messages) {
     const label = formatDateLabel(msg.createdAt);
@@ -460,47 +664,262 @@ export default function AdminChat() {
   const isAdmin = (role: string) => role === "admin";
   const selectedTenantName = tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug ?? "client";
 
+  type ConversationLane = { key: string; title: string; subtitle: string; tenantSlug: string; dmKey?: string | null; groupLabel: string; packageTier?: PackageTier | null };
+  const conversationLanes = useMemo<ConversationLane[]>(() => {
+    const lanes: ConversationLane[] = [];
+    for (const t of tenants) {
+      const pkgLabel = (PACKAGE_LABELS[(t.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
+      lanes.push({
+        key: `tenant:${t.slug}`,
+        title: `${t.company_name} Group Chat`,
+        subtitle: "Shared workspace conversation",
+        tenantSlug: t.slug,
+        dmKey: null,
+        groupLabel: pkgLabel,
+        packageTier: (t.package_tier as PackageTier) ?? null,
+      });
+    }
+    const filteredDm = dmLanes;
+    for (const d of filteredDm) {
+      lanes.push({ key: d.key, title: d.title, subtitle: d.subtitle, tenantSlug: d.tenantSlug, dmKey: d.dmKey, groupLabel: "DIRECT MESSAGES" });
+    }
+    return lanes;
+  }, [tenants, dmLanes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPreviews() {
+      const entries = await Promise.all(conversationLanes.map(async (lane) => {
+        try {
+          const rows = await utils.chat.list.fetch({ tenantSlug: lane.tenantSlug, dmKey: lane.dmKey ?? undefined, limit: 1 });
+          const raw = rows?.[0] as Record<string, unknown> | undefined;
+          if (!raw) return [lane.key, {}] as const;
+          const m = normalizeMsg(raw);
+          return [lane.key, { body: m.message, fileName: m.fileName, createdAt: m.createdAt.toISOString() }] as const;
+        } catch {
+          return [lane.key, {}] as const;
+        }
+      }));
+      if (cancelled) return;
+      setPreviews(Object.fromEntries(entries));
+    }
+    if (conversationLanes.length) void loadPreviews();
+    return () => { cancelled = true; };
+  }, [conversationLanes, utils.chat.list]);
+
+  const activeDmLane = useMemo(() => {
+    if (!activeDmKey) return null;
+    return dmLanes.find((d) => d.dmKey === activeDmKey) ?? null;
+  }, [dmLanes, activeDmKey]);
+
+  useEffect(() => {
+    if (!selectedSlug) return;
+    if (selectedConversationKey) return;
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(laneStorageKey);
+    if (saved && conversationLanes.some((l) => l.key === saved)) {
+      setSelectedConversationKey(saved);
+      if (saved.startsWith("dm:")) {
+        const dm = dmLanes.find((d) => d.key === saved);
+        setActiveDmKey(dm?.dmKey ?? null);
+      } else {
+        setActiveDmKey(null);
+      }
+      return;
+    }
+    const def = `tenant:${selectedSlug}`;
+    setSelectedConversationKey(def);
+  }, [selectedSlug, selectedConversationKey, laneStorageKey, conversationLanes, dmLanes]);
+
   const handleClientClick = useCallback((clientId: string) => {
-    console.log("[AdminChat] client clicked", {
-      clientId,
-      currentSelectedClientId: selectedSlug,
-    });
 
     // Idempotent selection: clicking the same client should not clear/toggle off
     if (selectedSlug === clientId) {
       setClientInUrl(clientId);
+      setSelectedConversationKey(`tenant:${clientId}`);
+      setActiveDmKey(null);
       return;
     }
 
     setSelectedSlug(clientId);
     setClientInUrl(clientId);
+    setActiveDmKey(null);
+    setSelectedConversationKey(`tenant:${clientId}`);
   }, [selectedSlug, setClientInUrl]);
 
   return (
     <div className="flex h-full min-h-0">
       {/* Client Sidebar */}
-      <div className="w-56 border-r border-border flex flex-col bg-card/50 shrink-0">
-        <div className="p-3 border-b border-border">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Clients</p>
+      <div className="w-72 border-r border-border flex flex-col bg-[#0f1012] shrink-0">
+        <div className="px-3 py-3 border-b border-border space-y-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Conversations</p>
+          <div className="relative">
+            <Input
+              placeholder="Search messages or @people..."
+              value={searchQuery}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSearchQuery(next);
+                setSearchActive(next.trim().length > 0);
+                if (next.trim().startsWith("@")) {
+                  setDmCmdOpen(true);
+                  setDmCmdIndex(0);
+                } else {
+                  setDmCmdOpen(false);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (!dmCmdOpen) return;
+                const list = peopleSearchResults as MentionCandidate[];
+                if (!list.length) {
+                  if (e.key === "Escape") setDmCmdOpen(false);
+                  return;
+                }
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setDmCmdIndex((i) => (i + 1) % list.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setDmCmdIndex((i) => (i - 1 + list.length) % list.length);
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  const picked = list[dmCmdIndex];
+                  if (!picked) return;
+                  (async () => {
+                    try {
+                      const resolved = await resolveDmMutation.mutateAsync({ tenantSlug: selectedSlug ?? undefined, peerUserId: Number(picked.id) });
+                      const dmKey = String((resolved as any).dmKey);
+                      const laneKey = `dm:${dmKey}`;
+                      const title = String(picked.displayName || picked.email || `User ${picked.id}`);
+                      setDmLanes((prev) => {
+                        const has = prev.some((d) => d.dmKey === dmKey);
+                        if (has) return prev;
+                        return [...prev, { key: laneKey, dmKey, title, tenantSlug: selectedSlug ?? "", subtitle: "Direct message", groupLabel: "DIRECT MESSAGES" }];
+                      });
+                      setSelectedConversationKey(laneKey);
+                      setActiveDmKey(dmKey);
+                    } catch (err: any) {
+                      toast.error(err?.message || "Unable to open DM");
+                    }
+                    setSearchQuery("");
+                    setSearchActive(false);
+                    setDmCmdOpen(false);
+                  })();
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDmCmdOpen(false);
+                }
+              }}
+              className="h-8 text-xs bg-background border-border text-foreground"
+            />
+            {dmCmdOpen && searchQuery.trim().startsWith("@") && (
+              <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-cyan-400/20 bg-zinc-900/85 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+                <div className="px-2 py-1 border-b border-zinc-800/80 text-[10px] uppercase tracking-wide text-zinc-400">People</div>
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {(peopleSearchResults as MentionCandidate[]).slice(0, 12).map((u, idx) => {
+                    const active = idx === dmCmdIndex;
+                    return (
+                      <button
+                        key={`adm-dm-user:${u.id}:${u.assignmentId ?? "group"}`}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={async () => {
+                          try {
+                            const resolved = await resolveDmMutation.mutateAsync({ tenantSlug: selectedSlug ?? undefined, peerUserId: Number(u.id) });
+                            const dmKey = String((resolved as any).dmKey);
+                            const laneKey = `dm:${dmKey}`;
+                            const title = String(u.displayName || u.email || `User ${u.id}`);
+                            setDmLanes((prev) => {
+                              const has = prev.some((d) => d.dmKey === dmKey);
+                              if (has) return prev;
+                              return [...prev, { key: laneKey, dmKey, title, tenantSlug: selectedSlug ?? "", subtitle: "Direct message", groupLabel: "DIRECT MESSAGES" }];
+                            });
+                            setSelectedConversationKey(laneKey);
+                            setActiveDmKey(dmKey);
+                          } catch (err: any) {
+                            toast.error(err?.message || "Unable to open DM");
+                          }
+                          setSearchQuery("");
+                          setSearchActive(false);
+                          setDmCmdOpen(false);
+                        }}
+                        className={`w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 ${active ? "bg-cyan-500/15 border border-cyan-400/30" : "hover:bg-zinc-800/70"}`}
+                      >
+                        <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 text-[11px] font-semibold text-zinc-200 flex items-center justify-center">
+                          {(u.initials || u.displayName?.charAt(0) || "?").toUpperCase()}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-zinc-100 truncate">{u.displayName}</p>
+                          <p className="text-[10px] text-zinc-400 truncate">@{u.displayName.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "")}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {(peopleSearchResults as MentionCandidate[]).length === 0 && (
+                    <div className="px-2.5 py-2 text-xs text-zinc-400">No matching members</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <ScrollArea className="flex-1">
-          <div className="p-2 space-y-0.5">
-            {tenants.map((t) => (
-              <button
-                key={t.slug}
-                onClick={() => handleClientClick(t.slug)}
-                className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                  selectedSlug === t.slug
-                    ? "bg-primary/15 text-primary font-medium"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <MessageSquare size={12} className="shrink-0" />
-                  <span className="truncate">{t.company_name}</span>
+          <div className="px-2 py-2 space-y-3">
+            {Array.from(new Set(conversationLanes.map((l) => l.groupLabel))).map((group) => {
+              const items = conversationLanes.filter((l) => l.groupLabel === group);
+              return (
+                <div key={group}>
+                  <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
+                  <div className="space-y-1">
+                    {items.map((lane) => {
+                      const active = lane.key === selectedConversationKey;
+                      const pv = previews[lane.key] ?? {};
+                      return (
+                        <button
+                          key={lane.key}
+                          onClick={() => {
+                            setSelectedSlug(lane.tenantSlug);
+                            setClientInUrl(lane.tenantSlug);
+                            setSelectedConversationKey(lane.key);
+                            setActiveDmKey(lane.dmKey ?? null);
+                          }}
+                          className={
+                            `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
+                            (active
+                              ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
+                              : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                          }
+                        >
+                          <div className="flex items-start gap-2.5">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                              {(lane.title?.charAt(0) || "?").toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[13px] font-medium text-foreground truncate">{lane.title}</p>
+                                <span className="text-[10px] text-muted-foreground shrink-0">{pv.createdAt ? formatTime(new Date(pv.createdAt)) : ""}</span>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                                {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : lane.subtitle)}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {items.length === 0 && (
+                      <p className="px-2.5 py-2 text-[11px] text-muted-foreground">{group === "DIRECT MESSAGES" ? "No direct messages yet" : "No conversations"}</p>
+                    )}
+                  </div>
                 </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </ScrollArea>
       </div>
@@ -519,29 +938,12 @@ export default function AdminChat() {
           <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-card/30 shrink-0">
             <div>
               <p className="text-sm font-semibold text-foreground">
-                {tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug}
+                {activeDmLane?.title ?? tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug}
               </p>
-              <p className="text-xs text-muted-foreground">Team Chat</p>
+              <p className="text-xs text-muted-foreground">{activeDmLane ? "Direct Message" : "Team Chat"}</p>
             </div>
-            <div className="flex items-center gap-2">
-              {searchActive ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    autoFocus
-                    placeholder="Search messages…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="h-7 w-48 text-xs bg-background border-border text-foreground"
-                  />
-                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setSearchActive(false); setSearchQuery(""); }}>
-                    <X size={13} />
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => setSearchActive(true)}>
-                  <Search size={14} />
-                </Button>
-              )}
+            <div className="text-[11px] text-muted-foreground">
+              {activeDmLane ? "Direct Message" : "Workspace conversation"}
             </div>
           </div>
 
@@ -551,8 +953,12 @@ export default function AdminChat() {
               <div className="h-full flex items-center justify-center text-muted-foreground">
                 <div className="text-center space-y-2">
                   <MessageSquare size={28} className="mx-auto opacity-30" />
-                  <p className="text-sm">No messages yet for this client.</p>
-                  <p className="text-xs">Send a message to start the conversation.</p>
+                  <p className="text-sm">No messages yet</p>
+                  <p className="text-xs">
+                    {activeDmLane
+                      ? `This is the beginning of your direct conversation with ${activeDmLane.title}.`
+                      : "Send a message to start the conversation."}
+                  </p>
                 </div>
               </div>
             )}
@@ -602,7 +1008,7 @@ export default function AdminChat() {
                             className={`w-full text-left rounded-lg border px-2 py-1.5 text-[11px] ${admin ? "bg-primary/10 border-primary/20 text-primary-foreground/90" : "bg-muted/40 border-border text-muted-foreground"}`}
                           >
                             <p className="font-medium">Replying to {msg.replyToSenderName ?? "message"}</p>
-                            {msg.replyToMessagePreview && <p className="truncate opacity-80">{msg.replyToMessagePreview}</p>}
+                            {msg.replyToMessagePreview && <p className="truncate opacity-80">{renderMessageWithMentions(msg.replyToMessagePreview, mentionLabels)}</p>}
                           </button>
                         )}
 
@@ -626,7 +1032,7 @@ export default function AdminChat() {
                           </div>
                         ) : (
                           <div className={`px-3 py-2 rounded-xl text-sm leading-relaxed ${admin ? "bg-primary text-primary-foreground" : "bg-muted/60 text-foreground"}`}>
-                            {msg.message}
+                            {msg.message ? renderMessageWithMentions(msg.message, mentionLabels) : null}
                           </div>
                         )}
 
@@ -758,14 +1164,58 @@ export default function AdminChat() {
                 </button>
                 <textarea
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[36px] max-h-32"
-                  placeholder={`Message ${selectedTenantName}…`}
+                  placeholder={activeDmLane ? `Message ${activeDmLane.title}…` : `Message ${selectedTenantName}…`}
                   value={text}
                   rows={1}
-                  onChange={(e) => setText(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setText(next);
+                    const caret = e.target.selectionStart ?? next.length;
+                    const left = next.slice(0, caret);
+                    const at = left.lastIndexOf("@");
+                    if (at >= 0) {
+                      const between = left.slice(at + 1);
+                      if (!/\s/.test(between)) {
+                        setMentionStart(at);
+                        setMentionQuery(between);
+                        setMentionOpen(true);
+                        setMentionIndex(0);
+                        return;
+                      }
+                    }
+                    setMentionOpen(false);
+                    setMentionQuery("");
+                    setMentionStart(null);
+                  }}
                   onKeyDown={(e) => {
+                    if (mentionOpen && filteredMentions.length > 0) {
+                      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
+                      if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
+                      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); applyMention(filteredMentions[mentionIndex]); return; }
+                      if (e.key === "Escape") { e.preventDefault(); setMentionOpen(false); return; }
+                    }
                     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); }
                   }}
                 />
+                {mentionOpen && filteredMentions.length > 0 && (
+                  <div className="absolute left-3 right-3 bottom-[72px] rounded-xl border border-border bg-card shadow-xl p-1 max-h-56 overflow-y-auto z-20">
+                    {(filteredMentions as MentionCandidate[]).map((c: MentionCandidate, idx: number) => (
+                      <button
+                        type="button"
+                        key={`${c.source}-${c.id}-${idx}`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => applyMention(c)}
+                        className={`w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 ${idx===mentionIndex ? "bg-cyan-500/15 border border-cyan-400/30" : "hover:bg-muted/60"}`}
+                      >
+                        <div className="w-7 h-7 rounded-full bg-muted border border-border text-[11px] font-semibold flex items-center justify-center">{(c.initials || c.displayName.charAt(0) || "?").toUpperCase()}</div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-foreground truncate">{c.displayName}</p>
+                          <p className="text-[10px] text-muted-foreground truncate">{roleLabel(c.role)}{c.email ? ` • ${c.email}` : ""}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <button
                   disabled={(!text.trim() && attachments.length === 0) || sendingCompose}
                   onClick={() => void handleSend()}
@@ -838,7 +1288,7 @@ export default function AdminChat() {
                     <span className="text-xs font-semibold text-foreground">{r.sender}</span>
                     <span className="text-[10px] text-muted-foreground">{formatTime(r.createdAt)}</span>
                   </div>
-                  <p className="text-xs text-foreground leading-relaxed">{r.message}</p>
+                  <p className="text-xs text-foreground leading-relaxed">{r.message ? renderMessageWithMentions(r.message, mentionLabels) : null}</p>
                 </div>
               ))}
               {threadReplies.length === 0 && (
@@ -854,9 +1304,45 @@ export default function AdminChat() {
                 className="flex-1 bg-background border border-border rounded-lg px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground outline-none focus:border-primary"
                 placeholder="Reply…"
                 value={threadReplyText}
-                onChange={(e) => setThreadReplyText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleThreadReply(); }}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setThreadReplyText(next);
+                  const caret = e.target.selectionStart ?? next.length;
+                  const left = next.slice(0, caret);
+                  const at = left.lastIndexOf("@");
+                  if (at >= 0) {
+                    const between = left.slice(at + 1);
+                    if (!/\s/.test(between)) {
+                      setThreadMentionStart(at);
+                      setThreadMentionQuery(between);
+                      setThreadMentionOpen(true);
+                      setThreadMentionIndex(0);
+                      return;
+                    }
+                  }
+                  setThreadMentionOpen(false);
+                  setThreadMentionQuery("");
+                  setThreadMentionStart(null);
+                }}
+                onKeyDown={(e) => {
+                  if (threadMentionOpen && threadFilteredMentions.length > 0) {
+                    if (e.key === "ArrowDown") { e.preventDefault(); setThreadMentionIndex((i) => (i + 1) % threadFilteredMentions.length); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setThreadMentionIndex((i) => (i - 1 + threadFilteredMentions.length) % threadFilteredMentions.length); return; }
+                    if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); applyThreadMention(threadFilteredMentions[threadMentionIndex]); return; }
+                    if (e.key === "Escape") { e.preventDefault(); setThreadMentionOpen(false); return; }
+                  }
+                  if (e.key === "Enter") handleThreadReply();
+                }}
               />
+              {threadMentionOpen && threadFilteredMentions.length > 0 && (
+                <div className="absolute right-4 bottom-12 left-4 rounded-xl border border-border bg-card shadow-xl p-1 max-h-48 overflow-y-auto z-20">
+                  {(threadFilteredMentions as MentionCandidate[]).map((c: MentionCandidate, idx: number) => (
+                    <button key={`${c.source}-${c.id}-${idx}`} type="button" onMouseDown={(e)=>e.preventDefault()} onClick={() => applyThreadMention(c)} className={`w-full text-left rounded-lg px-2 py-1.5 text-xs ${idx===threadMentionIndex ? "bg-cyan-500/15 border border-cyan-400/30" : "hover:bg-muted/60"}`}>
+                      @{c.displayName}
+                    </button>
+                  ))}
+                </div>
+              )}
               <Button size="sm" className="h-7 px-2.5 bg-primary text-primary-foreground" disabled={!threadReplyText.trim() || sendReply.isPending} onClick={handleThreadReply}>
                 <Send size={12} />
               </Button>

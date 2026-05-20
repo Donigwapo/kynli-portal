@@ -159,6 +159,21 @@ const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
   "tax_manager",
   "accountant",
 ]);
+const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
+const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATION_WEBHOOK_URL?.trim() || "";
+
+const isInternalChatSlug = (slug?: string | null): boolean =>
+  !!slug && sanitizeTenantSlug(slug) === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG);
+
+async function resolveChatTenantSlug(user: PortalUser, requestedSlug?: string): Promise<string> {
+  if (isInternalChatSlug(requestedSlug)) {
+    if (STAFF_PORTAL_ROLES.has(user.role) || user.role === "admin") {
+      return INTERNAL_CHAT_TENANT_SLUG;
+    }
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal team chat is restricted." });
+  }
+  return resolveTenantSlug(user, requestedSlug);
+}
 
 async function getAssignedTenantSlugsForUser(user: PortalUser): Promise<string[]> {
   if (!STAFF_PORTAL_ROLES.has(user.role)) return [];
@@ -215,6 +230,13 @@ async function resolveChatAssignmentIdForUser(
 ): Promise<{ assignmentId: number | null; assignmentNullOnly: boolean }> {
   const safeSlug = sanitizeTenantSlug(tenantSlug);
 
+  if (safeSlug === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+    if (STAFF_PORTAL_ROLES.has(user.role) || user.role === "admin") {
+      return { assignmentId: null, assignmentNullOnly: true };
+    }
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal team chat is restricted." });
+  }
+
   const loadAssignmentById = async (id: number) => {
     const { data, error } = await supabase
       .from("staff_client_assignments")
@@ -236,7 +258,9 @@ async function resolveChatAssignmentIdForUser(
     return (data || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
   };
 
-  // Staff/accountants are bound to their own assignment for the tenant.
+  // Staff/accountants can access two scopes for an assigned tenant:
+  // 1) personal assignment lane (assignment_id = own assignment id)
+  // 2) tenant group lane (assignment_id IS NULL) when no assignmentId is requested
   if (STAFF_PORTAL_ROLES.has(user.role)) {
     const assignments = await getStaffAssignments(user.id);
     const match = assignments.find((a) => sanitizeTenantSlug(a.tenant_slug) === safeSlug);
@@ -245,14 +269,19 @@ async function resolveChatAssignmentIdForUser(
     }
 
     const ownAssignmentId = Number(match.id);
-    if (requestedAssignmentId != null && Number(requestedAssignmentId) !== ownAssignmentId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own assignment conversation." });
+    if (requestedAssignmentId != null) {
+      if (Number(requestedAssignmentId) !== ownAssignmentId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own assignment conversation." });
+      }
+      return { assignmentId: ownAssignmentId, assignmentNullOnly: false };
     }
 
-    return { assignmentId: ownAssignmentId, assignmentNullOnly: false };
+    // No explicit assignment selected => tenant-wide shared Group Chat lane.
+    return { assignmentId: null, assignmentNullOnly: true };
   }
 
   // Clients can choose one of the tenant's assigned accountant/staff lanes.
+  // If no assignment is selected, client is in tenant group chat scope (assignment_id IS NULL).
   if (user.role === "client") {
     if (requestedAssignmentId != null) {
       const assignment = await loadAssignmentById(Number(requestedAssignmentId));
@@ -262,13 +291,7 @@ async function resolveChatAssignmentIdForUser(
       return { assignmentId: Number(assignment.id), assignmentNullOnly: false };
     }
 
-    const allAssignments = await loadAssignmentsForTenant();
-    if (!allAssignments.length) {
-      // No assigned accountant lanes yet; return a scope that yields no assignment-scoped rows.
-      return { assignmentId: -1, assignmentNullOnly: false };
-    }
-
-    return { assignmentId: Number(allAssignments[0].id), assignmentNullOnly: false };
+    return { assignmentId: null, assignmentNullOnly: true };
   }
 
   // Admin/internal shared chat stays tenant-level unless explicitly narrowed by assignment.
@@ -284,6 +307,409 @@ async function resolveChatAssignmentIdForUser(
   }
 
   return { assignmentId: null, assignmentNullOnly: true };
+}
+
+function normalizeUserId(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid user id" });
+  }
+  return n;
+}
+
+function makeDmKey(a: number, b: number): string {
+  const min = Math.min(a, b);
+  const max = Math.max(a, b);
+  return `dm:u${min}:u${max}`;
+}
+
+function parseDmParticipants(dmKey: string): { a: number; b: number } | null {
+  const m = /^dm:u(\d+):u(\d+)$/.exec(dmKey || "");
+  if (!m) return null;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return { a, b };
+}
+
+async function assertDmAccess(currentUserId: number, dmKey: string): Promise<void> {
+  const parsed = parseDmParticipants(dmKey);
+  if (!parsed) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Invalid DM scope" });
+  }
+  if (parsed.a !== currentUserId && parsed.b !== currentUserId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this DM." });
+  }
+}
+
+async function canUsePeerForDm(currentUser: PortalUser, peerUserId: number, tenantSlug?: string): Promise<boolean> {
+  const currentId = normalizeUserId(currentUser.id);
+  if (peerUserId === currentId) return false;
+
+  const { data: peer, error: peerErr } = await supabase
+    .from("portal_users")
+    .select("id, role")
+    .eq("id", peerUserId)
+    .maybeSingle();
+  if (peerErr || !peer) return false;
+
+  if (!(STAFF_PORTAL_ROLES.has(currentUser.role) || currentUser.role === "admin")) return false;
+
+  if (tenantSlug && !isInternalChatSlug(tenantSlug)) {
+    const safeSlug = sanitizeTenantSlug(tenantSlug);
+    const { data: assignment, error: assignErr } = await supabase
+      .from("staff_client_assignments")
+      .select("id")
+      .eq("tenant_slug", safeSlug)
+      .eq("staff_id", peerUserId)
+      .maybeSingle();
+    if (!assignErr && assignment) return true;
+  }
+
+  const role = String((peer as any).role || "");
+  return ["admin", "accounting_manager", "tax_manager", "accountant"].includes(role);
+}
+
+type MentionRecipient = {
+  id: number;
+  displayName: string;
+  email: string | null;
+  assignmentId: number | null;
+};
+
+function mentionBoundaryBefore(ch?: string): boolean {
+  return !ch || /\s|[([{"'`]/.test(ch);
+}
+
+function mentionBoundaryAfter(ch?: string): boolean {
+  return !ch || /\s|[.,!?;:)\]}"'`]/.test(ch);
+}
+
+function normalizeMentionAlias(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+}
+
+function extractMentionedUserIds(body: string, candidates: MentionRecipient[]): number[] {
+  const text = (body || "").trim();
+  if (!text) return [];
+
+  const byId = new Map<number, MentionRecipient>();
+  for (const c of candidates) byId.set(Number(c.id), c);
+
+  const labels = candidates
+    .map((c) => ({ id: Number(c.id), label: `@${(c.displayName || "").trim()}` }))
+    .filter((x) => x.label.length > 1)
+    .sort((a, b) => b.label.length - a.label.length);
+
+  const lower = text.toLowerCase();
+  const found = new Set<number>();
+
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "@" || !mentionBoundaryBefore(text[i - 1])) continue;
+
+    let matched = false;
+    for (const item of labels) {
+      const cand = item.label.toLowerCase();
+      if (lower.slice(i, i + cand.length) !== cand) continue;
+      if (!mentionBoundaryAfter(text[i + cand.length])) continue;
+      found.add(item.id);
+      i += Math.max(0, cand.length - 1);
+      matched = true;
+      break;
+    }
+
+    if (matched) continue;
+
+    // Fallback tokenized mention, e.g. @username / @display_name
+    let j = i + 1;
+    while (j < text.length && !mentionBoundaryAfter(text[j])) j += 1;
+    const token = text.slice(i, j);
+    const norm = normalizeMentionAlias(token);
+    if (!norm) continue;
+
+    for (const c of candidates) {
+      const aliases = new Set<string>();
+      aliases.add(normalizeMentionAlias(c.displayName));
+      if (c.email) {
+        const local = String(c.email).split("@")[0] ?? "";
+        aliases.add(normalizeMentionAlias(local));
+      }
+      if (aliases.has(norm)) {
+        found.add(Number(c.id));
+      }
+    }
+  }
+
+  return Array.from(found).filter((id) => byId.has(id));
+}
+
+async function getMentionRecipientsForScope(
+  actor: PortalUser,
+  tenantSlug: string,
+  assignmentId: number | null,
+  dmKey: string | null,
+): Promise<MentionRecipient[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+
+  if (dmKey) {
+    const parsed = parseDmParticipants(dmKey);
+    if (!parsed) return [];
+    const ids = [parsed.a, parsed.b];
+    const { data, error } = await supabase
+      .from("portal_users")
+      .select("id,name,email")
+      .in("id", ids);
+    if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+    return ((data || []) as Array<{ id: number; name: string | null; email: string | null }>).map((u) => ({
+      id: Number(u.id),
+      displayName: (u.name || u.email || `User ${u.id}`).trim(),
+      email: u.email ?? null,
+      assignmentId: null,
+    }));
+  }
+
+  if (safeSlug === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+    const { data, error } = await supabase
+      .from("portal_users")
+      .select("id,name,email,role")
+      .in("role", ["admin", "accounting_manager", "tax_manager", "accountant"])
+      .order("name", { ascending: true });
+    if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+    return ((data || []) as Array<{ id: number; name: string | null; email: string | null }>).map((u) => ({
+      id: Number(u.id),
+      displayName: (u.name || u.email || `User ${u.id}`).trim(),
+      email: u.email ?? null,
+      assignmentId: null,
+    }));
+  }
+
+  const [tenantMembers, assignmentRows] = await Promise.all([
+    listTenantMembers(safeSlug),
+    (async () => {
+      const { data, error } = await supabase
+        .from("staff_client_assignments")
+        .select("id, staff_id")
+        .eq("tenant_slug", safeSlug)
+        .order("assigned_at", { ascending: true });
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return (data || []) as Array<{ id: number; staff_id: number }>;
+    })(),
+  ]);
+
+  const laneByStaff = new Map<number, number>();
+  for (const a of assignmentRows) {
+    const sid = Number(a.staff_id);
+    if (!laneByStaff.has(sid)) laneByStaff.set(sid, Number(a.id));
+  }
+
+  const userMap = new Map<number, MentionRecipient>();
+  for (const m of tenantMembers) {
+    const id = Number(m.id);
+    userMap.set(id, {
+      id,
+      displayName: (m.name || m.email || `User ${m.id}`).trim(),
+      email: m.email ?? null,
+      assignmentId: laneByStaff.get(id) ?? null,
+    });
+  }
+
+  const staffIds = Array.from(new Set(assignmentRows.map((a) => Number(a.staff_id)).filter((n) => Number.isFinite(n) && n > 0)));
+  const missing = staffIds.filter((id) => !userMap.has(id));
+  if (missing.length > 0) {
+    const { data, error } = await supabase
+      .from("portal_users")
+      .select("id,name,email")
+      .in("id", missing);
+    if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+    for (const u of (data || []) as Array<{ id: number; name: string | null; email: string | null }>) {
+      const id = Number(u.id);
+      userMap.set(id, {
+        id,
+        displayName: (u.name || u.email || `User ${id}`).trim(),
+        email: u.email ?? null,
+        assignmentId: laneByStaff.get(id) ?? null,
+      });
+    }
+  }
+
+  let recipients = Array.from(userMap.values());
+  if (assignmentId != null) {
+    recipients = recipients.filter((r) => r.assignmentId == null || Number(r.assignmentId) === Number(assignmentId));
+  }
+
+  // Defensive: ensure actor itself is always represented for alias matching/self-skip rules.
+  const actorId = normalizeUserId(actor.id);
+  if (!recipients.some((r) => r.id === actorId)) {
+    recipients.push({
+      id: actorId,
+      displayName: (actor.name || actor.email || `User ${actor.id}`).trim(),
+      email: actor.email,
+      assignmentId: null,
+    });
+  }
+
+  return recipients;
+}
+
+type MentionNotificationRow = {
+  id: number;
+  recipient_user_id: number;
+  sender_user_id: number | null;
+  notification_type: string;
+  title: string;
+  content: string | null;
+  tenant_slug: string | null;
+  assignment_id: number | null;
+  dm_key: string | null;
+  chat_message_id: number | null;
+  thread_parent_id: number | null;
+  target_path: string | null;
+  created_at: string;
+};
+
+async function deliverMentionNotificationsToWebhook(rows: MentionNotificationRow[]): Promise<void> {
+  if (!N8N_MENTION_NOTIFICATION_WEBHOOK_URL) return;
+  if (!rows.length) return;
+
+  await Promise.all(rows.map(async (row) => {
+    const payload = {
+      notification_id: row.id,
+      recipient_user_id: row.recipient_user_id,
+      sender_user_id: row.sender_user_id,
+      notification_type: row.notification_type,
+      title: row.title,
+      content: row.content,
+      tenant_slug: row.tenant_slug,
+      assignment_id: row.assignment_id,
+      dm_key: row.dm_key,
+      chat_message_id: row.chat_message_id,
+      thread_parent_id: row.thread_parent_id,
+      target_path: row.target_path,
+      created_at: row.created_at,
+    };
+
+    try {
+      const res = await fetch(N8N_MENTION_NOTIFICATION_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const errMsg = `HTTP ${res.status}${body ? `: ${body.slice(0, 400)}` : ""}`;
+        await supabase
+          .from("portal_notifications")
+          .update({
+            delivery_status: "webhook_failed",
+            delivery_attempted_at: new Date().toISOString(),
+            delivery_error: errMsg,
+          })
+          .eq("id", row.id);
+        console.error("[mention.notifications] webhook delivery failed", {
+          notificationId: row.id,
+          status: res.status,
+          body: body.slice(0, 400),
+        });
+        return;
+      }
+
+      await supabase
+        .from("portal_notifications")
+        .update({
+          delivery_status: "webhook_sent",
+          delivery_attempted_at: new Date().toISOString(),
+          delivery_error: null,
+        })
+        .eq("id", row.id);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await supabase
+        .from("portal_notifications")
+        .update({
+          delivery_status: "webhook_failed",
+          delivery_attempted_at: new Date().toISOString(),
+          delivery_error: errMsg.slice(0, 1000),
+        })
+        .eq("id", row.id);
+      console.error("[mention.notifications] webhook delivery exception", {
+        notificationId: row.id,
+        error: errMsg,
+      });
+    }
+  }));
+}
+
+async function createMentionNotifications(params: {
+  actor: PortalUser;
+  tenantSlug: string;
+  tenantName?: string | null;
+  assignmentId: number | null;
+  dmKey: string | null;
+  messageId: number;
+  parentId?: number | null;
+  body: string | null | undefined;
+}): Promise<void> {
+  const { actor, tenantSlug, tenantName, assignmentId, dmKey, messageId, parentId, body } = params;
+  const text = (body || "").trim();
+  if (!text) return;
+
+  const senderId = normalizeUserId(actor.id);
+  const recipients = await getMentionRecipientsForScope(actor, tenantSlug, assignmentId, dmKey);
+  const mentionedIds = extractMentionedUserIds(text, recipients)
+    .filter((id) => id !== senderId);
+
+  const uniqueRecipientIds = Array.from(new Set(mentionedIds));
+  if (!uniqueRecipientIds.length) return;
+
+  const contextLabel = dmKey
+    ? "Direct Message"
+    : (isInternalChatSlug(tenantSlug)
+      ? "Team Chat"
+      : (assignmentId != null ? `${tenantName ?? tenantSlug} Personal Chat` : `${tenantName ?? tenantSlug} Group Chat`));
+  const preview = text.slice(0, 180);
+  const targetPath = `/chat?tenant=${encodeURIComponent(tenantSlug)}${dmKey ? `&dm=${encodeURIComponent(dmKey)}` : ""}${assignmentId != null ? `&assignment=${assignmentId}` : ""}${parentId ? `&thread=${parentId}` : ""}`;
+
+  const rows = uniqueRecipientIds.map((recipientId) => ({
+    recipient_user_id: recipientId,
+    sender_user_id: senderId,
+    notification_type: "chat_mention",
+    title: `${actor.name ?? actor.email ?? "Someone"} mentioned you in ${contextLabel}`,
+    content: preview,
+    tenant_slug: sanitizeTenantSlug(tenantSlug),
+    assignment_id: assignmentId,
+    dm_key: dmKey,
+    chat_message_id: messageId,
+    thread_parent_id: parentId ?? null,
+    target_path: targetPath,
+    is_read: false,
+    delivery_status: "pending",
+    delivery_attempted_at: null,
+    delivery_error: null,
+  }));
+
+  const { data, error } = await supabase
+    .from("portal_notifications")
+    .insert(rows)
+    .select("id, recipient_user_id, sender_user_id, notification_type, title, content, tenant_slug, assignment_id, dm_key, chat_message_id, thread_parent_id, target_path, created_at");
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // Fire-and-forget webhook delivery. DB row remains source of truth regardless of delivery success.
+  void deliverMentionNotificationsToWebhook((data || []) as MentionNotificationRow[])
+    .catch((err) => {
+      console.error("[mention.notifications] webhook dispatch batch failed", {
+        count: (data || []).length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 }
 
 async function authorizeDocumentDeleteScope(
@@ -753,7 +1179,7 @@ export const appRouter = router({
           });
         }
 
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         return getDocuments(slug, input.year, input.month, input.docType);
       }),
     upload: protectedProcedure
@@ -1000,7 +1426,7 @@ export const appRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const updated = await updateDocumentType(slug, input.id, input.docType);
         return { success: true, document: updated };
       }),
@@ -1051,7 +1477,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number(), completed: z.boolean(), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         await toggleCoachingItem(slug, input.id, input.completed);
         return { success: true };
       }),
@@ -1065,14 +1491,14 @@ export const appRouter = router({
       .input(z.object({ year: z.number(), quarter: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         return getCoachingNote(slug, input.year, input.quarter);
       }),
     saveNote: protectedProcedure
       .input(z.object({ year: z.number(), quarter: z.number(), content: z.string(), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         await upsertCoachingNote(slug, input.year, input.quarter, input.content);
         return { success: true };
       }),
@@ -1083,7 +1509,7 @@ export const appRouter = router({
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "kpi_dashboard", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         return getKpiMetrics(slug, input.year);
       }),
     upsert: adminProcedure
@@ -1602,7 +2028,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         // Resolve tenant slug: admin can pass explicit slug, regular users use their own
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         await upsertClientRosterEntry(slug, {
           client_name: input.clientName,
           package: input.package,
@@ -1632,7 +2058,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
       }))
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "clients", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const { id, clientName, monthlyAmount, signedDate, tenureMonths, totalIncome, notes, package: pkg, status } = input;
         await supabase
           .from(`${slug}_client_roster`)
@@ -1654,7 +2080,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
       .input(z.object({ tenantSlug: z.string().optional(), id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "clients", input.tenantSlug);
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         await deleteClientRosterEntry(slug, input.id);
         return { success: true };
       }),
@@ -1664,7 +2090,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         return getAiSummary(slug, input.year, input.month);
       }),
     generate: adminProcedure
@@ -1697,32 +2123,45 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
     assignments: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const safeSlug = sanitizeTenantSlug(slug);
-
         if (STAFF_PORTAL_ROLES.has(ctx.user.role)) {
           const assignments = await getStaffAssignments(ctx.user.id);
-          const mapped = assignments
-            .filter((a) => sanitizeTenantSlug(a.tenant_slug) === safeSlug)
-            .map((a) => ({
+          const wantedSlug = input.tenantSlug ? sanitizeTenantSlug(input.tenantSlug) : null;
+          const filtered = wantedSlug
+            ? assignments.filter((a) => sanitizeTenantSlug(a.tenant_slug) === wantedSlug)
+            : assignments;
+
+          const tenantSlugs = Array.from(new Set(filtered.map((a) => sanitizeTenantSlug(a.tenant_slug))));
+          let tenantRows: Array<{ slug: string; company_name: string | null; contact_name: string | null; email: string | null }> = [];
+          if (tenantSlugs.length) {
+            const { data, error } = await supabase
+              .from("portal_tenants")
+              .select("slug, company_name, contact_name, email")
+              .in("slug", tenantSlugs);
+            if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+            tenantRows = (data || []) as Array<{ slug: string; company_name: string | null; contact_name: string | null; email: string | null }>;
+          }
+          const tenantBySlug = new Map(tenantRows.map((t) => [sanitizeTenantSlug(t.slug), t]));
+
+          const mapped = filtered.map((a) => {
+            const safeSlug = sanitizeTenantSlug(a.tenant_slug);
+            const t = tenantBySlug.get(safeSlug);
+            const clientDisplayName = t?.contact_name?.trim() || t?.email?.trim() || t?.company_name?.trim() || safeSlug;
+            return {
               assignmentId: Number(a.id),
               tenantSlug: safeSlug,
               staffId: Number(a.staff_id),
               name: ctx.user.name ?? ctx.user.email ?? "Assigned Accountant",
               email: ctx.user.email ?? null,
               role: ctx.user.role,
-            }));
-
-          console.log("[ChatAssignments] staff mapped", {
-            userId: ctx.user.id,
-            role: ctx.user.role,
-            tenantSlug: safeSlug,
-            count: mapped.length,
-            lanes: mapped,
+              clientDisplayName,
+            };
           });
 
           return mapped;
         }
+
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const safeSlug = sanitizeTenantSlug(slug);
 
         // Client/admin view: list all assigned staff lanes for this tenant
         const { data: rows, error } = await supabase
@@ -1733,14 +2172,6 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
 
         const assignmentRows = (rows || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
-
-        console.log("[ChatAssignments] raw assignments", {
-          userId: ctx.user.id,
-          role: ctx.user.role,
-          tenantSlug: safeSlug,
-          count: assignmentRows.length,
-          rows: assignmentRows,
-        });
 
         const staffIds = Array.from(new Set(assignmentRows.map((r) => Number(r.staff_id)).filter((n) => Number.isFinite(n))));
 
@@ -1767,29 +2198,278 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           };
         });
 
-        console.log("[ChatAssignments] mapped lanes", {
-          userId: ctx.user.id,
-          role: ctx.user.role,
-          tenantSlug: safeSlug,
-          count: mapped.length,
-          lanes: mapped,
-        });
-
         return mapped;
       }),
+
+    mentionCandidates: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
+        q: z.string().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const safeSlug = sanitizeTenantSlug(slug);
+        await resolveChatAssignmentIdForUser(ctx.user, safeSlug, input.assignmentId);
+
+        if (safeSlug === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+          const { data: internalUsers, error: internalErr } = await supabase
+            .from("portal_users")
+            .select("id,name,email,role")
+            .in("role", ["admin", "accounting_manager", "tax_manager", "accountant"])
+            .order("name", { ascending: true });
+          if (internalErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: internalErr.message });
+          const q = input.q?.trim().toLowerCase() ?? "";
+          return ((internalUsers || []) as Array<{ id:number; name:string|null; email:string; role:string }>).map((u) => ({
+            id: Number(u.id),
+            displayName: (u.name || u.email || `User ${u.id}`).trim(),
+            email: u.email || null,
+            role: u.role || null,
+            source: "internal" as const,
+            initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+            assignmentId: null,
+          })).filter((c)=> !q || c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false));
+        }
+
+        const [tenantMembers, assignmentLanes] = await Promise.all([
+          listTenantMembers(safeSlug),
+          (async () => {
+            const { data, error } = await supabase
+              .from("staff_client_assignments")
+              .select("id, staff_id, tenant_slug")
+              .eq("tenant_slug", safeSlug)
+              .order("assigned_at", { ascending: true });
+            if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+            return (data || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
+          })(),
+        ]);
+
+        const userMap = new Map<number, { id: number; name: string | null; email: string; role: string; source: string }>();
+
+        for (const m of tenantMembers) {
+          userMap.set(Number(m.id), {
+            id: Number(m.id),
+            name: m.name ?? null,
+            email: m.email,
+            role: m.role,
+            source: m.source,
+          });
+        }
+
+        // Ensure assigned internal/accountants are present even if tenant user row is absent.
+        const laneStaffIds = Array.from(new Set(assignmentLanes.map((a) => Number(a.staff_id)).filter((n) => Number.isFinite(n) && n > 0)));
+        const missing = laneStaffIds.filter((id) => !userMap.has(id));
+        if (missing.length) {
+          const { data: rows, error } = await supabase
+            .from("portal_users")
+            .select("id,name,email,role")
+            .in("id", missing);
+          if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+          for (const r of (rows || []) as Array<{ id: number; name: string | null; email: string; role: string }>) {
+            userMap.set(Number(r.id), {
+              id: Number(r.id),
+              name: r.name ?? null,
+              email: r.email,
+              role: r.role,
+              source: "staff_assignment",
+            });
+          }
+        }
+
+        const laneByStaff = new Map<number, number>();
+        for (const a of assignmentLanes) {
+          if (!laneByStaff.has(Number(a.staff_id))) {
+            laneByStaff.set(Number(a.staff_id), Number(a.id));
+          }
+        }
+
+        const query = input.q?.trim().toLowerCase() ?? "";
+
+        const candidates = Array.from(userMap.values())
+          .map((u) => {
+            const lowerRole = String(u.role || "").toLowerCase();
+            const type = ["accountant", "tax_manager", "accounting_manager", "admin"].includes(lowerRole)
+              ? (lowerRole === "admin" ? "internal" : "accountant")
+              : (lowerRole === "client" ? "guest" : "internal");
+
+            return {
+              id: u.id,
+              displayName: (u.name || u.email || `User ${u.id}`).trim(),
+              email: u.email || null,
+              role: u.role || null,
+              source: type,
+              initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+              assignmentId: laneByStaff.get(u.id) ?? null,
+            };
+          })
+          .filter((c) => {
+            if (input.assignmentId != null && !(c.assignmentId == null || Number(c.assignmentId) === Number(input.assignmentId))) {
+              return false;
+            }
+            if (!query) return true;
+            return (
+              c.displayName.toLowerCase().includes(query) ||
+              (c.email?.toLowerCase().includes(query) ?? false)
+            );
+          })
+          .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+        return candidates;
+      }),
+
+    peopleSearch: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        q: z.string().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        if (!(STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin")) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "People search is restricted." });
+        }
+
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const safeSlug = sanitizeTenantSlug(slug);
+        await resolveChatAssignmentIdForUser(ctx.user, safeSlug, undefined);
+
+        if (safeSlug === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+          const { data: internalUsers, error: internalErr } = await supabase
+            .from("portal_users")
+            .select("id,name,email,role")
+            .in("role", ["admin", "accounting_manager", "tax_manager", "accountant"])
+            .order("name", { ascending: true });
+          if (internalErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: internalErr.message });
+          const q = input.q?.trim().toLowerCase() ?? "";
+          return ((internalUsers || []) as Array<{ id:number; name:string|null; email:string; role:string }>).map((u) => ({
+            id: Number(u.id),
+            displayName: (u.name || u.email || `User ${u.id}`).trim(),
+            email: u.email || null,
+            role: u.role || null,
+            source: "internal" as const,
+            initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+            assignmentId: null as number | null,
+          })).filter((c)=> !q || c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false));
+        }
+
+        const [tenantMembers, assignmentLanes] = await Promise.all([
+          listTenantMembers(safeSlug),
+          (async () => {
+            const { data, error } = await supabase
+              .from("staff_client_assignments")
+              .select("id, staff_id, tenant_slug")
+              .eq("tenant_slug", safeSlug)
+              .order("assigned_at", { ascending: true });
+            if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+            return (data || []) as Array<{ id: number; staff_id: number; tenant_slug: string }>;
+          })(),
+        ]);
+
+        const userMap = new Map<number, { id: number; name: string | null; email: string; role: string; source: string }>();
+        for (const m of tenantMembers) {
+          userMap.set(Number(m.id), {
+            id: Number(m.id),
+            name: m.name ?? null,
+            email: m.email,
+            role: m.role,
+            source: m.source,
+          });
+        }
+
+        const laneStaffIds = Array.from(new Set(assignmentLanes.map((a) => Number(a.staff_id)).filter((n) => Number.isFinite(n) && n > 0)));
+        const missing = laneStaffIds.filter((id) => !userMap.has(id));
+        if (missing.length) {
+          const { data: rows, error } = await supabase
+            .from("portal_users")
+            .select("id,name,email,role")
+            .in("id", missing);
+          if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+          for (const r of (rows || []) as Array<{ id: number; name: string | null; email: string; role: string }>) {
+            userMap.set(Number(r.id), {
+              id: Number(r.id),
+              name: r.name ?? null,
+              email: r.email,
+              role: r.role,
+              source: "staff_assignment",
+            });
+          }
+        }
+
+        const laneByStaff = new Map<number, number>();
+        for (const a of assignmentLanes) {
+          if (!laneByStaff.has(Number(a.staff_id))) laneByStaff.set(Number(a.staff_id), Number(a.id));
+        }
+
+        const query = input.q?.trim().toLowerCase() ?? "";
+        return Array.from(userMap.values())
+          .map((u) => {
+            const lowerRole = String(u.role || "").toLowerCase();
+            const type = ["accountant", "tax_manager", "accounting_manager", "admin"].includes(lowerRole)
+              ? (lowerRole === "admin" ? "internal" : "accountant")
+              : (lowerRole === "client" ? "guest" : "internal");
+            return {
+              id: u.id,
+              displayName: (u.name || u.email || `User ${u.id}`).trim(),
+              email: u.email || null,
+              role: u.role || null,
+              source: type,
+              initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+              assignmentId: laneByStaff.get(u.id) ?? null,
+            };
+          })
+          .filter((c) => !query || c.displayName.toLowerCase().includes(query) || (c.email?.toLowerCase().includes(query) ?? false))
+          .sort((a, b) => a.displayName.localeCompare(b.displayName));
+      }),
+
+    resolveDm: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        peerUserId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!(STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin")) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "DM is restricted." });
+        }
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const safeSlug = sanitizeTenantSlug(slug);
+        const peerUserId = normalizeUserId(input.peerUserId);
+
+        const allowed = await canUsePeerForDm(ctx.user, peerUserId, safeSlug);
+        if (!allowed) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Peer is not allowed for DM in this scope." });
+        }
+
+        const dmKey = makeDmKey(currentUserId, peerUserId);
+        return {
+          dmKey,
+          laneKey: `dm:${dmKey}`,
+          peerUserId,
+          tenantSlug: safeSlug,
+        };
+      }),
+
     // List recent messages for the tenant's room (top-level only)
     list: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         limit: z.number().min(1).max(500).default(200),
         beforeId: z.number().optional(),
         search: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        if (!isInternalChatSlug(slug)) {
+          const tenant = await getTenantBySlug(slug);
+          if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          return getChatMessages(slug, input.limit, input.beforeId, input.search, undefined, false, input.dmKey);
+        }
+
         const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
         return getChatMessages(slug, input.limit, input.beforeId, input.search, scope.assignmentId, scope.assignmentNullOnly);
       }),
@@ -1799,10 +2479,18 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         parentId: z.number(),
       }))
       .query(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          return getThreadReplies(slug, input.parentId, undefined, false, input.dmKey);
+        }
+
         const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
         return getThreadReplies(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly);
       }),
@@ -1812,21 +2500,33 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         body: z.string().min(1).max(4000),
         replyToMessageId: z.number().optional(),
         replyToSenderName: z.string().optional(),
         replyToMessagePreview: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
+        if (!isInternalChatSlug(slug) && !tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
 
         try {
-          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+          let dmKey: string | null = null;
+          let assignmentId: number | null = null;
+          if (input.dmKey) {
+            await assertDmAccess(currentUserId, input.dmKey);
+            dmKey = input.dmKey;
+          } else {
+            const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+            assignmentId = scope.assignmentId;
+          }
+
           const msg = await insertGlobalChatTextMessage({
             tenant_slug: slug,
-            assignment_id: scope.assignmentId,
+            assignment_id: assignmentId,
+            dm_key: dmKey,
             organization_id: tenant?.id != null ? String(tenant.id) : null,
             sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
             sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
@@ -1836,6 +2536,23 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             reply_to_sender_name: input.replyToSenderName ?? null,
             reply_to_message_preview: input.replyToMessagePreview ?? null,
           });
+
+          await createMentionNotifications({
+            actor: ctx.user,
+            tenantSlug: slug,
+            tenantName: tenant?.company_name ?? null,
+            assignmentId,
+            dmKey,
+            messageId: Number((msg as any).id),
+            body: input.body,
+          }).catch((err) => {
+            console.error("[chat.send] mention notification failed", {
+              tenantSlug: slug,
+              messageId: Number((msg as any).id),
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+
           return msg;
         } catch (error) {
           console.error("[chat.send] global insert failed", {
@@ -1856,17 +2573,34 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         parentId: z.number(),
         body: z.string().min(1).max(4000),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
+        if (!isInternalChatSlug(slug) && !tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        let dmKey: string | null = null;
+        let assignmentId: number | null = null;
+        let assignmentNullOnly = false;
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          dmKey = input.dmKey;
+        } else {
+          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+          assignmentId = scope.assignmentId;
+          assignmentNullOnly = scope.assignmentNullOnly;
+        }
+
         const reply = await insertGlobalChatTextMessage({
           tenant_slug: slug,
-          assignment_id: scope.assignmentId,
+          assignment_id: assignmentId,
+          dm_key: dmKey,
           organization_id: tenant?.id != null ? String(tenant.id) : null,
           sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
@@ -1876,8 +2610,27 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           thread_id: input.parentId,
           reply_count: 0,
         });
+
+        await createMentionNotifications({
+          actor: ctx.user,
+          tenantSlug: slug,
+          tenantName: tenant?.company_name ?? null,
+          assignmentId,
+          dmKey,
+          messageId: Number((reply as any).id),
+          parentId: input.parentId,
+          body: input.body,
+        }).catch((err) => {
+          console.error("[chat.sendReply] mention notification failed", {
+            tenantSlug: slug,
+            messageId: Number((reply as any).id),
+            parentId: input.parentId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+
         // Increment reply count on parent (non-blocking)
-        await incrementReplyCount(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
+        await incrementReplyCount(slug, input.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
         return reply;
       }),
 
@@ -1886,6 +2639,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         parentId: z.number(),
         body: z.string().optional(),
         fileBase64: z.string(),
@@ -1894,10 +2648,24 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         fileSize: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
+        if (!isInternalChatSlug(slug) && !tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        let dmKey: string | null = null;
+        let assignmentId: number | null = null;
+        let assignmentNullOnly = false;
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          dmKey = input.dmKey;
+        } else {
+          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+          assignmentId = scope.assignmentId;
+          assignmentNullOnly = scope.assignmentNullOnly;
+        }
 
         const now = new Date();
         const archiveYear = now.getFullYear();
@@ -1947,7 +2715,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
         const reply = await insertGlobalChatFileMessage({
           tenant_slug: slug,
-          assignment_id: scope.assignmentId,
+          assignment_id: assignmentId,
+          dm_key: dmKey,
           organization_id: tenant?.id != null ? String(tenant.id) : null,
           sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
@@ -1965,7 +2734,25 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           reply_count: 0,
         });
 
-        await incrementReplyCount(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
+        await createMentionNotifications({
+          actor: ctx.user,
+          tenantSlug: slug,
+          tenantName: tenant?.company_name ?? null,
+          assignmentId,
+          dmKey,
+          messageId: Number((reply as any).id),
+          parentId: input.parentId,
+          body: input.body,
+        }).catch((err) => {
+          console.error("[chat.sendReplyFile] mention notification failed", {
+            tenantSlug: slug,
+            messageId: Number((reply as any).id),
+            parentId: input.parentId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+
+        await incrementReplyCount(slug, input.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
         return reply;
       }),
 
@@ -1974,6 +2761,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         body: z.string().optional(), // optional caption
         fileBase64: z.string(), // base64-encoded file content
         fileName: z.string(),
@@ -1984,10 +2772,22 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         replyToMessagePreview: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
+        if (!isInternalChatSlug(slug) && !tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        let dmKey: string | null = null;
+        let assignmentId: number | null = null;
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          dmKey = input.dmKey;
+        } else {
+          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+          assignmentId = scope.assignmentId;
+        }
 
         const now = new Date();
         const archiveYear = now.getFullYear();
@@ -2048,7 +2848,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         let msg;
         const chatInsertPayload = {
           tenant_slug: slug,
-          assignment_id: scope.assignmentId,
+          assignment_id: assignmentId,
+          dm_key: dmKey,
           organization_id: tenant?.id != null ? String(tenant.id) : null,
           sender_user_id: ctx.user.id != null ? String(ctx.user.id) : null,
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
@@ -2104,6 +2905,22 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           }).catch(() => {}); // non-blocking
         }
 
+        await createMentionNotifications({
+          actor: ctx.user,
+          tenantSlug: slug,
+          tenantName: tenant?.company_name ?? null,
+          assignmentId,
+          dmKey,
+          messageId: Number((msg as any).id),
+          body: input.body ?? null,
+        }).catch((err) => {
+          console.error("[chat.sendFile] mention notification failed", {
+            tenantSlug: slug,
+            messageId: Number((msg as any).id),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+
         return msg;
       }),
 
@@ -2112,16 +2929,29 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       .input(z.object({
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
         id: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const slug = await resolveTenantSlug(ctx.user, input.tenantSlug);
-        const tenant = await getTenantBySlug(slug);
-        if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
+        if (!isInternalChatSlug(slug) && !tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+
+        let dmKey: string | null = null;
+        let assignmentId: number | null = null;
+        let assignmentNullOnly = false;
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          dmKey = input.dmKey;
+        } else {
+          const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+          assignmentId = scope.assignmentId;
+          assignmentNullOnly = scope.assignmentNullOnly;
+        }
 
         // Global-first delete path
-        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
-        const globalMsg = await getGlobalChatMessageById(slug, input.id, scope.assignmentId, scope.assignmentNullOnly).catch(() => null);
+        const globalMsg = await getGlobalChatMessageById(slug, input.id, assignmentId, assignmentNullOnly, dmKey).catch(() => null);
 
         if (globalMsg) {
           const senderUserId = globalMsg.sender_user_id != null ? Number(globalMsg.sender_user_id) : null;
@@ -2132,10 +2962,10 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete your own messages." });
           }
 
-          const result = await deleteGlobalChatMessage(slug, input.id, scope.assignmentId, scope.assignmentNullOnly);
+          const result = await deleteGlobalChatMessage(slug, input.id, assignmentId, assignmentNullOnly, dmKey);
 
           if (result.parentId != null) {
-            await decrementReplyCount(slug, result.parentId, scope.assignmentId, scope.assignmentNullOnly).catch(() => {});
+            await decrementReplyCount(slug, result.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
           }
 
           return {
@@ -2145,8 +2975,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           };
         }
 
-        // Legacy fallback path only for shared (non-assignment-scoped) conversations.
-        if (scope.assignmentId != null || scope.assignmentNullOnly) {
+        // Legacy fallback path only for shared (non-assignment-scoped/non-DM) conversations.
+        if (dmKey || assignmentId != null || assignmentNullOnly) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Message not found in conversation scope" });
         }
         await deleteChatMessageSupabase(slug, input.id);
