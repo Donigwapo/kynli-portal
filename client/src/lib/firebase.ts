@@ -1,5 +1,5 @@
 import { initializeApp, type FirebaseApp } from "firebase/app";
-import { getMessaging, getToken, isSupported, type Messaging } from "firebase/messaging";
+import { getMessaging, getToken, isSupported, onMessage, type MessagePayload, type Messaging } from "firebase/messaging";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
@@ -14,6 +14,8 @@ const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
 
 let appRef: FirebaseApp | null = null;
 let messagingRef: Messaging | null = null;
+let workerRegistrationRef: ServiceWorkerRegistration | null = null;
+let foregroundListenerBound = false;
 
 const hasConfig = Boolean(
   firebaseConfig.apiKey &&
@@ -31,6 +33,8 @@ function getAppInstance(): FirebaseApp {
 }
 
 async function registerMessagingWorker(): Promise<ServiceWorkerRegistration> {
+  if (workerRegistrationRef) return workerRegistrationRef;
+
   const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
   if (reg.active) {
     reg.active.postMessage({ type: "FIREBASE_CONFIG", config: firebaseConfig });
@@ -39,6 +43,8 @@ async function registerMessagingWorker(): Promise<ServiceWorkerRegistration> {
       if (reg.active) reg.active.postMessage({ type: "FIREBASE_CONFIG", config: firebaseConfig });
     });
   }
+
+  workerRegistrationRef = reg;
   return reg;
 }
 
@@ -59,6 +65,21 @@ export async function getFcmToken(): Promise<string | null> {
   });
 
   return token || null;
+}
+
+export async function ensureFcmForegroundHandler(onPayload: (payload: MessagePayload) => void): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (!("Notification" in window)) return;
+  if (!("serviceWorker" in navigator)) return;
+  if (!hasConfig || !(await isSupported())) return;
+
+  const app = getAppInstance();
+  if (!messagingRef) messagingRef = getMessaging(app);
+  await registerMessagingWorker();
+
+  if (foregroundListenerBound) return;
+  onMessage(messagingRef, onPayload);
+  foregroundListenerBound = true;
 }
 
 export function getNotificationPermissionState(): NotificationPermission | "unsupported" {

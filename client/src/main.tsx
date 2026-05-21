@@ -1,3 +1,4 @@
+import { ensureFcmForegroundHandler } from "@/lib/firebase";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -6,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
 import "./index.css";
+import { toast } from "sonner";
 
 const queryClient = new QueryClient();
 
@@ -34,6 +36,35 @@ queryClient.getMutationCache().subscribe(event => {
     redirectToLoginIfUnauthorized(error);
     console.error("[API Mutation Error]", error);
   }
+});
+
+void ensureFcmForegroundHandler((payload) => {
+  const title = payload.notification?.title || payload.data?.title || "New notification";
+  const body = payload.notification?.body || payload.data?.body || payload.data?.content || "";
+  const target = payload.data?.click_action || payload.data?.target_path || "/";
+
+  if (typeof window !== "undefined" && document.visibilityState === "visible") {
+    toast.message(title, {
+      description: body,
+      action: {
+        label: "Open",
+        onClick: () => {
+          window.location.href = target;
+        },
+      },
+    });
+    return;
+  }
+
+  if (typeof window !== "undefined" && Notification.permission === "granted") {
+    const n = new Notification(title, { body });
+    n.onclick = () => {
+      window.focus();
+      window.location.href = target;
+    };
+  }
+}).catch((err) => {
+  console.warn("[FCM] foreground listener setup skipped", err);
 });
 
 const trpcClient = trpc.createClient({
