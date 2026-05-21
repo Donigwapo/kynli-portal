@@ -33,14 +33,25 @@ function getAppInstance(): FirebaseApp {
 }
 
 async function registerMessagingWorker(): Promise<ServiceWorkerRegistration> {
-  if (workerRegistrationRef) return workerRegistrationRef;
+  if (workerRegistrationRef) {
+    console.log("[FCM SW REGISTER] Reusing existing service worker registration", workerRegistrationRef);
+    return workerRegistrationRef;
+  }
 
+  console.log("[FCM SW REGISTER] Registering firebase messaging service worker");
   const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+  console.log("[FCM SW REGISTER] Registration result", reg);
+
   if (reg.active) {
+    console.log("[FCM SW REGISTER] Posting firebase config to active worker", firebaseConfig);
     reg.active.postMessage({ type: "FIREBASE_CONFIG", config: firebaseConfig });
   } else if (reg.installing) {
+    console.log("[FCM SW REGISTER] Worker installing; will post config on activation");
     reg.installing.addEventListener("statechange", () => {
-      if (reg.active) reg.active.postMessage({ type: "FIREBASE_CONFIG", config: firebaseConfig });
+      if (reg.active) {
+        console.log("[FCM SW REGISTER] Worker active after install; posting config", firebaseConfig);
+        reg.active.postMessage({ type: "FIREBASE_CONFIG", config: firebaseConfig });
+      }
     });
   }
 
@@ -49,37 +60,93 @@ async function registerMessagingWorker(): Promise<ServiceWorkerRegistration> {
 }
 
 export async function getFcmToken(): Promise<string | null> {
-  if (typeof window === "undefined") return null;
-  if (!("Notification" in window)) return null;
-  if (!("serviceWorker" in navigator)) return null;
-  if (!hasConfig || !vapidKey) return null;
-  if (!(await isSupported())) return null;
+  try {
+    if (typeof window === "undefined") {
+      console.warn("[FCM Token Generated] window is undefined");
+      return null;
+    }
+    if (!("Notification" in window)) {
+      console.warn("[FCM Token Generated] Notification API not available");
+      return null;
+    }
+    if (!("serviceWorker" in navigator)) {
+      console.warn("[FCM Token Generated] Service Worker API not available");
+      return null;
+    }
+    if (!hasConfig || !vapidKey) {
+      console.warn("[FCM Token Generated] Missing Firebase config or VAPID key", {
+        hasConfig,
+        hasVapidKey: Boolean(vapidKey),
+      });
+      return null;
+    }
+    if (!(await isSupported())) {
+      console.warn("[FCM Token Generated] firebase/messaging reports unsupported environment");
+      return null;
+    }
 
-  const app = getAppInstance();
-  if (!messagingRef) messagingRef = getMessaging(app);
+    const app = getAppInstance();
+    if (!messagingRef) messagingRef = getMessaging(app);
 
-  const registration = await registerMessagingWorker();
-  const token = await getToken(messagingRef, {
-    vapidKey,
-    serviceWorkerRegistration: registration,
-  });
+    const registration = await registerMessagingWorker();
+    const token = await getToken(messagingRef, {
+      vapidKey,
+      serviceWorkerRegistration: registration,
+    });
 
-  return token || null;
+    if (token) {
+      console.log("[FCM Token Generated]", { token, registration });
+    } else {
+      console.warn("[FCM Token Generated] getToken returned empty token", { registration });
+    }
+
+    return token || null;
+  } catch (error) {
+    console.error("[FCM Token Generated] Failed", { error });
+    return null;
+  }
 }
 
 export async function ensureFcmForegroundHandler(onPayload: (payload: MessagePayload) => void): Promise<void> {
-  if (typeof window === "undefined") return;
-  if (!("Notification" in window)) return;
-  if (!("serviceWorker" in navigator)) return;
-  if (!hasConfig || !(await isSupported())) return;
+  if (typeof window === "undefined") {
+    console.warn("[FCM Foreground Handler Registered] window is undefined");
+    return;
+  }
+  if (!("Notification" in window)) {
+    console.warn("[FCM Foreground Handler Registered] Notification API not available");
+    return;
+  }
+  if (!("serviceWorker" in navigator)) {
+    console.warn("[FCM Foreground Handler Registered] Service Worker API not available");
+    return;
+  }
+  if (!hasConfig) {
+    console.warn("[FCM Foreground Handler Registered] Missing Firebase config", firebaseConfig);
+    return;
+  }
+  if (!(await isSupported())) {
+    console.warn("[FCM Foreground Handler Registered] Unsupported firebase messaging environment");
+    return;
+  }
 
   const app = getAppInstance();
   if (!messagingRef) messagingRef = getMessaging(app);
   await registerMessagingWorker();
 
-  if (foregroundListenerBound) return;
-  onMessage(messagingRef, onPayload);
+  if (foregroundListenerBound) {
+    console.log("[FCM Foreground Handler Registered] already registered");
+    return;
+  }
+
+  onMessage(messagingRef, (payload) => {
+    console.log("[FCM Foreground Received]", payload);
+    onPayload(payload);
+  });
   foregroundListenerBound = true;
+  console.log("[FCM Foreground Handler Registered]", {
+    permission: typeof Notification !== "undefined" ? Notification.permission : "unknown",
+    firebaseConfig,
+  });
 }
 
 export function getNotificationPermissionState(): NotificationPermission | "unsupported" {
