@@ -1,5 +1,5 @@
 import { initializeApp, type FirebaseApp } from "firebase/app";
-import { getMessaging, getToken, isSupported, onMessage, type MessagePayload, type Messaging } from "firebase/messaging";
+import { deleteToken, getMessaging, getToken, isSupported, onMessage, type MessagePayload, type Messaging } from "firebase/messaging";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
@@ -38,9 +38,16 @@ async function registerMessagingWorker(): Promise<ServiceWorkerRegistration> {
     return workerRegistrationRef;
   }
 
-  console.log("[FCM SW REGISTER] Registering firebase messaging service worker");
-  const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
-  console.log("[FCM SW REGISTER] Registration result", reg);
+  console.log("[FCM SW REGISTER] Registering firebase messaging service worker", {
+    scriptURL: "/firebase-messaging-sw.js",
+    scope: "/",
+  });
+  const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", { scope: "/" });
+  console.log("[FCM SW REGISTER] Registration result", {
+    scriptURL: reg.active?.scriptURL || reg.waiting?.scriptURL || reg.installing?.scriptURL,
+    scope: reg.scope,
+    activeState: reg.active?.state,
+  });
 
   if (reg.active) {
     console.log("[FCM SW REGISTER] Posting firebase config to active worker", firebaseConfig);
@@ -89,15 +96,36 @@ export async function getFcmToken(): Promise<string | null> {
     if (!messagingRef) messagingRef = getMessaging(app);
 
     const registration = await registerMessagingWorker();
+    console.log("[FCM SW REGISTER] Using registration for token", {
+      scriptURL: registration.active?.scriptURL || registration.waiting?.scriptURL || registration.installing?.scriptURL,
+      scope: registration.scope,
+    });
+
+    // Ensure the token is bound to the current explicit root-scope SW registration.
+    // If an old token exists from a different registration scope, clear and re-issue.
+    try {
+      const deleted = await deleteToken(messagingRef);
+      console.log("[FCM Token Generated] Existing token deleted before refresh", { deleted });
+    } catch (err) {
+      console.warn("[FCM Token Generated] Failed deleting existing token before refresh", { err });
+    }
+
     const token = await getToken(messagingRef, {
       vapidKey,
       serviceWorkerRegistration: registration,
     });
 
     if (token) {
-      console.log("[FCM Token Generated]", { token, registration });
+      console.log("[FCM Token Generated]", {
+        token,
+        scriptURL: registration.active?.scriptURL || registration.waiting?.scriptURL || registration.installing?.scriptURL,
+        scope: registration.scope,
+      });
     } else {
-      console.warn("[FCM Token Generated] getToken returned empty token", { registration });
+      console.warn("[FCM Token Generated] getToken returned empty token", {
+        scriptURL: registration.active?.scriptURL || registration.waiting?.scriptURL || registration.installing?.scriptURL,
+        scope: registration.scope,
+      });
     }
 
     return token || null;
