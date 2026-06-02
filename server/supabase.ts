@@ -250,6 +250,28 @@ export type Document = {
   updated_at?: string;
 };
 
+export type ActivityLog = {
+  id: number;
+  actor_user_id: number | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  actor_type: string | null;
+  action_type: string;
+  entity_type: string;
+  entity_id: string | null;
+  tenant_slug: string | null;
+  organization_id: string | null;
+  client_id: string | null;
+  file_name: string | null;
+  previous_value: string | null;
+  new_value: string | null;
+  metadata: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: string;
+  status: string;
+};
+
 // ─── Slug helper ──────────────────────────────────────────────────────────────
 
 export function toClientSlug(name: string): string {
@@ -737,6 +759,18 @@ export async function insertLineItem(slug: string, item: Omit<LineItem, "id" | "
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 const DOCUMENTS_METADATA_TABLE = "documents_metadata";
+const DOCUMENT_FOLDERS_TABLE = "portal_document_folders";
+
+export type DocumentFolder = {
+  id: number;
+  tenant_slug: string | null;
+  parent_folder_id: number | null;
+  name: string;
+  full_path: string;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 export async function getDocuments(
   slug: string,
@@ -925,6 +959,40 @@ export async function deleteDocument(slug: string, id: string | number): Promise
   await deleteDocuments(slug, [id]);
 }
 
+export async function deleteDocumentsByUploader(
+  uploaderUserId: string | number,
+  ids: Array<string | number>,
+): Promise<{ deleted: number }> {
+  const normalizedIds = ids.map((id) => String(id));
+  if (normalizedIds.length === 0) return { deleted: 0 };
+
+  const { data: rows, error: lookupError } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .select("id, file_key")
+    .is("tenant_slug", null)
+    .eq("uploaded_by_user_id", String(uploaderUserId))
+    .in("id", normalizedIds);
+
+  if (lookupError) throw new Error(lookupError.message);
+
+  const foundRows = (rows || []) as Array<{ id: string; file_key: string | null }>;
+  const foundIds = foundRows.map((r) => r.id);
+  if (foundIds.length === 0) return { deleted: 0 };
+
+  await removeDocumentFiles(foundRows.map((r) => r.file_key ?? ""));
+
+  const { error: deleteError } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .delete()
+    .is("tenant_slug", null)
+    .eq("uploaded_by_user_id", String(uploaderUserId))
+    .in("id", foundIds);
+
+  if (deleteError) throw new Error(deleteError.message);
+
+  return { deleted: foundIds.length };
+}
+
 export async function updateDocumentType(
   slug: string,
   id: string | number,
@@ -954,6 +1022,311 @@ export async function updateDocumentType(
   }
 
   return data as Document;
+}
+
+export async function updateDocumentDate(
+  slug: string,
+  id: string | number,
+  year: number,
+  month: number | null,
+): Promise<Document> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  const { data, error } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .update({ year, month, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", String(id))
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("[updateDocumentDate] failed", {
+      tenantSlug,
+      id: String(id),
+      year,
+      month,
+      error: error?.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    throw new Error(error?.message || "Failed to update document date");
+  }
+
+  return data as Document;
+}
+
+export async function updateDocumentFileName(
+  slug: string,
+  id: string | number,
+  fileName: string,
+): Promise<Document> {
+  const tenantSlug = sanitizeTenantSlug(slug);
+
+  const { data, error } = await supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .update({ file_name: fileName, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", String(id))
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("[updateDocumentFileName] failed", {
+      tenantSlug,
+      id: String(id),
+      fileName,
+      error: error?.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      hint: (error as any)?.hint,
+    });
+    throw new Error(error?.message || "Failed to update document file name");
+  }
+
+  return data as Document;
+}
+
+export async function listDocumentFolders(tenantSlug: string | null): Promise<DocumentFolder[]> {
+  let query = supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .select("*")
+    .order("name", { ascending: true });
+
+  if (tenantSlug) query = query.eq("tenant_slug", sanitizeTenantSlug(tenantSlug));
+  else query = query.is("tenant_slug", null);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[listDocumentFolders] failed", { tenantSlug, error: error.message });
+    return [];
+  }
+  return (data || []) as DocumentFolder[];
+}
+
+export async function createDocumentFolder(input: {
+  tenantSlug: string | null;
+  parentFolderId?: number | null;
+  name: string;
+  createdByUserId?: string | null;
+}): Promise<DocumentFolder> {
+  const tenantSlug = input.tenantSlug ? sanitizeTenantSlug(input.tenantSlug) : null;
+  const folderName = String(input.name || "").trim();
+  if (!folderName) throw new Error("Folder name is required");
+
+  let parentPath = "";
+  if (input.parentFolderId != null) {
+    const { data: parent, error: parentErr } = await supabase
+      .from(DOCUMENT_FOLDERS_TABLE)
+      .select("id, tenant_slug, full_path")
+      .eq("id", Number(input.parentFolderId))
+      .maybeSingle();
+
+    if (parentErr) throw new Error(parentErr.message);
+    if (!parent) throw new Error("Parent folder not found");
+
+    const parentTenant = (parent as any).tenant_slug ? sanitizeTenantSlug(String((parent as any).tenant_slug)) : null;
+    if (parentTenant !== tenantSlug) throw new Error("Parent folder tenant mismatch");
+
+    parentPath = String((parent as any).full_path || "");
+  }
+
+  const fullPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+
+  let existingQuery = supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .select("*")
+    .ilike("name", folderName)
+    .limit(1);
+
+  if (tenantSlug) existingQuery = existingQuery.eq("tenant_slug", tenantSlug);
+  else existingQuery = existingQuery.is("tenant_slug", null);
+
+  if (input.parentFolderId != null) existingQuery = existingQuery.eq("parent_folder_id", Number(input.parentFolderId));
+  else existingQuery = existingQuery.is("parent_folder_id", null);
+
+  const { data: existing, error: existingErr } = await existingQuery.maybeSingle();
+  if (existingErr) throw new Error(existingErr.message);
+  if (existing) return existing as DocumentFolder;
+
+  const { data, error } = await supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .insert({
+      tenant_slug: tenantSlug,
+      parent_folder_id: input.parentFolderId ?? null,
+      name: folderName,
+      full_path: fullPath,
+      created_by_user_id: input.createdByUserId ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    throw new Error(error?.message || "Failed to create folder");
+  }
+
+  return data as DocumentFolder;
+}
+
+export async function getDocumentFolderById(id: number): Promise<DocumentFolder | null> {
+  const { data, error } = await supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .select("*")
+    .eq("id", Number(id))
+    .maybeSingle();
+
+  if (error) {
+    console.error("[getDocumentFolderById] failed", { id, error: error.message });
+    return null;
+  }
+
+  return (data as DocumentFolder | null) ?? null;
+}
+
+export async function countChildFolders(folderId: number): Promise<number> {
+  const { count, error } = await supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .select("id", { count: "exact", head: true })
+    .eq("parent_folder_id", Number(folderId));
+
+  if (error) {
+    console.error("[countChildFolders] failed", { folderId, error: error.message });
+    throw new Error(error.message);
+  }
+
+  return Number(count ?? 0);
+}
+
+export async function countDocumentsInFolderPath(tenantSlug: string | null, folderPath: string): Promise<number> {
+  const sanitized = tenantSlug ? sanitizeTenantSlug(tenantSlug) : null;
+  let query = supabase
+    .from(DOCUMENTS_METADATA_TABLE)
+    .select("id", { count: "exact", head: true })
+    .or(`doc_type.eq.${folderPath},doc_type.like.${folderPath}/%`);
+
+  if (sanitized) query = query.eq("tenant_slug", sanitized);
+  else query = query.is("tenant_slug", null);
+
+  const { count, error } = await query;
+  if (error) {
+    console.error("[countDocumentsInFolderPath] failed", { tenantSlug: sanitized, folderPath, error: error.message });
+    throw new Error(error.message);
+  }
+
+  return Number(count ?? 0);
+}
+
+export async function deleteDocumentFolderById(id: number): Promise<boolean> {
+  const { error } = await supabase
+    .from(DOCUMENT_FOLDERS_TABLE)
+    .delete()
+    .eq("id", Number(id));
+
+  if (error) {
+    console.error("[deleteDocumentFolderById] failed", { id, error: error.message });
+    throw new Error(error.message);
+  }
+
+  return true;
+}
+
+export async function insertActivityLog(input: {
+  actor_user_id?: number | null;
+  actor_name?: string | null;
+  actor_email?: string | null;
+  actor_role?: string | null;
+  actor_type?: string | null;
+  action_type: string;
+  entity_type: string;
+  entity_id?: string | null;
+  tenant_slug?: string | null;
+  organization_id?: string | null;
+  client_id?: string | null;
+  file_name?: string | null;
+  previous_value?: string | null;
+  new_value?: string | null;
+  metadata?: Record<string, unknown> | null;
+  ip_address?: string | null;
+  status?: string;
+}): Promise<ActivityLog | null> {
+  const payload = {
+    actor_user_id: input.actor_user_id ?? null,
+    actor_name: input.actor_name ?? null,
+    actor_email: input.actor_email ?? null,
+    actor_role: input.actor_role ?? null,
+    actor_type: input.actor_type ?? null,
+    action_type: input.action_type,
+    entity_type: input.entity_type,
+    entity_id: input.entity_id ?? null,
+    tenant_slug: input.tenant_slug ? sanitizeTenantSlug(input.tenant_slug) : null,
+    organization_id: input.organization_id ?? null,
+    client_id: input.client_id ?? null,
+    file_name: input.file_name ?? null,
+    previous_value: input.previous_value ?? null,
+    new_value: input.new_value ?? null,
+    metadata: input.metadata ?? {},
+    ip_address: input.ip_address ?? null,
+    status: input.status ?? "success",
+  };
+
+  const { data, error } = await supabase
+    .from("activity_logs")
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("[insertActivityLog] failed", {
+      error: error.message,
+      code: (error as any)?.code,
+      details: (error as any)?.details,
+      payload,
+    });
+    return null;
+  }
+
+  return data as ActivityLog;
+}
+
+export async function listActivityLogs(input?: {
+  search?: string;
+  actionType?: string;
+  tenantSlug?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}): Promise<ActivityLog[]> {
+  let query = supabase
+    .from("activity_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(input?.limit ?? 200, 1), 1000));
+
+  if (input?.search && input.search.trim()) {
+    const q = input.search.trim();
+    query = query.or(`file_name.ilike.%${q}%,actor_name.ilike.%${q}%,actor_email.ilike.%${q}%`);
+  }
+
+  if (input?.actionType && input.actionType !== "all") {
+    query = query.eq("action_type", input.actionType);
+  }
+
+  if (input?.tenantSlug && input.tenantSlug !== "all") {
+    query = query.eq("tenant_slug", sanitizeTenantSlug(input.tenantSlug));
+  }
+
+  if (input?.from) query = query.gte("created_at", input.from);
+  if (input?.to) query = query.lte("created_at", input.to);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[listActivityLogs] failed", error.message);
+    return [];
+  }
+
+  return (data || []) as ActivityLog[];
 }
 
 export async function backfillDocumentsOrganizationIds(): Promise<{

@@ -24,6 +24,7 @@ import SalesTracker from "./pages/portal/SalesTracker";
 import Clients from "./pages/portal/Clients";
 import Chat from "./pages/portal/Chat";
 import SetPassword from "./pages/portal/SetPassword";
+import ActivityLogPage from "./pages/portal/ActivityLog";
 import TierGate from "./components/TierGate";
 
 // Admin pages
@@ -82,6 +83,7 @@ function Router() {
       <Route path="/portal/time"         component={() => <PortalRoute component={TimeIntelligence} featureKey="time_intelligence" />} />
       <Route path="/portal/sales"        component={() => <PortalRoute component={SalesTracker}     featureKey="sales_tracker" />} />
       <Route path="/portal/chat"         component={() => <PortalRoute component={Chat}             featureKey="chat" />} />
+      <Route path="/portal/activity-log" component={() => <PortalRoute component={ActivityLogPage}  featureKey="overview" />} />
 
       {/* Admin Portal — protected + admin-only */}
       <Route path="/admin" component={() => <AdminRoute component={AdminDashboard} />} />
@@ -91,6 +93,7 @@ function Router() {
       <Route path="/admin/data-entry" component={() => <AdminRoute component={AdminDataEntry} />} />
       <Route path="/admin/team" component={() => <AdminRoute component={AdminTeam} />} />
       <Route path="/admin/profile" component={() => <AdminRoute component={Profile} />} />
+      <Route path="/admin/activity-log" component={() => <AdminRoute component={ActivityLogPage} />} />
 
       {/* 404 */}
       <Route path="/404" component={NotFound} />

@@ -9,6 +9,7 @@ import {
 import {
   TrendingUp, TrendingDown, DollarSign, Percent, Users,
   ArrowUpRight, ArrowDownRight, CheckCircle2, Circle,
+  FileText, FileSpreadsheet, Image as ImageIcon, File, Clock3,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
@@ -26,6 +27,42 @@ function fmtD(n: number) {
   return `$${n.toLocaleString()}`;
 }
 function fmtPct(n: number) { return `${n.toFixed(1)}%`; }
+
+function relativeTime(value?: string | null): string {
+  if (!value) return "just now";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "just now";
+  const diffMs = d.getTime() - Date.now();
+  const mins = Math.round(diffMs / 60000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (Math.abs(mins) < 60) return rtf.format(mins, "minute");
+  const hours = Math.round(mins / 60);
+  if (Math.abs(hours) < 24) return rtf.format(hours, "hour");
+  const days = Math.round(hours / 24);
+  return rtf.format(days, "day");
+}
+
+function prettifyFolderPath(path?: string | null): string {
+  const raw = String(path ?? "").trim();
+  if (!raw) return "—";
+  const parts = raw.split("/").filter(Boolean);
+  const out: string[] = [];
+  for (const part of parts) {
+    const m = part.match(/^(.*)\s(\d{4})$/);
+    const prev = out[out.length - 1];
+    if (m && prev && m[1].trim().toLowerCase() === prev.trim().toLowerCase()) out.push(m[2]);
+    else out.push(part);
+  }
+  return out.join("/");
+}
+
+function fileTypeIcon(mime?: string | null) {
+  const m = String(mime ?? "").toLowerCase();
+  if (m.startsWith("image/")) return <ImageIcon className="w-4 h-4 text-cyan-400" />;
+  if (m.includes("sheet") || m.includes("excel") || m.includes("csv")) return <FileSpreadsheet className="w-4 h-4 text-emerald-400" />;
+  if (m.includes("pdf")) return <FileText className="w-4 h-4 text-red-400" />;
+  return <File className="w-4 h-4 text-zinc-400" />;
+}
 
 function KpiCard({
   label, value, budget, variance, variancePct, icon, invertGood = false,
@@ -88,6 +125,11 @@ export default function Overview() {
   );
   const { data: rosterData = [] } = trpc.roster.list.useQuery(
     { tenantSlug: tslug ?? undefined },
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
+  );
+
+  const { data: recentClientUploads = [] } = trpc.documents.recentClientUploads.useQuery(
+    { limit: 15, tenantSlug: tslug ?? undefined },
     { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
 
@@ -373,6 +415,64 @@ export default function Overview() {
               <Bar dataKey="Expenses" fill={RED} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-foreground">Recent Client Uploads</h2>
+            <Link href="/portal/documents" className="text-xs text-primary hover:underline">Open Document Portal →</Link>
+          </div>
+
+          {recentClientUploads.length === 0 ? (
+            <div className="rounded-lg border border-border bg-background p-6 text-sm text-muted-foreground">
+              No recent client uploads.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
+                    <th className="py-2 pr-3">File Name</th>
+                    <th className="py-2 pr-3">Client</th>
+                    <th className="py-2 pr-3">Uploaded By</th>
+                    <th className="py-2 pr-3">Folder Path</th>
+                    <th className="py-2 pr-1">Uploaded Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentClientUploads.map((row) => {
+                    const href = `/portal/documents?folder=${encodeURIComponent(row.folder_path || "")}&doc=${encodeURIComponent(String(row.id))}`;
+                    const displayFolderPath = prettifyFolderPath(row.folder_path);
+                    return (
+                      <tr
+                        key={row.id}
+                        className="border-b border-border/70 hover:bg-muted/30 cursor-pointer"
+                        onClick={() => {
+                          window.location.href = href;
+                        }}
+                      >
+                        <td className="py-3 pr-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {fileTypeIcon(row.mime_type)}
+                            <span className="truncate" title={row.file_name}>{row.file_name}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 pr-3 text-muted-foreground">{row.client_name}</td>
+                        <td className="py-3 pr-3 text-muted-foreground">{row.uploaded_by}</td>
+                        <td className="py-3 pr-3 text-muted-foreground truncate" title={row.folder_path}>{displayFolderPath}</td>
+                        <td className="py-3 pr-1 text-muted-foreground">
+                          <div className="inline-flex items-center gap-1">
+                            <Clock3 className="w-3.5 h-3.5" />
+                            <span>{relativeTime(row.uploaded_at)}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Revenue & Profit Trend + Active Clients by Tier + Coaching Goals */}

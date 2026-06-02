@@ -35,6 +35,11 @@ import {
   deleteDocument,
   deleteDocuments,
   updateDocumentType,
+  updateDocumentDate,
+  updateDocumentFileName,
+  deleteDocumentsByUploader,
+  listDocumentFolders,
+  createDocumentFolder,
   getFinancials,
   getKpiMetrics,
   getLineItems,
@@ -98,6 +103,11 @@ import {
   deleteTenant,
   sanitizeTenantSlug,
   backfillDocumentsOrganizationIds,
+  insertActivityLog,
+  listActivityLogs,
+  getDocumentFolderById,
+  countDocumentsInFolderPath,
+  deleteDocumentFolderById,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
@@ -161,6 +171,56 @@ const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
 ]);
 const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATION_WEBHOOK_URL?.trim() || "";
+const N8N_DOCUMENT_MOVED_WEBHOOK_URL = process.env.N8N_DOCUMENT_MOVED_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/movedfile";
+
+function inferActorType(role: PortalUser["role"]): string {
+  if (role === "admin") return "admin";
+  if (role === "accounting_manager" || role === "tax_manager" || role === "accountant") return "internal_staff";
+  if (role === "client") return "client";
+  return "external_member";
+}
+
+function extractRequestIp(req: any): string | null {
+  const xff = req?.headers?.["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim()) return xff.split(",")[0]!.trim();
+  return req?.ip ?? req?.socket?.remoteAddress ?? null;
+}
+
+async function writeActivityLog(input: {
+  req?: any;
+  actor: PortalUser;
+  action_type: string;
+  entity_type: string;
+  entity_id?: string | null;
+  tenant_slug?: string | null;
+  organization_id?: string | null;
+  client_id?: string | null;
+  file_name?: string | null;
+  previous_value?: string | null;
+  new_value?: string | null;
+  metadata?: Record<string, unknown>;
+  status?: "success" | "failed";
+}): Promise<void> {
+  await insertActivityLog({
+    actor_user_id: Number(input.actor.id),
+    actor_name: input.actor.name ?? null,
+    actor_email: input.actor.email ?? null,
+    actor_role: input.actor.role,
+    actor_type: inferActorType(input.actor.role),
+    action_type: input.action_type,
+    entity_type: input.entity_type,
+    entity_id: input.entity_id ?? null,
+    tenant_slug: input.tenant_slug ?? null,
+    organization_id: input.organization_id ?? null,
+    client_id: input.client_id ?? null,
+    file_name: input.file_name ?? null,
+    previous_value: input.previous_value ?? null,
+    new_value: input.new_value ?? null,
+    metadata: input.metadata ?? {},
+    ip_address: extractRequestIp(input.req),
+    status: input.status ?? "success",
+  });
+}
 
 const isInternalChatSlug = (slug?: string | null): boolean =>
   !!slug && sanitizeTenantSlug(slug) === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG);
@@ -392,6 +452,27 @@ function normalizeMentionAlias(value: string): string {
     .replace(/^@+/, "")
     .replace(/[^a-z0-9]+/g, ".")
     .replace(/^\.+|\.+$/g, "");
+}
+
+function toMessagePreview(text: string | null | undefined, max = 180): string {
+  const raw = String(text ?? "").trim();
+  if (!raw) return "";
+  return raw.length > max ? `${raw.slice(0, max)}…` : raw;
+}
+
+function buildConversationId(input: {
+  tenantSlug: string;
+  assignmentId: number | null;
+  dmKey: string | null;
+}): string {
+  if (input.dmKey) return `dm:${input.dmKey}`;
+  if (input.assignmentId != null) return `assignment:${sanitizeTenantSlug(input.tenantSlug)}:${input.assignmentId}`;
+  return `team:${sanitizeTenantSlug(input.tenantSlug)}`;
+}
+
+function normalizeDocTypeValue(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim();
+  return normalized || "Other";
 }
 
 function extractMentionedUserIds(body: string, candidates: MentionRecipient[]): number[] {
@@ -646,6 +727,7 @@ async function deliverMentionNotificationsToWebhook(rows: MentionNotificationRow
 }
 
 async function createMentionNotifications(params: {
+  req?: any;
   actor: PortalUser;
   tenantSlug: string;
   tenantName?: string | null;
@@ -655,7 +737,7 @@ async function createMentionNotifications(params: {
   parentId?: number | null;
   body: string | null | undefined;
 }): Promise<void> {
-  const { actor, tenantSlug, tenantName, assignmentId, dmKey, messageId, parentId, body } = params;
+  const { req, actor, tenantSlug, tenantName, assignmentId, dmKey, messageId, parentId, body } = params;
   const text = (body || "").trim();
   if (!text) return;
 
@@ -666,6 +748,37 @@ async function createMentionNotifications(params: {
 
   const uniqueRecipientIds = Array.from(new Set(mentionedIds));
   if (!uniqueRecipientIds.length) return;
+
+  const conversationId = buildConversationId({ tenantSlug, assignmentId, dmKey });
+
+  await writeActivityLog({
+    req,
+    actor,
+    action_type: "mention_created",
+    entity_type: "chat_message",
+    entity_id: String(messageId),
+    tenant_slug: tenantSlug,
+    previous_value: null,
+    new_value: null,
+    metadata: {
+      conversation_id: conversationId,
+      thread_id: parentId ?? null,
+      mentioned_user_ids: uniqueRecipientIds,
+      mentioned_users: uniqueRecipientIds.map((id) => {
+        const r = recipients.find((x) => Number(x.id) === Number(id));
+        return {
+          id,
+          name: r?.displayName ?? null,
+          email: r?.email ?? null,
+        };
+      }),
+      message_preview: toMessagePreview(text),
+      message_length: text.length,
+      related_message_id: messageId,
+      source: "chat",
+    },
+    status: "success",
+  });
 
   const contextLabel = dmKey
     ? "Direct Message"
@@ -712,12 +825,71 @@ async function createMentionNotifications(params: {
     });
 }
 
+async function deliverDocumentMovedWebhook(payload: {
+  document_id: string;
+  tenant_slug: string | null;
+  moved_by_user_id: string;
+  moved_by_name: string | null;
+  moved_by_email: string | null;
+  moved_by_role: PortalUser["role"];
+  previous_folder: string;
+  new_folder: string;
+  file_name: string | null;
+  file_path: string | null;
+  moved_at: string;
+  destination_folder_id?: number | null;
+  destination_folder_name?: string | null;
+  destination_folder_path?: string | null;
+}): Promise<void> {
+  if (!N8N_DOCUMENT_MOVED_WEBHOOK_URL) return;
+
+  const body = {
+    event: "document_moved",
+    document_id: payload.document_id,
+    tenant_slug: payload.tenant_slug,
+    moved_by_user_id: payload.moved_by_user_id,
+    moved_by_name: payload.moved_by_name,
+    moved_by_email: payload.moved_by_email,
+    moved_by_role: payload.moved_by_role,
+    previous_folder: payload.previous_folder,
+    new_folder: payload.new_folder,
+    file_name: payload.file_name,
+    file_path: payload.file_path,
+    moved_at: payload.moved_at,
+    destination_folder_id: payload.destination_folder_id ?? null,
+    destination_folder_name: payload.destination_folder_name ?? null,
+    destination_folder_path: payload.destination_folder_path ?? null,
+    source: "portal_documents",
+  };
+
+  try {
+    const res = await fetch(N8N_DOCUMENT_MOVED_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const responseText = await res.text().catch(() => "");
+      console.error("[documents.move] webhook delivery failed", {
+        status: res.status,
+        response: responseText.slice(0, 500),
+        payload: body,
+      });
+    }
+  } catch (error) {
+    console.error("[documents.move] webhook delivery exception", {
+      error: error instanceof Error ? error.message : String(error),
+      payload: body,
+    });
+  }
+}
+
 async function authorizeDocumentDeleteScope(
   user: PortalUser,
   ids: Array<string | number>,
   tenantSlugOverride?: string,
-): Promise<string> {
-  const resolvedSlug = sanitizeTenantSlug(await resolveTenantSlug(user, tenantSlugOverride));
+): Promise<{ mode: "tenant"; tenantSlug: string } | { mode: "personal" }> {
   const normalizedIds = ids.map((id) => String(id));
 
   const { data, error } = await supabase
@@ -729,7 +901,28 @@ async function authorizeDocumentDeleteScope(
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Unable to validate document ownership: ${error.message}` });
   }
 
-  const rows = (data || []) as Array<{ id: string; tenant_slug: string; uploaded_by_user_id: string | null }>;
+  const rows = (data || []) as Array<{ id: string; tenant_slug: string | null; uploaded_by_user_id: string | null }>;
+
+  const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(user.role);
+  const hasExplicitTenantContext = typeof tenantSlugOverride === "string" && tenantSlugOverride.trim().length > 0;
+
+  // Staff/accountants deleting from personal docs mode (tenant_slug IS NULL).
+  if (isStaffPortfolioUser && !hasExplicitTenantContext) {
+    const personalMismatches = rows.filter(
+      (row) => row.tenant_slug !== null || String(row.uploaded_by_user_id ?? "") !== String(user.id),
+    );
+
+    if (personalMismatches.length > 0) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only delete your own uploaded documents in personal mode.",
+      });
+    }
+
+    return { mode: "personal" };
+  }
+
+  const resolvedSlug = sanitizeTenantSlug(await resolveTenantSlug(user, tenantSlugOverride));
   const tenantMismatches = rows.filter((row) => sanitizeTenantSlug(row.tenant_slug) !== resolvedSlug);
 
   console.info("[documents.delete] authorization decision", {
@@ -749,7 +942,7 @@ async function authorizeDocumentDeleteScope(
     });
   }
 
-  return resolvedSlug;
+  return { mode: "tenant", tenantSlug: resolvedSlug };
 }
 
 /**
@@ -870,6 +1063,33 @@ export const appRouter = router({
       }),
   }),
 
+  activity: router({
+    list: protectedProcedure
+      .input(z.object({
+        search: z.string().optional(),
+        actionType: z.string().optional(),
+        tenantSlug: z.string().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        limit: z.number().optional(),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        const isStaffOrAdmin = STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin";
+        if (!isStaffOrAdmin) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Activity log is restricted to staff/admin." });
+        }
+
+        return listActivityLogs({
+          search: input?.search,
+          actionType: input?.actionType,
+          tenantSlug: input?.tenantSlug,
+          from: input?.from,
+          to: input?.to,
+          limit: input?.limit ?? 300,
+        });
+      }),
+  }),
+
   documentsAdmin: router({
     backfillOrganizationIds: adminProcedure
       .mutation(async () => {
@@ -895,7 +1115,7 @@ export const appRouter = router({
         title: z.string().optional(),
         portalOrigin: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const result = await upsertTenantMember({
           tenantSlug: input.slug,
           fullName: input.fullName,
@@ -907,6 +1127,22 @@ export const appRouter = router({
         if (!result.invited) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: result.inviteError ?? "Invite failed" });
         }
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_added",
+          entity_type: "user",
+          tenant_slug: input.slug,
+          file_name: null,
+          new_value: input.email,
+          metadata: {
+            full_name: input.fullName,
+            title: input.title ?? null,
+            source: "tenant.members.add",
+          },
+          status: "success",
+        });
 
         return { success: true, invited: result.invited };
       }),
@@ -934,8 +1170,22 @@ export const appRouter = router({
         slug: z.string(),
         memberId: z.number(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await removeTenantMember({ tenantSlug: input.slug, memberId: input.memberId });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_removed",
+          entity_type: "user",
+          entity_id: String(input.memberId),
+          tenant_slug: input.slug,
+          metadata: {
+            source: "tenant.members.remove",
+          },
+          status: "success",
+        });
+
         return { success: true };
       }),
     getBySlug: adminProcedure
@@ -1194,11 +1444,297 @@ export const appRouter = router({
   }),
 
   documents: router({
+    listFolders: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        if (isStaffPortfolioUser && !input.tenantSlug) {
+          return listDocumentFolders(null);
+        }
+
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        return listDocumentFolders(slug);
+      }),
+    createFolder: protectedProcedure
+      .input(
+        z.object({
+          tenantSlug: z.string().optional(),
+          name: z.string().min(1).max(120),
+          parentFolderId: z.number().int().positive().nullable().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        let tenantSlug: string | null = null;
+
+        if (!isStaffPortfolioUser || input.tenantSlug) {
+          tenantSlug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        }
+
+        const folder = await createDocumentFolder({
+          tenantSlug,
+          parentFolderId: input.parentFolderId ?? null,
+          name: input.name,
+          createdByUserId: String(ctx.user.id),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "folder_created",
+          entity_type: "folder",
+          entity_id: String(folder.id),
+          tenant_slug: folder.tenant_slug,
+          new_value: folder.full_path,
+          metadata: {
+            folder_name: folder.name,
+            parent_folder_id: folder.parent_folder_id,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
+        return { success: true, folder };
+      }),
+    deleteFolder: protectedProcedure
+      .input(
+        z.object({
+          folderId: z.number().int().positive(),
+          tenantSlug: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const folder = await getDocumentFolderById(input.folderId);
+        if (!folder) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Folder not found." });
+        }
+
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        let allowedTenantSlug: string | null = null;
+
+        if (folder.tenant_slug) {
+          if (isStaffPortfolioUser && !input.tenantSlug) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Tenant context is required for this folder." });
+          }
+          allowedTenantSlug = await resolveChatTenantSlug(ctx.user, input.tenantSlug ?? folder.tenant_slug);
+          if (sanitizeTenantSlug(folder.tenant_slug) !== sanitizeTenantSlug(allowedTenantSlug)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete folders from your own tenant." });
+          }
+        } else {
+          if (!isStaffPortfolioUser) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this folder." });
+          }
+        }
+
+        const docCount = await countDocumentsInFolderPath(folder.tenant_slug ?? null, String(folder.full_path));
+
+        if (docCount > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This folder contains documents. Move or delete its documents first.",
+          });
+        }
+
+        await deleteDocumentFolderById(Number(folder.id));
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "folder_deleted",
+          entity_type: "folder",
+          entity_id: String(folder.id),
+          tenant_slug: folder.tenant_slug,
+          previous_value: folder.full_path,
+          metadata: {
+            folder_name: folder.name,
+            parent_folder_id: folder.parent_folder_id,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
+        return { success: true, folderId: Number(folder.id), parentFolderId: folder.parent_folder_id ?? null };
+      }),
+    recentClientUploads: protectedProcedure
+      .input(z.object({ limit: z.number().min(1).max(50).default(20), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        const hasExplicitTenantContext = typeof input.tenantSlug === "string" && input.tenantSlug.trim().length > 0;
+
+        let baseQuery = supabase
+          .from("documents_metadata")
+          .select("id,tenant_slug,doc_type,file_name,name,mime_type,uploaded_by_name,uploaded_by_user_id,created_at")
+          .order("created_at", { ascending: false })
+          .limit(Math.max(input.limit * 3, input.limit));
+
+        if (isStaffPortfolioUser) {
+          if (hasExplicitTenantContext) {
+            const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+            baseQuery = baseQuery.eq("tenant_slug", slug);
+          } else {
+            const assignedSlugs = await getAssignedTenantSlugsForUser(ctx.user);
+            if (!assignedSlugs.length) return [] as Array<any>;
+            baseQuery = baseQuery.in("tenant_slug", assignedSlugs);
+          }
+        } else {
+          const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+          baseQuery = baseQuery.eq("tenant_slug", slug);
+        }
+
+        const { data: docsRows, error: docsError } = await baseQuery;
+        if (docsError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load recent uploads: ${docsError.message}` });
+        }
+
+        const docs = (docsRows || []) as Array<{
+          id: string | number;
+          tenant_slug: string | null;
+          doc_type: string | null;
+          file_name: string | null;
+          name: string | null;
+          mime_type: string | null;
+          uploaded_by_name: string | null;
+          uploaded_by_user_id: string | null;
+          created_at: string;
+        }>;
+
+        const uploaderIds = Array.from(new Set(docs.map((d) => String(d.uploaded_by_user_id ?? "")).filter(Boolean)));
+        const tenantSlugs = Array.from(new Set(docs.map((d) => String(d.tenant_slug ?? "")).filter(Boolean)));
+
+        const [{ data: uploaderRows }, { data: tenantRows }] = await Promise.all([
+          uploaderIds.length
+            ? supabase.from("portal_users").select("id,role,name,email").in("id", uploaderIds)
+            : Promise.resolve({ data: [] as any[] }),
+          tenantSlugs.length
+            ? supabase.from("portal_tenants").select("slug,company_name").in("slug", tenantSlugs)
+            : Promise.resolve({ data: [] as any[] }),
+        ]);
+
+        const uploaderById = new Map(
+          ((uploaderRows || []) as Array<{ id: number | string; role: string | null; name: string | null; email: string | null }>).map((u) => [String(u.id), u]),
+        );
+        const tenantBySlug = new Map(
+          ((tenantRows || []) as Array<{ slug: string; company_name: string | null }>).map((t) => [String(t.slug), t]),
+        );
+
+        const clientUploaded = docs.filter((d) => {
+          const uploader = uploaderById.get(String(d.uploaded_by_user_id ?? ""));
+          if (!uploader) return true;
+          const role = String(uploader.role ?? "").toLowerCase();
+          return role === "client" || role === "external_member" || role === "business_member";
+        });
+
+        return clientUploaded.slice(0, input.limit).map((d) => ({
+          id: String(d.id),
+          file_name: d.file_name ?? d.name ?? "Document",
+          client_name: tenantBySlug.get(String(d.tenant_slug ?? ""))?.company_name ?? String(d.tenant_slug ?? "Unknown Client"),
+          tenant_slug: d.tenant_slug,
+          uploaded_by: d.uploaded_by_name ?? uploaderById.get(String(d.uploaded_by_user_id ?? ""))?.name ?? "Unknown",
+          folder_path: normalizeDocTypeValue(d.doc_type),
+          uploaded_at: d.created_at,
+          mime_type: d.mime_type ?? null,
+        }));
+      }),
+    dashboard: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        const hasExplicitTenantContext = typeof input.tenantSlug === "string" && input.tenantSlug.trim().length > 0;
+
+        let query = supabase
+          .from("documents_metadata")
+          .select("id,doc_type,file_size,updated_at,file_name,name,created_at")
+          .order("updated_at", { ascending: false, nullsFirst: false });
+
+        let countQuery = supabase
+          .from("documents_metadata")
+          .select("id", { count: "exact", head: true });
+
+        if (isStaffPortfolioUser && !hasExplicitTenantContext) {
+          query = query.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
+          countQuery = countQuery.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
+        } else {
+          const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+          query = query.eq("tenant_slug", slug);
+          countQuery = countQuery.eq("tenant_slug", slug);
+        }
+
+        const [{ data: rows, error }, { count, error: countError }] = await Promise.all([
+          query,
+          countQuery,
+        ]);
+
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load dashboard metadata: ${error.message}` });
+        }
+        if (countError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to count documents: ${countError.message}` });
+        }
+
+        const normalized = (rows || []) as Array<{
+          id: string | number;
+          doc_type: string | null;
+          file_size: number | null;
+          updated_at: string | null;
+          created_at: string | null;
+          file_name: string | null;
+          name: string | null;
+        }>;
+
+        const folderStats = new Map<string, { docCount: number; lastUpdated: string | null }>();
+        let totalStorageBytes = 0;
+        let lastUpdatedOverall: string | null = null;
+
+        for (const row of normalized) {
+          const folderPath = normalizeDocTypeValue(row.doc_type ?? "Other");
+          const updated = row.updated_at ?? row.created_at ?? null;
+
+          const segments = String(folderPath).split("/").filter(Boolean);
+          const paths: string[] = [];
+          for (let i = 0; i < segments.length; i++) {
+            paths.push(segments.slice(0, i + 1).join("/"));
+          }
+          if (!paths.length) paths.push(folderPath);
+
+          for (const path of paths) {
+            const prev = folderStats.get(path) ?? { docCount: 0, lastUpdated: null };
+            prev.docCount += 1;
+            if (updated && (!prev.lastUpdated || updated > prev.lastUpdated)) {
+              prev.lastUpdated = updated;
+            }
+            folderStats.set(path, prev);
+          }
+
+          totalStorageBytes += Number(row.file_size ?? 0);
+          if (updated && (!lastUpdatedOverall || updated > lastUpdatedOverall)) {
+            lastUpdatedOverall = updated;
+          }
+        }
+
+        const recent = normalized.slice(0, 10).map((row) => ({
+          id: String(row.id),
+          file_name: row.file_name ?? row.name ?? "Document",
+          folder_path: normalizeDocTypeValue(row.doc_type ?? "Other"),
+          updated_at: row.updated_at ?? row.created_at ?? null,
+        }));
+
+        return {
+          totals: {
+            totalFolders: 0,
+            totalDocuments: count ?? normalized.length,
+            storageBytes: totalStorageBytes,
+            lastUpdated: lastUpdatedOverall,
+          },
+          folderStats: Object.fromEntries(Array.from(folderStats.entries()).map(([k, v]) => [k, v])),
+          recent,
+        };
+      }),
     list: protectedProcedure
       .input(z.object({
         year: z.number().optional(),
         month: z.number().optional(),
         docType: z.string().optional(),
+        folderPath: z.string().optional(),
         tenantSlug: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
@@ -1206,14 +1742,16 @@ export const appRouter = router({
 
         // Staff/accountants default to personal operational document area
         // (their own uploads only, no tenant context) unless they explicitly select a tenant via View as.
+        const effectiveDocType = input.folderPath ?? input.docType;
+
         if (isStaffPortfolioUser && !input.tenantSlug) {
-          return getDocumentsByUploader(ctx.user.id, input.year, input.month, input.docType, undefined, {
+          return getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
             tenantIsNullOnly: true,
           });
         }
 
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        return getDocuments(slug, input.year, input.month, input.docType);
+        return getDocuments(slug, input.year, input.month, effectiveDocType);
       }),
     upload: protectedProcedure
       .input(z.object({
@@ -1403,8 +1941,9 @@ export const appRouter = router({
           payload: documentInsertPayload,
         });
 
+        let insertedDoc: any = null;
         try {
-          await insertDocument(tenantSlug, documentInsertPayload);
+          insertedDoc = await insertDocument(tenantSlug, documentInsertPayload);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
 
@@ -1434,33 +1973,384 @@ export const appRouter = router({
           });
         }
 
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "file_uploaded",
+          entity_type: "document",
+          entity_id: insertedDoc?.id ? String(insertedDoc.id) : null,
+          tenant_slug: insertedDoc?.tenant_slug ?? tenantSlug,
+          organization_id: insertedDoc?.organization_id ?? null,
+          client_id: insertedDoc?.client_id ?? null,
+          file_name: insertedDoc?.file_name ?? insertedDoc?.name ?? input.fileName ?? input.name,
+          new_value: String(input.docType),
+          metadata: {
+            document_name: input.name,
+            mime_type: input.mimeType,
+            file_size: input.fileSize ?? buffer.length,
+            year: input.year,
+            month: input.month ?? null,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
         return { success: true, url: fileUrl };
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.union([z.string(), z.number()]), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const authorizedSlug = await authorizeDocumentDeleteScope(ctx.user, [input.id], input.tenantSlug);
-        await deleteDocument(authorizedSlug, input.id);
+        const authorizedScope = await authorizeDocumentDeleteScope(ctx.user, [input.id], input.tenantSlug);
+
+        const { data: existingRow } = await supabase
+          .from("documents_metadata")
+          .select("id,tenant_slug,organization_id,client_id,file_name,name,doc_type,file_key")
+          .eq("id", String(input.id))
+          .maybeSingle();
+
+        if (authorizedScope.mode === "personal") {
+          await deleteDocumentsByUploader(ctx.user.id, [input.id]);
+        } else {
+          await deleteDocument(authorizedScope.tenantSlug, input.id);
+        }
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "file_deleted",
+          entity_type: "document",
+          entity_id: existingRow?.id ? String(existingRow.id) : String(input.id),
+          tenant_slug: existingRow?.tenant_slug ?? (authorizedScope.mode === "tenant" ? authorizedScope.tenantSlug : null),
+          organization_id: existingRow?.organization_id ?? null,
+          client_id: existingRow?.client_id ?? null,
+          file_name: existingRow?.file_name ?? existingRow?.name ?? null,
+          previous_value: existingRow?.doc_type ?? null,
+          metadata: {
+            file_key: existingRow?.file_key ?? null,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
         return { success: true };
       }),
     bulkDelete: protectedProcedure
       .input(z.object({ ids: z.array(z.union([z.string(), z.number()])).min(1), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const authorizedSlug = await authorizeDocumentDeleteScope(ctx.user, input.ids, input.tenantSlug);
-        const result = await deleteDocuments(authorizedSlug, input.ids);
+        const authorizedScope = await authorizeDocumentDeleteScope(ctx.user, input.ids, input.tenantSlug);
+
+        const normalizedIds = input.ids.map((id) => String(id));
+        const { data: existingRows } = await supabase
+          .from("documents_metadata")
+          .select("id,tenant_slug,organization_id,client_id,file_name,name,doc_type,file_key")
+          .in("id", normalizedIds);
+
+        const result = authorizedScope.mode === "personal"
+          ? await deleteDocumentsByUploader(ctx.user.id, input.ids)
+          : await deleteDocuments(authorizedScope.tenantSlug, input.ids);
+
+        for (const row of (existingRows || []) as Array<any>) {
+          await writeActivityLog({
+            req: ctx.req,
+            actor: ctx.user,
+            action_type: "file_deleted",
+            entity_type: "document",
+            entity_id: row?.id ? String(row.id) : null,
+            tenant_slug: row?.tenant_slug ?? (authorizedScope.mode === "tenant" ? authorizedScope.tenantSlug : null),
+            organization_id: row?.organization_id ?? null,
+            client_id: row?.client_id ?? null,
+            file_name: row?.file_name ?? row?.name ?? null,
+            previous_value: row?.doc_type ?? null,
+            metadata: {
+              file_key: row?.file_key ?? null,
+              bulk: true,
+              source: "portal_documents",
+            },
+            status: "success",
+          });
+        }
+
         return { success: true, deleted: result.deleted };
       }),
     updateType: protectedProcedure
       .input(
         z.object({
           id: z.union([z.string(), z.number()]),
-          docType: z.enum(["Financials", "Tax Returns", "W-2 / 1099", "Other", "Chat Attachment"]),
+          docType: z.string().min(1).max(255),
+          tenantSlug: z.string().optional(),
+          destinationFolderId: z.number().int().positive().nullable().optional(),
+          destinationFolderPath: z.string().nullable().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+
+        // Fetch current metadata first so we can emit previous_folder in webhook payload.
+        const { data: existingRow, error: existingError } = await supabase
+          .from("documents_metadata")
+          .select("id,tenant_slug,doc_type,file_name,file_key,name,uploaded_by_user_id")
+          .eq("id", String(input.id))
+          .maybeSingle();
+
+        if (existingError) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to load current document metadata: ${existingError.message}`,
+          });
+        }
+
+        if (!existingRow) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
+        }
+
+        const previousFolderRaw = String(existingRow.doc_type ?? "Other");
+        const previousFolder = previousFolderRaw.trim() || "Other";
+
+        // No-op move: keep behavior unchanged and avoid duplicate webhook noise.
+        if (previousFolder === input.docType) {
+          return { success: true, document: existingRow };
+        }
+
+        // Staff/accountants in personal document area (no explicit tenant context)
+        // should only update their own tenant-null documents.
+        if (isStaffPortfolioUser && !input.tenantSlug) {
+          const { data, error } = await supabase
+            .from("documents_metadata")
+            .update({ doc_type: input.docType, updated_at: new Date().toISOString() })
+            .eq("id", String(input.id))
+            .is("tenant_slug", null)
+            .eq("uploaded_by_user_id", String(ctx.user.id))
+            .select("*")
+            .maybeSingle();
+
+          if (error) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Failed to update document folder: ${error.message}`,
+            });
+          }
+
+          if (!data) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You can only reclassify your own personal documents.",
+            });
+          }
+
+          const movedAt = new Date().toISOString();
+          void deliverDocumentMovedWebhook({
+            document_id: String(data.id),
+            tenant_slug: data.tenant_slug ? String(data.tenant_slug) : null,
+            moved_by_user_id: String(ctx.user.id),
+            moved_by_name: ctx.user.name ?? null,
+            moved_by_email: ctx.user.email ?? null,
+            moved_by_role: ctx.user.role,
+            previous_folder: previousFolder,
+            new_folder: String(data.doc_type ?? input.docType),
+            file_name: (data.file_name ?? data.name ?? null) as string | null,
+            file_path: (data.file_key ?? null) as string | null,
+            moved_at: movedAt,
+            destination_folder_id: input.destinationFolderId ?? null,
+            destination_folder_name: input.destinationFolderPath ? String(input.destinationFolderPath).split("/").pop() ?? null : null,
+            destination_folder_path: input.destinationFolderPath ?? null,
+          });
+
+          await writeActivityLog({
+            req: ctx.req,
+            actor: ctx.user,
+            action_type: "file_moved",
+            entity_type: "document",
+            entity_id: String(data.id),
+            tenant_slug: data.tenant_slug ? String(data.tenant_slug) : null,
+            organization_id: (data.organization_id ?? null) as string | null,
+            client_id: (data.client_id ?? null) as string | null,
+            file_name: (data.file_name ?? data.name ?? null) as string | null,
+            previous_value: previousFolder,
+            new_value: String(data.doc_type ?? input.docType),
+            metadata: {
+              file_key: (data.file_key ?? null) as string | null,
+              moved_at: movedAt,
+              source: "portal_documents",
+            },
+            status: "success",
+          });
+
+          return { success: true, document: data };
+        }
+
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const updated = await updateDocumentType(slug, input.id, input.docType);
+
+        const movedAt = new Date().toISOString();
+        void deliverDocumentMovedWebhook({
+          document_id: String(updated.id),
+          tenant_slug: updated.tenant_slug ? String(updated.tenant_slug) : slug,
+          moved_by_user_id: String(ctx.user.id),
+          moved_by_name: ctx.user.name ?? null,
+          moved_by_email: ctx.user.email ?? null,
+          moved_by_role: ctx.user.role,
+          previous_folder: previousFolder,
+          new_folder: String(updated.doc_type ?? input.docType),
+          file_name: (updated.file_name ?? updated.name ?? null) as string | null,
+          file_path: (updated.file_key ?? null) as string | null,
+          moved_at: movedAt,
+          destination_folder_id: input.destinationFolderId ?? null,
+          destination_folder_name: input.destinationFolderPath ? String(input.destinationFolderPath).split("/").pop() ?? null : null,
+          destination_folder_path: input.destinationFolderPath ?? null,
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "file_moved",
+          entity_type: "document",
+          entity_id: String(updated.id),
+          tenant_slug: updated.tenant_slug ? String(updated.tenant_slug) : slug,
+          organization_id: (updated.organization_id ?? null) as string | null,
+          client_id: (updated.client_id ?? null) as string | null,
+          file_name: (updated.file_name ?? updated.name ?? null) as string | null,
+          previous_value: previousFolder,
+          new_value: String(updated.doc_type ?? input.docType),
+          metadata: {
+            file_key: (updated.file_key ?? null) as string | null,
+            moved_at: movedAt,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
+        return { success: true, document: updated };
+      }),
+    updateDate: protectedProcedure
+      .input(
+        z.object({
+          id: z.union([z.string(), z.number()]),
+          year: z.number().int().min(1900).max(3000),
+          month: z.number().int().min(1).max(12).nullable(),
           tenantSlug: z.string().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+
+        if (isStaffPortfolioUser && !input.tenantSlug) {
+          const { data, error } = await supabase
+            .from("documents_metadata")
+            .update({ year: input.year, month: input.month, updated_at: new Date().toISOString() })
+            .eq("id", String(input.id))
+            .is("tenant_slug", null)
+            .eq("uploaded_by_user_id", String(ctx.user.id))
+            .select("*")
+            .maybeSingle();
+
+          if (error) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Failed to update document date: ${error.message}`,
+            });
+          }
+
+          if (!data) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You can only update dates for your own personal documents.",
+            });
+          }
+
+          return { success: true, document: data };
+        }
+
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        const updated = await updateDocumentType(slug, input.id, input.docType);
+        const updated = await updateDocumentDate(slug, input.id, input.year, input.month);
+        return { success: true, document: updated };
+      }),
+    updateFileName: protectedProcedure
+      .input(
+        z.object({
+          id: z.union([z.string(), z.number()]),
+          fileName: z.string().trim().min(1).max(255),
+          tenantSlug: z.string().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+
+        const { data: existingRow } = await supabase
+          .from("documents_metadata")
+          .select("id,tenant_slug,organization_id,client_id,file_name,name,file_key")
+          .eq("id", String(input.id))
+          .maybeSingle();
+
+        const previousName = (existingRow?.file_name ?? existingRow?.name ?? null) as string | null;
+
+        if (isStaffPortfolioUser && !input.tenantSlug) {
+          const { data, error } = await supabase
+            .from("documents_metadata")
+            .update({ file_name: input.fileName, updated_at: new Date().toISOString() })
+            .eq("id", String(input.id))
+            .is("tenant_slug", null)
+            .eq("uploaded_by_user_id", String(ctx.user.id))
+            .select("*")
+            .maybeSingle();
+
+          if (error) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: `Failed to rename document file: ${error.message}`,
+            });
+          }
+
+          if (!data) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You can only rename your own personal documents.",
+            });
+          }
+
+          await writeActivityLog({
+            req: ctx.req,
+            actor: ctx.user,
+            action_type: "file_renamed",
+            entity_type: "document",
+            entity_id: String(data.id),
+            tenant_slug: data.tenant_slug ? String(data.tenant_slug) : null,
+            organization_id: (data.organization_id ?? null) as string | null,
+            client_id: (data.client_id ?? null) as string | null,
+            file_name: (data.file_name ?? data.name ?? input.fileName) as string,
+            previous_value: previousName,
+            new_value: input.fileName,
+            metadata: {
+              file_key: (data.file_key ?? existingRow?.file_key ?? null) as string | null,
+              source: "portal_documents",
+            },
+            status: "success",
+          });
+
+          return { success: true, document: data };
+        }
+
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const updated = await updateDocumentFileName(slug, input.id, input.fileName);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "file_renamed",
+          entity_type: "document",
+          entity_id: String(updated.id),
+          tenant_slug: updated.tenant_slug ? String(updated.tenant_slug) : slug,
+          organization_id: (updated.organization_id ?? null) as string | null,
+          client_id: (updated.client_id ?? null) as string | null,
+          file_name: (updated.file_name ?? updated.name ?? input.fileName) as string,
+          previous_value: previousName,
+          new_value: input.fileName,
+          metadata: {
+            file_key: (updated.file_key ?? existingRow?.file_key ?? null) as string | null,
+            source: "portal_documents",
+          },
+          status: "success",
+        });
+
         return { success: true, document: updated };
       }),
   }),
@@ -2570,18 +3460,45 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             reply_to_message_preview: input.replyToMessagePreview ?? null,
           });
 
+          const messageId = Number((msg as any).id);
+          const messageText = String((msg as any).message ?? input.body ?? "");
+
+          await writeActivityLog({
+            req: ctx.req,
+            actor: ctx.user,
+            action_type: "message_sent",
+            entity_type: "chat_message",
+            entity_id: String(messageId),
+            tenant_slug: slug,
+            organization_id: tenant?.id != null ? String(tenant.id) : null,
+            file_name: null,
+            metadata: {
+              conversation_id: buildConversationId({ tenantSlug: slug, assignmentId, dmKey }),
+              thread_id: null,
+              assignment_id: assignmentId,
+              dm_key: dmKey,
+              related_message_id: messageId,
+              message_preview: toMessagePreview(messageText),
+              message_length: messageText.length,
+              attachment_count: 0,
+              source: "chat",
+            },
+            status: "success",
+          });
+
           await createMentionNotifications({
+            req: ctx.req,
             actor: ctx.user,
             tenantSlug: slug,
             tenantName: tenant?.company_name ?? null,
             assignmentId,
             dmKey,
-            messageId: Number((msg as any).id),
+            messageId,
             body: input.body,
           }).catch((err) => {
             console.error("[chat.send] mention notification failed", {
               tenantSlug: slug,
-              messageId: Number((msg as any).id),
+              messageId,
               error: err instanceof Error ? err.message : String(err),
             });
           });
@@ -2644,19 +3561,45 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           reply_count: 0,
         });
 
+        const messageId = Number((reply as any).id);
+        const messageText = String((reply as any).message ?? input.body ?? "");
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "message_sent",
+          entity_type: "chat_message",
+          entity_id: String(messageId),
+          tenant_slug: slug,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          metadata: {
+            conversation_id: buildConversationId({ tenantSlug: slug, assignmentId, dmKey }),
+            thread_id: input.parentId,
+            assignment_id: assignmentId,
+            dm_key: dmKey,
+            related_message_id: messageId,
+            message_preview: toMessagePreview(messageText),
+            message_length: messageText.length,
+            attachment_count: 0,
+            source: "chat",
+          },
+          status: "success",
+        });
+
         await createMentionNotifications({
+          req: ctx.req,
           actor: ctx.user,
           tenantSlug: slug,
           tenantName: tenant?.company_name ?? null,
           assignmentId,
           dmKey,
-          messageId: Number((reply as any).id),
+          messageId,
           parentId: input.parentId,
           body: input.body,
         }).catch((err) => {
           console.error("[chat.sendReply] mention notification failed", {
             tenantSlug: slug,
-            messageId: Number((reply as any).id),
+            messageId,
             parentId: input.parentId,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -2767,19 +3710,47 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           reply_count: 0,
         });
 
+        const messageId = Number((reply as any).id);
+        const messageText = String((reply as any).message ?? input.body ?? "");
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "message_sent",
+          entity_type: "chat_message",
+          entity_id: String(messageId),
+          tenant_slug: slug,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          file_name: input.fileName,
+          metadata: {
+            conversation_id: buildConversationId({ tenantSlug: slug, assignmentId, dmKey }),
+            thread_id: input.parentId,
+            assignment_id: assignmentId,
+            dm_key: dmKey,
+            related_message_id: messageId,
+            message_preview: toMessagePreview(messageText),
+            message_length: messageText.length,
+            attachment_count: 1,
+            file_name: input.fileName,
+            source: "chat",
+          },
+          status: "success",
+        });
+
         await createMentionNotifications({
+          req: ctx.req,
           actor: ctx.user,
           tenantSlug: slug,
           tenantName: tenant?.company_name ?? null,
           assignmentId,
           dmKey,
-          messageId: Number((reply as any).id),
+          messageId,
           parentId: input.parentId,
           body: input.body,
         }).catch((err) => {
           console.error("[chat.sendReplyFile] mention notification failed", {
             tenantSlug: slug,
-            messageId: Number((reply as any).id),
+            messageId,
             parentId: input.parentId,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -2938,18 +3909,46 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           }).catch(() => {}); // non-blocking
         }
 
+        const messageId = Number((msg as any).id);
+        const messageText = String((msg as any).message ?? input.body ?? "");
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "message_sent",
+          entity_type: "chat_message",
+          entity_id: String(messageId),
+          tenant_slug: slug,
+          organization_id: tenant?.id != null ? String(tenant.id) : null,
+          file_name: input.fileName,
+          metadata: {
+            conversation_id: buildConversationId({ tenantSlug: slug, assignmentId, dmKey }),
+            thread_id: null,
+            assignment_id: assignmentId,
+            dm_key: dmKey,
+            related_message_id: messageId,
+            message_preview: toMessagePreview(messageText),
+            message_length: messageText.length,
+            attachment_count: 1,
+            file_name: input.fileName,
+            source: "chat",
+          },
+          status: "success",
+        });
+
         await createMentionNotifications({
+          req: ctx.req,
           actor: ctx.user,
           tenantSlug: slug,
           tenantName: tenant?.company_name ?? null,
           assignmentId,
           dmKey,
-          messageId: Number((msg as any).id),
+          messageId,
           body: input.body ?? null,
         }).catch((err) => {
           console.error("[chat.sendFile] mention notification failed", {
             tenantSlug: slug,
-            messageId: Number((msg as any).id),
+            messageId,
             error: err instanceof Error ? err.message : String(err),
           });
         });
@@ -2997,6 +3996,29 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
           const result = await deleteGlobalChatMessage(slug, input.id, assignmentId, assignmentNullOnly, dmKey);
 
+          await writeActivityLog({
+            req: ctx.req,
+            actor: ctx.user,
+            action_type: "message_deleted",
+            entity_type: "chat_message",
+            entity_id: String(input.id),
+            tenant_slug: slug,
+            organization_id: tenant?.id != null ? String(tenant.id) : null,
+            previous_value: toMessagePreview((globalMsg as any).message_text ?? null),
+            metadata: {
+              conversation_id: buildConversationId({ tenantSlug: slug, assignmentId, dmKey }),
+              thread_id: globalMsg.thread_id ?? null,
+              assignment_id: assignmentId,
+              dm_key: dmKey,
+              deleted_message_id: Number(input.id),
+              message_preview: toMessagePreview((globalMsg as any).message_text ?? null),
+              message_length: String((globalMsg as any).message_text ?? "").length,
+              attachment_count: globalMsg.file_url ? 1 : 0,
+              source: "chat",
+            },
+            status: "success",
+          });
+
           if (result.parentId != null) {
             await decrementReplyCount(slug, result.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
           }
@@ -3030,9 +4052,26 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         name: z.string().min(1),
         role: z.enum(["admin", "accounting_manager", "tax_manager", "accountant"]),
       }))
-      .mutation(async ({ input }) =>
-        createStaffMember({ email: input.email, name: input.name, role: input.role as StaffRole })
-      ),
+      .mutation(async ({ ctx, input }) => {
+        const created = await createStaffMember({ email: input.email, name: input.name, role: input.role as StaffRole });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "user_invited",
+          entity_type: "user",
+          entity_id: created?.id != null ? String(created.id) : null,
+          new_value: input.email,
+          metadata: {
+            invited_name: input.name,
+            invited_role: input.role,
+            source: "staff.invite",
+          },
+          status: "success",
+        });
+
+        return created;
+      }),
 
     update: adminProcedure
       .input(z.object({
@@ -3040,15 +4079,46 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         name: z.string().min(1).optional(),
         role: z.enum(["admin", "accounting_manager", "tax_manager", "accountant"]).optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const { id, ...updates } = input;
-        return updateStaffMember(id, updates as Partial<{ name: string; role: StaffRole }>);
+        const updated = await updateStaffMember(id, updates as Partial<{ name: string; role: StaffRole }>);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "role_changed",
+          entity_type: "user",
+          entity_id: String(id),
+          previous_value: null,
+          new_value: updates.role ?? null,
+          metadata: {
+            updated_name: updates.name ?? null,
+            updated_role: updates.role ?? null,
+            source: "staff.update",
+          },
+          status: "success",
+        });
+
+        return updated;
       }),
 
     remove: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await removeStaffMember(input.id);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_removed",
+          entity_type: "user",
+          entity_id: String(input.id),
+          metadata: {
+            source: "staff.remove",
+          },
+          status: "success",
+        });
+
         return { success: true };
       }),
 
@@ -3058,15 +4128,43 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
     assignClient: adminProcedure
       .input(z.object({ staffId: z.number(), tenantSlug: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await assignStaffToClient(input.staffId, input.tenantSlug);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_added",
+          entity_type: "user",
+          entity_id: String(input.staffId),
+          tenant_slug: input.tenantSlug,
+          metadata: {
+            source: "staff.assign_client",
+          },
+          status: "success",
+        });
+
         return { success: true };
       }),
 
     unassignClient: adminProcedure
       .input(z.object({ staffId: z.number(), tenantSlug: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await unassignStaffFromClient(input.staffId, input.tenantSlug);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_removed",
+          entity_type: "user",
+          entity_id: String(input.staffId),
+          tenant_slug: input.tenantSlug,
+          metadata: {
+            source: "staff.unassign_client",
+          },
+          status: "success",
+        });
+
         return { success: true };
       }),
   }),

@@ -14,6 +14,7 @@ import {
   ShoppingCart,
   UserCog,
   Bell,
+  Activity,
 } from "lucide-react";
 import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -43,6 +44,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
   { id: "chat",              label: "Chat",              featureKey: "chat",              icon: <MessageSquare size={16} />,   href: "/portal/chat" },
+  { id: "activity_log",      label: "Activity Log",      featureKey: "overview",          icon: <Activity size={16} />,        href: "/portal/activity-log" },
   { id: "profile",           label: "Settings",          featureKey: "overview",          icon: <Bell size={16} />,            href: "/portal/profile" },
 ];
 
@@ -52,6 +54,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: "admin_team",        label: "Team",             icon: <UserCog size={16} />,         href: "/admin/team" },
   { id: "admin_chat",        label: "Chat",             icon: <MessageSquare size={16} />,   href: "/admin/chat" },
   { id: "admin_data_entry",  label: "Data Entry",       icon: <FolderOpen size={16} />,      href: "/admin/data-entry" },
+  { id: "admin_activity_log",label: "Activity Log",     icon: <Activity size={16} />,        href: "/admin/activity-log" },
   { id: "admin_profile",     label: "Settings",         icon: <Bell size={16} />,            href: "/admin/profile" },
 ];
 
@@ -98,6 +101,9 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const navItems = isAdmin
     ? ADMIN_NAV
     : CLIENT_NAV.filter(item => {
+        if (item.id === "activity_log") {
+          return !!user && (["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role));
+        }
         if (isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
           return false;
         }
