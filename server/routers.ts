@@ -1729,6 +1729,99 @@ export const appRouter = router({
           recent,
         };
       }),
+    search: protectedProcedure
+      .input(z.object({ q: z.string().min(1), tenantSlug: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }))
+      .query(async ({ ctx, input }) => {
+        const q = input.q.trim();
+        const limit = input.limit ?? 40;
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        const hasExplicitTenantContext = typeof input.tenantSlug === "string" && input.tenantSlug.trim().length > 0;
+
+        let folderQuery = supabase
+          .from("portal_document_folders")
+          .select("id,name,full_path,updated_at,parent_folder_id")
+          .order("updated_at", { ascending: false, nullsFirst: false })
+          .limit(limit);
+
+        let docQuery = supabase
+          .from("documents_metadata")
+          .select("id,file_name,name,doc_type,description,file_url,file_key,created_at,updated_at,file_size,mime_type,year,month")
+          .order("updated_at", { ascending: false, nullsFirst: false })
+          .limit(limit);
+
+        let personalDocQuery: any = null;
+
+        if (isStaffPortfolioUser && !hasExplicitTenantContext) {
+          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+          if (accessibleSlugs.length > 0) {
+            folderQuery = folderQuery.in("tenant_slug", accessibleSlugs);
+            docQuery = docQuery.in("tenant_slug", accessibleSlugs);
+            personalDocQuery = supabase
+              .from("documents_metadata")
+              .select("id,file_name,name,doc_type,description,file_url,file_key,created_at,updated_at,file_size,mime_type,year,month")
+              .order("updated_at", { ascending: false, nullsFirst: false })
+              .limit(limit)
+              .is("tenant_slug", null)
+              .eq("uploaded_by_user_id", String(ctx.user.id));
+          } else {
+            folderQuery = folderQuery.is("tenant_slug", null);
+            docQuery = docQuery.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
+          }
+        } else {
+          const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+          folderQuery = folderQuery.eq("tenant_slug", slug);
+          docQuery = docQuery.eq("tenant_slug", slug);
+        }
+
+        folderQuery = folderQuery.or(`name.ilike.%${q}%,full_path.ilike.%${q}%`);
+        docQuery = docQuery.or(`file_name.ilike.%${q}%,name.ilike.%${q}%,doc_type.ilike.%${q}%`);
+        if (personalDocQuery) {
+          personalDocQuery = personalDocQuery.or(`file_name.ilike.%${q}%,name.ilike.%${q}%,doc_type.ilike.%${q}%`);
+        }
+
+        const [{ data: folderRows, error: folderError }, { data: docRows, error: docError }, { data: personalDocRows, error: personalDocError }] = await Promise.all([
+          folderQuery,
+          docQuery,
+          personalDocQuery ?? Promise.resolve({ data: [], error: null }),
+        ]);
+
+        if (folderError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search folders: ${folderError.message}` });
+        if (docError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search documents: ${docError.message}` });
+        if (personalDocError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search personal documents: ${personalDocError.message}` });
+
+        const folders = ((folderRows || []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null; parent_folder_id: number | null }>).map((f) => ({
+          id: Number(f.id),
+          name: String(f.name),
+          full_path: String(f.full_path),
+          updated_at: f.updated_at ?? null,
+        }));
+
+        const docSource = [
+          ...((docRows || []) as Array<{ id: string | number; file_name: string | null; name: string | null; doc_type: string | null; description: string | null; file_url: string | null; file_key: string | null; created_at: string | null; updated_at: string | null; file_size: number | null; mime_type: string | null; year: number | null; month: number | null }>),
+          ...((personalDocRows || []) as Array<{ id: string | number; file_name: string | null; name: string | null; doc_type: string | null; description: string | null; file_url: string | null; file_key: string | null; created_at: string | null; updated_at: string | null; file_size: number | null; mime_type: string | null; year: number | null; month: number | null }>),
+        ];
+
+        const dedupDocs = new Map<string, { id: string | number; file_name: string | null; name: string | null; doc_type: string | null; description: string | null; file_url: string | null; file_key: string | null; created_at: string | null; updated_at: string | null; file_size: number | null; mime_type: string | null; year: number | null; month: number | null }>();
+        for (const d of docSource) dedupDocs.set(String(d.id), d);
+
+        const documents = Array.from(dedupDocs.values()).map((d) => ({
+          id: String(d.id),
+          display_name: d.file_name ?? d.name ?? "Document",
+          original_name: d.name ?? null,
+          folder_path: normalizeDocTypeValue(d.doc_type ?? "Other"),
+          uploaded_at: d.created_at ?? null,
+          updated_at: d.updated_at ?? null,
+          file_size: d.file_size ?? null,
+          mime_type: d.mime_type ?? null,
+          description: d.description ?? null,
+          file_url: d.file_url ?? null,
+          file_key: d.file_key ?? null,
+          year: d.year ?? null,
+          month: d.month ?? null,
+        }));
+
+        return { folders, documents };
+      }),
     list: protectedProcedure
       .input(z.object({
         year: z.number().optional(),
@@ -1922,12 +2015,14 @@ export const appRouter = router({
         const documentInsertPayload = {
           organization_id: organizationId,
           client_id: null,
-          name: input.name,
+          // Keep original file name for reference / retrieval metadata
+          name: input.fileName || input.name,
           description: input.description || null,
           doc_type: input.docType,
           file_key: fileKey,
           file_url: fileUrl,
-          file_name: input.fileName || null,
+          // file_name is the portal display name used across document cards/list widgets
+          file_name: input.name || input.fileName || null,
           file_size: input.fileSize || null,
           mime_type: input.mimeType,
           year: input.year,

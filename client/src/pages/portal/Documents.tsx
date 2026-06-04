@@ -100,6 +100,28 @@ const FOLDER_TEMPLATES = [
 
 const TEMPLATE_BASE_NAMES: Set<string> = new Set(FOLDER_TEMPLATES.map((t) => t.base));
 
+function resolveDefaultTemplateTypeForPath(path?: string | null): string {
+  const root = String(path ?? "").split("/").filter(Boolean)[0]?.trim();
+  if (!root) return FOLDER_TEMPLATES[0].key;
+
+  const byRoot: Record<string, string> = {
+    "Bank Statements": "Bank Statements (with months)",
+    "Payroll": "Payroll (with months)",
+    "Accounts Payable": "Accounts Payable (with months)",
+    "Accounts Receivable": "Accounts Receivable (with months)",
+    "Tax": "Tax Returns (year folders only)",
+    "Tax Returns": "Tax Returns (year folders only)",
+    "Financials": "Financials (with months)",
+    "Financials (Internal)": "Financials (with months)",
+  };
+
+  const mapped = byRoot[root];
+  if (mapped && FOLDER_TEMPLATES.some((t) => t.key === mapped)) return mapped;
+
+  const direct = FOLDER_TEMPLATES.find((t) => t.base.toLowerCase() === root.toLowerCase());
+  return direct?.key ?? FOLDER_TEMPLATES[0].key;
+}
+
 const DOC_TYPE_COLORS: Record<string, string> = {
   "Internal Info": "bg-teal-500/20 text-teal-300 border-teal-500/30",
   "Bank Statements": "bg-blue-500/20 text-blue-300 border-blue-500/30",
@@ -407,6 +429,8 @@ export default function Documents() {
   const [uploadDocType, setUploadDocType] = useState<string>("Financials (Internal)");
   const [uploadYear, setUploadYear] = useState(String(CURRENT_YEAR));
   const [uploadMonth, setUploadMonth] = useState(String(CURRENT_MONTH));
+  const [uploadDestinationMode, setUploadDestinationMode] = useState<"current" | "specific">("specific");
+  const [uploadContextPath, setUploadContextPath] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgressIndex, setUploadProgressIndex] = useState(0);
   const [uploadTotalCount, setUploadTotalCount] = useState(0);
@@ -427,6 +451,7 @@ export default function Documents() {
   const [showCreateFolderDialog, setShowCreateFolderDialog] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [createFolderParentId, setCreateFolderParentId] = useState<number | null>(null);
+  const [createFolderContextPath, setCreateFolderContextPath] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createFolderMode, setCreateFolderMode] = useState<"standard" | "template">("standard");
   const [templateType, setTemplateType] = useState<string>("Financials (with months)");
@@ -439,6 +464,8 @@ export default function Documents() {
   const [dateYearSelection, setDateYearSelection] = useState<string>(String(CURRENT_YEAR));
   const [dateMonthSelection, setDateMonthSelection] = useState<string>(String(CURRENT_MONTH));
   const [movingDate, setMovingDate] = useState(false);
+  const [showSearchPreviewDialog, setShowSearchPreviewDialog] = useState(false);
+  const [searchPreviewDoc, setSearchPreviewDoc] = useState<DocRow | null>(null);
 
   const [editingDocId, setEditingDocId] = useState<string | null>(null);
   const [editingFileName, setEditingFileName] = useState("");
@@ -484,6 +511,12 @@ export default function Documents() {
   const { data: dashboardData } = trpc.documents.dashboard.useQuery({
     tenantSlug: impersonatingTenantSlug ?? undefined,
   });
+
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const { data: searchResults, isLoading: searchLoading } = trpc.documents.search.useQuery(
+    { q: searchQuery.trim(), tenantSlug: impersonatingTenantSlug ?? undefined, limit: 60 },
+    { enabled: normalizedSearch.length > 0 },
+  );
 
   const uploadMutation = trpc.documents.upload.useMutation();
   const updateTypeMutation = trpc.documents.updateType.useMutation();
@@ -556,6 +589,8 @@ export default function Documents() {
     setUploadDocType("Financials (Internal)");
     setUploadYear(String(CURRENT_YEAR));
     setUploadMonth(String(CURRENT_MONTH));
+    setUploadDestinationMode("specific");
+    setUploadContextPath(null);
     setUploadProgressIndex(0);
     setUploadTotalCount(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -568,16 +603,21 @@ export default function Documents() {
       return raw.split("/").filter(Boolean)[0] || "Financials (Internal)";
     };
 
-    if (defaultFolder) {
-      setUploadDocType(toRoot(defaultFolder));
-    } else if (selectedType === ALL_FOLDERS) {
-      setUploadDocType("Financials (Internal)");
-    } else if (currentFolderPath) {
-      setUploadDocType(toRoot(currentFolderPath));
-    } else if ((WORKSPACE_FOLDERS as readonly string[]).includes(String(selectedType))) {
-      setUploadDocType(String(selectedType));
+    const contextPath = defaultFolder ?? currentFolderPath ?? null;
+    setUploadContextPath(contextPath);
+
+    if (contextPath) {
+      setUploadDestinationMode("current");
+      setUploadDocType(toRoot(contextPath));
     } else {
-      setUploadDocType("Financials (Internal)");
+      setUploadDestinationMode("specific");
+      if (selectedType === ALL_FOLDERS) {
+        setUploadDocType("Financials (Internal)");
+      } else if ((WORKSPACE_FOLDERS as readonly string[]).includes(String(selectedType))) {
+        setUploadDocType(String(selectedType));
+      } else {
+        setUploadDocType("Financials (Internal)");
+      }
     }
     setShowUpload(true);
   }
@@ -611,6 +651,10 @@ export default function Documents() {
   }
 
   async function resolveUploadDestinationPath() {
+    if (uploadDestinationMode === "current" && uploadContextPath) {
+      return String(uploadContextPath);
+    }
+
     const monthNum = Number(uploadMonth);
     const yearNum = Number(uploadYear);
     const monthName = MONTH_NAMES[Math.max(0, Math.min(11, monthNum - 1))] ?? MONTH_NAMES[0];
@@ -791,8 +835,6 @@ export default function Documents() {
   }, [folders, effectiveCurrentFolderId, currentFolderPath]);
 
 
-  const normalizedSearch = searchQuery.trim().toLowerCase();
-
   const filteredChildFolders = useMemo(() => {
     if (!normalizedSearch) return childFolders;
     return childFolders.filter((f) => String(f.name ?? "").toLowerCase().includes(normalizedSearch));
@@ -805,6 +847,59 @@ export default function Documents() {
       return name.includes(normalizedSearch);
     });
   }, [localDocs, normalizedSearch]);
+
+  const scopedSearchFolders = useMemo(() => {
+    const folders = (searchResults?.folders ?? []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null }>;
+
+    if (!currentFolderPath) {
+      const query = normalizedSearch;
+      const byPath = new Map<string, { id: number | null; name: string; full_path: string; updated_at: string | null }>();
+
+      // 1) Persisted roots returned by backend search
+      for (const f of folders) {
+        if (!String(f.full_path).includes("/")) {
+          byPath.set(String(f.full_path), { id: Number(f.id), name: String(f.name), full_path: String(f.full_path), updated_at: f.updated_at ?? null });
+        }
+      }
+
+      // 2) Default/system roots shown in All Folders UI
+      for (const root of WORKSPACE_FOLDERS) {
+        const key = String(root);
+        if (!byPath.has(key)) {
+          byPath.set(key, { id: null, name: key, full_path: key, updated_at: null });
+        }
+      }
+
+      return Array.from(byPath.values()).filter((f) => {
+        const name = String(f.name).toLowerCase();
+        const path = String(f.full_path).toLowerCase();
+        return name.includes(query) || path.includes(query);
+      });
+    }
+
+    return folders.filter((f) => {
+      const path = String(f.full_path);
+      return path.startsWith(`${currentFolderPath}/`) && path !== currentFolderPath;
+    });
+  }, [searchResults, currentFolderPath, normalizedSearch]);
+
+  const scopedSearchDocuments = useMemo(() => {
+    const docs = (searchResults?.documents ?? []) as Array<{
+      id: string;
+      display_name: string;
+      original_name: string | null;
+      folder_path: string;
+      uploaded_at: string | null;
+      updated_at: string | null;
+      file_size: number | null;
+      mime_type: string | null;
+    }>;
+    if (!currentFolderPath) return docs;
+    return docs.filter((d) => {
+      const path = String(d.folder_path || "");
+      return path === currentFolderPath || path.startsWith(`${currentFolderPath}/`);
+    });
+  }, [searchResults, currentFolderPath]);
 
   const yearOptions = useMemo(() => {
     const years = new Set<number>();
@@ -1208,6 +1303,47 @@ export default function Documents() {
     setCurrentFolderId(folder.id ?? null);
   }
 
+  function openDocumentFromSearch(doc: { id: string; folder_path: string }) {
+    const targetPath = String(doc.folder_path || "").trim();
+    if (!targetPath) return;
+    setSelectedType(targetPath);
+    setCurrentFolderPath(targetPath);
+    setCurrentFolderId(Number(folderByPath.get(targetPath)?.id ?? 0) || null);
+    setFocusDocIdFromQuery(String(doc.id));
+  }
+
+  function openSearchPreview(doc: {
+    id: string;
+    display_name: string;
+    original_name: string | null;
+    folder_path: string;
+    uploaded_at: string | null;
+    updated_at: string | null;
+    file_size: number | null;
+    mime_type: string | null;
+    description?: string | null;
+    file_url?: string | null;
+    file_key?: string | null;
+    year?: number | null;
+    month?: number | null;
+  }) {
+    setSearchPreviewDoc({
+      id: doc.id,
+      name: doc.original_name ?? doc.display_name,
+      file_name: doc.display_name,
+      doc_type: doc.folder_path,
+      updated_at: doc.updated_at ?? doc.uploaded_at ?? null,
+      file_size: doc.file_size ?? null,
+      mime_type: doc.mime_type ?? null,
+      description: doc.description ?? null,
+      file_url: doc.file_url ?? null,
+      file_key: doc.file_key ?? null,
+      year: doc.year ?? null,
+      month: doc.month ?? null,
+    });
+    setShowSearchPreviewDialog(true);
+  }
+
   function goToRootFolders() {
     setSelectedType(ALL_FOLDERS);
     setCurrentFolderPath(null);
@@ -1218,7 +1354,13 @@ export default function Documents() {
     setCreateFolderParentId(parentFolderId);
     setNewFolderName("");
     setCreateFolderMode("standard");
-    setTemplateType("Financials (with months)");
+
+    const parentPath = parentFolderId != null
+      ? String(folderById.get(Number(parentFolderId))?.full_path ?? "")
+      : (currentFolderPath ?? "");
+    setCreateFolderContextPath(parentPath || null);
+    setTemplateType(resolveDefaultTemplateTypeForPath(parentPath));
+
     setTemplateFromYear(String(Math.max(2024, CURRENT_YEAR - 2)));
     setTemplateToYear(String(CURRENT_YEAR));
     setTemplateCreateMonths(true);
@@ -1299,6 +1441,10 @@ export default function Documents() {
     }
   }
 
+  const templateContextPath = useMemo(() => String(createFolderContextPath ?? "").trim(), [createFolderContextPath]);
+
+  const canUseFolderTemplates = templateContextPath === "Bank Statements" || templateContextPath === "Financials (Internal)";
+
   const templatePlan = useMemo(() => {
     const from = Number(templateFromYear);
     const to = Number(templateToYear);
@@ -1322,6 +1468,11 @@ export default function Documents() {
     setCreatingFolder(true);
     try {
       const parentId = await resolveCreateFolderParentId();
+
+      if (createFolderMode === "template" && !canUseFolderTemplates) {
+        toast.error("Folder templates are available only inside a folder.");
+        return;
+      }
 
       if (createFolderMode === "standard") {
         const name = newFolderName.trim();
@@ -1568,41 +1719,119 @@ export default function Documents() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-5">
-          {folderCardFilters.map((folder) => (
-            <FolderCard
-              key={folder.fullPath}
-              folder={folder}
-              isActive={currentFolderPath === folder.fullPath}
-              count={folderCounts[folder.fullPath] || 0}
-              subfolderCount={subfolderCountsByPath[folder.fullPath] || 0}
-              lastUpdated={folderLastUpdatedByPath.get(folder.fullPath) ?? null}
-              monthYearLabel={folderMonthYearMeta.get(folder.fullPath)?.label ?? null}
-              onSelect={enterFolder}
-              onUploadToFolder={(path) => openUploadDialog(path)}
-              onCreateSubfolder={(f) => {
-                setCurrentFolderPath(f.fullPath);
-                setCurrentFolderId(f.id ?? null);
-                setSelectedType(f.fullPath);
-                openCreateFolder(f.id);
-              }}
-              onDeleteFolder={openDeleteFolderDialog}
-              pulse={pulsedFolder === folder.fullPath}
-            />
-          ))}
-        </div>
+        {normalizedSearch ? (
+          <div className="space-y-6 mb-5">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+              <h3 className="font-semibold text-zinc-100">Search Results for "{searchQuery.trim()}"</h3>
+              <p className="text-xs text-zinc-400 mt-1">{scopedSearchFolders.length} folders • {scopedSearchDocuments.length} documents</p>
+            </div>
 
-        {folderCardFilters.length === 0 && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6 mb-5 text-sm text-muted-foreground">
-            No subfolders yet. Create one to organize this folder.
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-200 mb-3">Matching Folders</h4>
+              {searchLoading ? (
+                <div className="text-sm text-zinc-500">Searching...</div>
+              ) : scopedSearchFolders.length === 0 ? (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">No matching folders.</div>
+              ) : (
+                <div className="space-y-2">
+                  {scopedSearchFolders.map((folder) => (
+                    <div key={folder.full_path} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-zinc-100 truncate">📁 {folder.name}</p>
+                        <p className="text-xs text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(folder.full_path).replaceAll("/", " > ")}</p>
+                        <p className="text-[11px] text-zinc-500">Updated {formatRelative(folder.updated_at)}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-zinc-700"
+                        onClick={() => {
+                          setSearchQuery("");
+                          enterFolder({ id: folder.id, name: folder.name, fullPath: folder.full_path });
+                        }}
+                      >
+                        Open Folder
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-200 mb-3">Matching Documents</h4>
+              {searchLoading ? (
+                <div className="text-sm text-zinc-500">Searching...</div>
+              ) : scopedSearchDocuments.length === 0 ? (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">No matching documents.</div>
+              ) : (
+                <div className="space-y-2">
+                  {scopedSearchDocuments.map((doc) => (
+                    <div key={doc.id} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-zinc-100 truncate">📄 {doc.display_name}</p>
+                        <p className="text-xs text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(doc.folder_path).replaceAll("/", " > ")}</p>
+                        <p className="text-[11px] text-zinc-500">Uploaded {formatRelative(doc.uploaded_at)} • {formatBytes(doc.file_size ?? 0)}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Button size="sm" variant="outline" className="border-zinc-700" onClick={() => openSearchPreview(doc)}>
+                          Preview
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-zinc-700"
+                          onClick={() => {
+                            setSearchQuery("");
+                            openDocumentFromSearch(doc);
+                          }}
+                        >
+                          Open Folder
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        )}
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-5">
+              {folderCardFilters.map((folder) => (
+                <FolderCard
+                  key={folder.fullPath}
+                  folder={folder}
+                  isActive={currentFolderPath === folder.fullPath}
+                  count={folderCounts[folder.fullPath] || 0}
+                  subfolderCount={subfolderCountsByPath[folder.fullPath] || 0}
+                  lastUpdated={folderLastUpdatedByPath.get(folder.fullPath) ?? null}
+                  monthYearLabel={folderMonthYearMeta.get(folder.fullPath)?.label ?? null}
+                  onSelect={enterFolder}
+                  onUploadToFolder={(path) => openUploadDialog(path)}
+                  onCreateSubfolder={(f) => {
+                    setCurrentFolderPath(f.fullPath);
+                    setCurrentFolderId(f.id ?? null);
+                    setSelectedType(f.fullPath);
+                    openCreateFolder(f.id);
+                  }}
+                  onDeleteFolder={openDeleteFolderDialog}
+                  pulse={pulsedFolder === folder.fullPath}
+                />
+              ))}
+            </div>
 
-        <p className="text-xs text-muted-foreground/80 mb-4">
-          Drag documents into folder cards to organize your workspace.
-        </p>
+            {folderCardFilters.length === 0 && (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6 mb-5 text-sm text-muted-foreground">
+                No subfolders yet. Create one to organize this folder.
+              </div>
+            )}
 
-        {currentFolderPath && (
+            <p className="text-xs text-muted-foreground/80 mb-4">
+              Drag documents into folder cards to organize your workspace.
+            </p>
+
+            {currentFolderPath && (
           isLoading ? (
             <div className="text-center py-16 text-muted-foreground">Loading documents...</div>
           ) : docsForFilter.length === 0 ? (
@@ -1802,6 +2031,8 @@ export default function Documents() {
             <p className="text-xs text-zinc-500 mt-1">or click to browse files</p>
           </div>
         )}
+          </>
+        )}
           </div>
 
           <aside className="xl:col-span-1 space-y-4">
@@ -1837,7 +2068,11 @@ export default function Documents() {
 
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-2">
               <h3 className="text-sm font-semibold text-zinc-100">Quick Actions</h3>
-              <Button size="sm" className="w-full justify-start bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30" onClick={() => toast.info("Coming soon")}>Create Year Structure</Button>
+              {currentFolderPath && (
+                <Button size="sm" className="w-full justify-start bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30" onClick={() => openCreateFolder(effectiveCurrentFolderId)}>
+                  Create Year Structure
+                </Button>
+              )}
               <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => openUploadDialog()}>Upload Multiple Files</Button>
               <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => toast.info("Coming soon")}>Request Documents</Button>
               <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => toast.info("Coming soon")}>View Trash</Button>
@@ -2018,6 +2253,115 @@ export default function Documents() {
       </Dialog>
 
       <Dialog
+        open={showSearchPreviewDialog}
+        onOpenChange={(open) => {
+          setShowSearchPreviewDialog(open);
+          if (!open) setSearchPreviewDoc(null);
+        }}
+      >
+        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <DocIcon mimeType={searchPreviewDoc?.mime_type ?? null} />
+              {searchPreviewDoc?.file_name || searchPreviewDoc?.name || "Document Preview"}
+            </DialogTitle>
+          </DialogHeader>
+
+          {searchPreviewDoc && (
+            <div className="space-y-3 py-2">
+              <div className="text-xs text-zinc-400 space-y-1">
+                <p>Folder: <span className="text-zinc-200">{prettifyFolderPath(String(searchPreviewDoc.doc_type ?? ""))}</span></p>
+                <p>Uploaded: <span className="text-zinc-200">{formatDateShort(searchPreviewDoc.updated_at)}</span> • <span className="text-zinc-200">{formatBytes(searchPreviewDoc.file_size ?? 0)}</span></p>
+                {searchPreviewDoc.description && <p>Description: <span className="text-zinc-200">{searchPreviewDoc.description}</span></p>}
+              </div>
+
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2 min-h-[220px]">
+                {getMimeCategory(searchPreviewDoc.mime_type) === "image" && searchPreviewDoc.file_url ? (
+                  <img src={searchPreviewDoc.file_url} alt={searchPreviewDoc.file_name || searchPreviewDoc.name} className="max-h-[380px] w-full object-contain rounded" />
+                ) : getMimeCategory(searchPreviewDoc.mime_type) === "pdf" && searchPreviewDoc.file_url ? (
+                  <iframe src={searchPreviewDoc.file_url} className="w-full h-[380px] rounded" title="PDF preview" />
+                ) : (
+                  <div className="h-[220px] flex items-center justify-center text-sm text-zinc-500">Preview not available for this file type.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex-wrap gap-2">
+            <Button
+              variant="outline"
+              className="border-zinc-700"
+              onClick={() => {
+                if (!searchPreviewDoc?.file_url) return;
+                const a = document.createElement("a");
+                a.href = searchPreviewDoc.file_url;
+                a.download = searchPreviewDoc.file_name || searchPreviewDoc.name;
+                a.click();
+              }}
+              disabled={!searchPreviewDoc?.file_url}
+            >
+              Download
+            </Button>
+            <Button
+              variant="outline"
+              className="border-zinc-700"
+              onClick={() => {
+                if (!searchPreviewDoc) return;
+                setShowSearchPreviewDialog(false);
+                setSearchQuery("");
+                openDocumentFromSearch({ id: String(searchPreviewDoc.id), folder_path: String(searchPreviewDoc.doc_type ?? "") });
+              }}
+            >
+              Open Folder
+            </Button>
+            <Button
+              variant="outline"
+              className="border-zinc-700"
+              onClick={() => {
+                if (!searchPreviewDoc) return;
+                setShowSearchPreviewDialog(false);
+                openMoveFolderDialog(searchPreviewDoc);
+              }}
+            >
+              Move
+            </Button>
+            <Button
+              variant="outline"
+              className="border-zinc-700"
+              onClick={() => {
+                if (!searchPreviewDoc) return;
+                setShowSearchPreviewDialog(false);
+                setSearchQuery("");
+                openDocumentFromSearch({ id: String(searchPreviewDoc.id), folder_path: String(searchPreviewDoc.doc_type ?? "") });
+                toast.info("Open folder and click the file name to rename.");
+              }}
+            >
+              Rename
+            </Button>
+            <Button
+              className="bg-red-500/90 hover:bg-red-500 text-white"
+              onClick={async () => {
+                if (!searchPreviewDoc) return;
+                try {
+                  await deleteMutation.mutateAsync({ id: searchPreviewDoc.id });
+                  setShowSearchPreviewDialog(false);
+                  setSearchPreviewDoc(null);
+                  await utils.documents.search.invalidate();
+                  await utils.documents.dashboard.invalidate();
+                  toast.success("Document deleted");
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : "Failed to delete document";
+                  toast.error(message);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={showDeleteFolderDialog}
         onOpenChange={(open) => {
           if (deletingFolder) return;
@@ -2063,7 +2407,10 @@ export default function Documents() {
         onOpenChange={(open) => {
           if (creatingFolder) return;
           setShowCreateFolderDialog(open);
-          if (!open) setNewFolderName("");
+          if (!open) {
+            setNewFolderName("");
+            setCreateFolderContextPath(null);
+          }
         }}
       >
         <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
@@ -2084,19 +2431,24 @@ export default function Documents() {
                 >
                   Standard Folder
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={createFolderMode === "template" ? "default" : "outline"}
-                  className={createFolderMode === "template" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
-                  onClick={() => setCreateFolderMode("template")}
-                >
-                  Folder Template
-                </Button>
+                {canUseFolderTemplates && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={createFolderMode === "template" ? "default" : "outline"}
+                    className={createFolderMode === "template" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                    onClick={() => setCreateFolderMode("template")}
+                  >
+                    Folder Template
+                  </Button>
+                )}
               </div>
+              {!canUseFolderTemplates && (
+                <p className="mt-2 text-xs text-zinc-500">Templates are available after you open a specific folder.</p>
+              )}
             </div>
 
-            {createFolderMode === "standard" ? (
+            {createFolderMode === "standard" || !canUseFolderTemplates ? (
               <div>
                 <Label className="text-xs text-muted-foreground">Folder Name</Label>
                 <Input
@@ -2277,31 +2629,64 @@ export default function Documents() {
             </div>
 
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Folder</Label>
-              <Select value={uploadDocType} onValueChange={setUploadDocType}>
-                <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {uploadFolderOptions.map((t) => <SelectItem key={t.fullPath} value={t.fullPath}>{t.fullPath}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">Upload Destination</Label>
+              <div className="flex flex-wrap gap-2">
+                {uploadContextPath && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={uploadDestinationMode === "current" ? "default" : "outline"}
+                    className={uploadDestinationMode === "current" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                    onClick={() => setUploadDestinationMode("current")}
+                  >
+                    Current Folder
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={uploadDestinationMode === "specific" ? "default" : "outline"}
+                  className={uploadDestinationMode === "specific" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                  onClick={() => setUploadDestinationMode("specific")}
+                >
+                  Specific Year/Month
+                </Button>
+              </div>
+              {uploadDestinationMode === "current" && uploadContextPath && (
+                <p className="text-[11px] text-zinc-500 mt-2">Destination: {prettifyFolderPath(uploadContextPath)}</p>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">Year</Label>
-                <Select value={uploadYear} onValueChange={setUploadYear}>
-                  <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
-                  <SelectContent>{uploadYearOptions.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1.5 block">Month</Label>
-                <Select value={uploadMonth} onValueChange={setUploadMonth}>
-                  <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
-                  <SelectContent>{uploadMonthOptions.map((name) => <SelectItem key={name} value={String(MONTH_NAMES.indexOf(name) + 1)}>{name}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-            </div>
+            {uploadDestinationMode === "specific" && (
+              <>
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1.5 block">Folder</Label>
+                  <Select value={uploadDocType} onValueChange={setUploadDocType}>
+                    <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {uploadFolderOptions.map((t) => <SelectItem key={t.fullPath} value={t.fullPath}>{t.fullPath}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-1.5 block">Year</Label>
+                    <Select value={uploadYear} onValueChange={setUploadYear}>
+                      <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                      <SelectContent>{uploadYearOptions.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-1.5 block">Month</Label>
+                    <Select value={uploadMonth} onValueChange={setUploadMonth}>
+                      <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                      <SelectContent>{uploadMonthOptions.map((name) => <SelectItem key={name} value={String(MONTH_NAMES.indexOf(name) + 1)}>{name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           <DialogFooter>
