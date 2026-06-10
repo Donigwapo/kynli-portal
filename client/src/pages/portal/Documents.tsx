@@ -98,6 +98,8 @@ const FOLDER_TEMPLATES = [
   { key: "Accounts Receivable (with months)", base: "Accounts Receivable", supportsMonths: true },
 ] as const;
 
+const TEMPLATE_YEAR_EXTRA_FOLDERS = ["Send to Accountant", "Workpapers"] as const;
+
 const TEMPLATE_BASE_NAMES: Set<string> = new Set(FOLDER_TEMPLATES.map((t) => t.base));
 
 function resolveDefaultTemplateTypeForPath(path?: string | null): string {
@@ -454,6 +456,7 @@ export default function Documents() {
   const [createFolderContextPath, setCreateFolderContextPath] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createFolderMode, setCreateFolderMode] = useState<"standard" | "template">("standard");
+  const [templateProgress, setTemplateProgress] = useState<{ active: boolean; total: number; completed: number }>({ active: false, total: 0, completed: 0 });
   const [templateType, setTemplateType] = useState<string>("Financials (with months)");
   const [templateFromYear, setTemplateFromYear] = useState(String(Math.max(2024, CURRENT_YEAR - 2)));
   const [templateToYear, setTemplateToYear] = useState(String(CURRENT_YEAR));
@@ -850,19 +853,37 @@ export default function Documents() {
 
   const scopedSearchFolders = useMemo(() => {
     const folders = (searchResults?.folders ?? []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null }>;
+    const docs = (searchResults?.documents ?? []) as Array<{ folder_path: string }>;
+    const query = normalizedSearch;
 
-    if (!currentFolderPath) {
-      const query = normalizedSearch;
-      const byPath = new Map<string, { id: number | null; name: string; full_path: string; updated_at: string | null }>();
+    const byPath = new Map<string, { id: number | null; name: string; full_path: string; updated_at: string | null }>();
 
-      // 1) Persisted roots returned by backend search
-      for (const f of folders) {
-        if (!String(f.full_path).includes("/")) {
-          byPath.set(String(f.full_path), { id: Number(f.id), name: String(f.name), full_path: String(f.full_path), updated_at: f.updated_at ?? null });
+    // 1) Persisted folder results from backend search
+    for (const f of folders) {
+      const path = String(f.full_path);
+      byPath.set(path, { id: Number(f.id), name: String(f.name), full_path: path, updated_at: f.updated_at ?? null });
+    }
+
+    // 2) Derive missing folders from matching document paths (fallback when folder rows are absent)
+    for (const d of docs) {
+      const full = String(d.folder_path || "").trim();
+      if (!full) continue;
+      const parts = full.split("/").filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        const path = parts.slice(0, i + 1).join("/");
+        if (!byPath.has(path)) {
+          byPath.set(path, {
+            id: Number(folderByPath.get(path)?.id ?? 0) || null,
+            name: parts[i],
+            full_path: path,
+            updated_at: null,
+          });
         }
       }
+    }
 
-      // 2) Default/system roots shown in All Folders UI
+    if (!currentFolderPath) {
+      // 3) Default/system roots shown in All Folders UI
       for (const root of WORKSPACE_FOLDERS) {
         const key = String(root);
         if (!byPath.has(key)) {
@@ -877,11 +898,11 @@ export default function Documents() {
       });
     }
 
-    return folders.filter((f) => {
+    return Array.from(byPath.values()).filter((f) => {
       const path = String(f.full_path);
-      return path.startsWith(`${currentFolderPath}/`) && path !== currentFolderPath;
+      return (path.startsWith(`${currentFolderPath}/`) && path !== currentFolderPath) && (path.toLowerCase().includes(query) || String(f.name).toLowerCase().includes(query));
     });
-  }, [searchResults, currentFolderPath, normalizedSearch]);
+  }, [searchResults, currentFolderPath, normalizedSearch, folderByPath]);
 
   const scopedSearchDocuments = useMemo(() => {
     const docs = (searchResults?.documents ?? []) as Array<{
@@ -900,6 +921,7 @@ export default function Documents() {
       return path === currentFolderPath || path.startsWith(`${currentFolderPath}/`);
     });
   }, [searchResults, currentFolderPath]);
+
 
   const yearOptions = useMemo(() => {
     const years = new Set<number>();
@@ -1443,25 +1465,42 @@ export default function Documents() {
 
   const templateContextPath = useMemo(() => String(createFolderContextPath ?? "").trim(), [createFolderContextPath]);
 
-  const canUseFolderTemplates = templateContextPath === "Bank Statements" || templateContextPath === "Financials (Internal)";
+  const canUseFolderTemplates =
+    templateContextPath === "Bank Statements" ||
+    templateContextPath === "Financials (Internal)" ||
+    templateContextPath === "Payroll";
+  const contextTemplateType = useMemo(() => {
+    if (templateContextPath === "Bank Statements") return "Bank Statements (with months)";
+    if (templateContextPath === "Financials (Internal)") return "Financials (with months)";
+    if (templateContextPath === "Payroll") return "Payroll (with months)";
+    return null;
+  }, [templateContextPath]);
 
   const templatePlan = useMemo(() => {
     const from = Number(templateFromYear);
     const to = Number(templateToYear);
-    const tpl = FOLDER_TEMPLATES.find((t) => t.key === templateType) ?? FOLDER_TEMPLATES[0];
+    const effectiveTemplateType = contextTemplateType ?? templateType;
+    const tpl = FOLDER_TEMPLATES.find((t) => t.key === effectiveTemplateType) ?? FOLDER_TEMPLATES[0];
     if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) {
-      return { years: [] as number[], monthNames: [] as string[], yearCount: 0, monthCount: 0, templateBase: tpl.base };
+      return { years: [] as number[], monthNames: [] as string[], extraFolderNames: [] as string[], yearCount: 0, monthCount: 0, extraCount: 0, templateBase: tpl.base };
     }
     const years = Array.from({ length: to - from + 1 }, (_, i) => from + i);
     const monthNames = templateCreateMonths && tpl.supportsMonths ? MONTH_NAMES : [];
+    const includeYearExtras =
+      tpl.key === "Bank Statements (with months)" ||
+      tpl.key === "Financials (with months)" ||
+      tpl.key === "Payroll (with months)";
+    const extraFolderNames = includeYearExtras ? Array.from(TEMPLATE_YEAR_EXTRA_FOLDERS) : [];
     return {
       years,
       monthNames,
+      extraFolderNames,
       yearCount: years.length,
       monthCount: years.length * monthNames.length,
+      extraCount: years.length * extraFolderNames.length,
       templateBase: tpl.base,
     };
-  }, [templateFromYear, templateToYear, templateType, templateCreateMonths]);
+  }, [templateFromYear, templateToYear, templateType, templateCreateMonths, contextTemplateType]);
 
   async function confirmCreateFolder() {
     if (creatingFolder) return;
@@ -1494,7 +1533,7 @@ export default function Documents() {
           toast.success("Folder created");
         }
       } else {
-        const { years, monthNames, templateBase } = templatePlan;
+        const { years, monthNames, extraFolderNames } = templatePlan;
         if (!years.length) {
           toast.error("Please select a valid year range");
           return;
@@ -1502,9 +1541,14 @@ export default function Documents() {
 
         let createdYears = 0;
         let createdMonths = 0;
+        let createdExtras = 0;
+        let skippedCount = 0;
 
         const knownPaths = new Set(Array.from(folderByPath.keys()));
         const parentPath = parentId != null ? (folderById.get(Number(parentId))?.full_path ?? "") : "";
+        const totalPlanned = years.length + years.length * monthNames.length + years.length * extraFolderNames.length;
+        let completed = 0;
+        setTemplateProgress({ active: true, total: totalPlanned, completed: 0 });
 
         for (const y of years) {
           const yearName = String(y);
@@ -1522,12 +1566,20 @@ export default function Documents() {
             createdYears += 1;
           } else {
             yearFolderId = Number(folderByPath.get(yearPath)?.id ?? 0) || null;
+            skippedCount += 1;
           }
+          completed += 1;
+          setTemplateProgress({ active: true, total: totalPlanned, completed });
 
           if (yearFolderId && monthNames.length) {
             for (const monthName of monthNames) {
               const monthPath = `${yearPath}/${monthName}`;
-              if (knownPaths.has(monthPath)) continue;
+              if (knownPaths.has(monthPath)) {
+                skippedCount += 1;
+                completed += 1;
+                setTemplateProgress({ active: true, total: totalPlanned, completed });
+                continue;
+              }
               await createFolderMutation.mutateAsync({
                 tenantSlug: impersonatingTenantSlug ?? undefined,
                 name: monthName,
@@ -1535,11 +1587,35 @@ export default function Documents() {
               });
               knownPaths.add(monthPath);
               createdMonths += 1;
+              completed += 1;
+              setTemplateProgress({ active: true, total: totalPlanned, completed });
+            }
+          }
+
+          if (yearFolderId && extraFolderNames.length) {
+            for (const extraName of extraFolderNames) {
+              const extraPath = `${yearPath}/${extraName}`;
+              if (knownPaths.has(extraPath)) {
+                skippedCount += 1;
+                completed += 1;
+                setTemplateProgress({ active: true, total: totalPlanned, completed });
+                continue;
+              }
+              await createFolderMutation.mutateAsync({
+                tenantSlug: impersonatingTenantSlug ?? undefined,
+                name: extraName,
+                parentFolderId: yearFolderId,
+              });
+              knownPaths.add(extraPath);
+              createdExtras += 1;
+              completed += 1;
+              setTemplateProgress({ active: true, total: totalPlanned, completed });
             }
           }
         }
 
-        toast.success(`Created ${createdYears} year folders and ${createdMonths} month folders.`);
+        const createdTotal = createdYears + createdMonths + createdExtras;
+        toast.success(`Folder template created successfully. ${createdYears} year folders created, ${createdMonths + createdExtras} subfolders created. ${createdTotal} new folders created, ${skippedCount} existing folders skipped.`);
       }
 
       setShowCreateFolderDialog(false);
@@ -1549,6 +1625,7 @@ export default function Documents() {
       toast.error(error instanceof Error ? error.message : "Failed to create folder");
     } finally {
       setCreatingFolder(false);
+      setTemplateProgress((prev) => ({ ...prev, active: false }));
     }
   }
 
@@ -2405,9 +2482,11 @@ export default function Documents() {
       <Dialog
         open={showCreateFolderDialog}
         onOpenChange={(open) => {
-          if (creatingFolder) return;
+          if (!open && creatingFolder && createFolderMode === "template" && templateProgress.active) {
+            toast.info("Folder template creation is running in the background.");
+          }
           setShowCreateFolderDialog(open);
-          if (!open) {
+          if (!open && !creatingFolder) {
             setNewFolderName("");
             setCreateFolderContextPath(null);
           }
@@ -2468,14 +2547,9 @@ export default function Documents() {
               <div className="space-y-3">
                 <div>
                   <Label className="text-xs text-muted-foreground">Template Type</Label>
-                  <Select value={templateType} onValueChange={setTemplateType}>
-                    <SelectTrigger className="bg-zinc-900 border-zinc-700 mt-2"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {FOLDER_TEMPLATES.map((t) => (
-                        <SelectItem key={t.key} value={t.key}>{t.key}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200">
+                    {contextTemplateType ?? templateType}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -2495,7 +2569,7 @@ export default function Documents() {
                     checked={templateCreateMonths}
                     onChange={(e) => setTemplateCreateMonths(e.target.checked)}
                     className="accent-emerald-500"
-                    disabled={!((FOLDER_TEMPLATES.find((t) => t.key === templateType) ?? FOLDER_TEMPLATES[0]).supportsMonths)}
+                    disabled={!((FOLDER_TEMPLATES.find((t) => t.key === (contextTemplateType ?? templateType)) ?? FOLDER_TEMPLATES[0]).supportsMonths)}
                   />
                   Create month subfolders (Jan–Dec)
                 </label>
@@ -2509,14 +2583,32 @@ export default function Documents() {
                         {templatePlan.monthNames.length > 0 && (
                           <div className="ml-4 text-zinc-500">{templatePlan.monthNames.join(" • ")}</div>
                         )}
+                        {templatePlan.extraFolderNames.length > 0 && (
+                          <div className="ml-4 text-zinc-500">{templatePlan.extraFolderNames.join(" • ")}</div>
+                        )}
                       </div>
                     ))}
                     {templatePlan.years.length === 0 && <div className="text-zinc-500">Select a valid year range.</div>}
                   </div>
                   <p className="text-[11px] text-zinc-500 mt-2">
-                    This will create {templatePlan.yearCount} year folders and {templatePlan.monthCount} month folders.
+                    This will create {templatePlan.yearCount} year folders, {templatePlan.monthCount} month folders, and {templatePlan.extraCount} additional folders.
                   </p>
                 </div>
+
+                {templateProgress.active && createFolderMode === "template" && (
+                  <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-2">
+                    <p className="text-sm font-medium text-zinc-200">Creating folder structure...</p>
+                    <p className="text-xs text-zinc-500">Please wait while folders are being created.</p>
+                    <p className="text-xs text-zinc-300">{templateProgress.completed} of {templateProgress.total} folders created</p>
+                    <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-300"
+                        style={{ width: `${templateProgress.total > 0 ? Math.min(100, Math.round((templateProgress.completed / templateProgress.total) * 100)) : 0}%` }}
+                      />
+                    </div>
+                    <p className="text-[11px] text-zinc-500">{templateProgress.total > 0 ? Math.round((templateProgress.completed / templateProgress.total) * 100) : 0}%</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2528,7 +2620,9 @@ export default function Documents() {
               disabled={creatingFolder || (createFolderMode === "standard" ? !newFolderName.trim() : templatePlan.yearCount <= 0)}
               className="bg-emerald-500 hover:bg-emerald-600 text-black font-semibold"
             >
-              {creatingFolder ? "Creating..." : (createFolderMode === "standard" ? "Create Folder" : "Create Template")}
+              {creatingFolder ? (
+                <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Creating...</span>
+              ) : (createFolderMode === "standard" ? "Create Folder" : "Create Template")}
             </Button>
           </DialogFooter>
         </DialogContent>

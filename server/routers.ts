@@ -1750,12 +1750,20 @@ export const appRouter = router({
           .limit(limit);
 
         let personalDocQuery: any = null;
+        let personalFolderQuery: any = null;
 
         if (isStaffPortfolioUser && !hasExplicitTenantContext) {
           const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
           if (accessibleSlugs.length > 0) {
             folderQuery = folderQuery.in("tenant_slug", accessibleSlugs);
             docQuery = docQuery.in("tenant_slug", accessibleSlugs);
+            personalFolderQuery = supabase
+              .from("portal_document_folders")
+              .select("id,name,full_path,updated_at,parent_folder_id")
+              .order("updated_at", { ascending: false, nullsFirst: false })
+              .limit(limit)
+              .is("tenant_slug", null)
+              .eq("created_by_user_id", String(ctx.user.id));
             personalDocQuery = supabase
               .from("documents_metadata")
               .select("id,file_name,name,doc_type,description,file_url,file_key,created_at,updated_at,file_size,mime_type,year,month")
@@ -1775,21 +1783,33 @@ export const appRouter = router({
 
         folderQuery = folderQuery.or(`name.ilike.%${q}%,full_path.ilike.%${q}%`);
         docQuery = docQuery.or(`file_name.ilike.%${q}%,name.ilike.%${q}%,doc_type.ilike.%${q}%`);
+        if (personalFolderQuery) {
+          personalFolderQuery = personalFolderQuery.or(`name.ilike.%${q}%,full_path.ilike.%${q}%`);
+        }
         if (personalDocQuery) {
           personalDocQuery = personalDocQuery.or(`file_name.ilike.%${q}%,name.ilike.%${q}%,doc_type.ilike.%${q}%`);
         }
 
-        const [{ data: folderRows, error: folderError }, { data: docRows, error: docError }, { data: personalDocRows, error: personalDocError }] = await Promise.all([
+        const [{ data: folderRows, error: folderError }, { data: docRows, error: docError }, { data: personalFolderRows, error: personalFolderError }, { data: personalDocRows, error: personalDocError }] = await Promise.all([
           folderQuery,
           docQuery,
+          personalFolderQuery ?? Promise.resolve({ data: [], error: null }),
           personalDocQuery ?? Promise.resolve({ data: [], error: null }),
         ]);
 
         if (folderError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search folders: ${folderError.message}` });
         if (docError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search documents: ${docError.message}` });
+        if (personalFolderError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search personal folders: ${personalFolderError.message}` });
         if (personalDocError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to search personal documents: ${personalDocError.message}` });
 
-        const folders = ((folderRows || []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null; parent_folder_id: number | null }>).map((f) => ({
+        const folderSource = [
+          ...((folderRows || []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null; parent_folder_id: number | null }>),
+          ...((personalFolderRows || []) as Array<{ id: number; name: string; full_path: string; updated_at: string | null; parent_folder_id: number | null }>),
+        ];
+        const dedupFolders = new Map<string, { id: number; name: string; full_path: string; updated_at: string | null; parent_folder_id: number | null }>();
+        for (const f of folderSource) dedupFolders.set(String(f.full_path), f);
+
+        const folders = Array.from(dedupFolders.values()).map((f) => ({
           id: Number(f.id),
           name: String(f.name),
           full_path: String(f.full_path),
