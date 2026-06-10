@@ -472,7 +472,18 @@ function buildConversationId(input: {
 
 function normalizeDocTypeValue(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
-  return normalized || "Other";
+  if (!normalized) return "Other";
+  const lower = normalized.toLowerCase();
+  if (lower === "chat_attachment" || lower === "chat attachment") {
+    return "Chat Attachments";
+  }
+  if (lower.startsWith("chat_attachment/")) {
+    return `Chat Attachments/${normalized.slice("chat_attachment/".length)}`;
+  }
+  if (lower.startsWith("chat attachment/")) {
+    return `Chat Attachments/${normalized.slice("chat attachment/".length)}`;
+  }
+  return normalized;
 }
 
 function extractMentionedUserIds(body: string, candidates: MentionRecipient[]): number[] {
@@ -1650,18 +1661,30 @@ export const appRouter = router({
           .from("documents_metadata")
           .select("id", { count: "exact", head: true });
 
+        let supplementalRowsPromise: any = null;
+
         if (isStaffPortfolioUser && !hasExplicitTenantContext) {
           query = query.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
           countQuery = countQuery.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
+
+          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+          if (accessibleSlugs.length > 0) {
+            supplementalRowsPromise = supabase
+              .from("documents_metadata")
+              .select("id,doc_type,file_size,updated_at,file_name,name,created_at")
+              .in("tenant_slug", accessibleSlugs)
+              .order("updated_at", { ascending: false, nullsFirst: false });
+          }
         } else {
           const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
           query = query.eq("tenant_slug", slug);
           countQuery = countQuery.eq("tenant_slug", slug);
         }
 
-        const [{ data: rows, error }, { count, error: countError }] = await Promise.all([
+        const [{ data: rows, error }, { error: countError }, { data: supplementalRows, error: supplementalError }] = await Promise.all([
           query,
           countQuery,
+          supplementalRowsPromise ?? Promise.resolve({ data: [], error: null }),
         ]);
 
         if (error) {
@@ -1670,8 +1693,18 @@ export const appRouter = router({
         if (countError) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to count documents: ${countError.message}` });
         }
+        if (supplementalError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load supplemental dashboard metadata: ${supplementalError.message}` });
+        }
 
-        const normalized = (rows || []) as Array<{
+        const baseRows = [
+          ...((rows || []) as Array<any>),
+          ...((supplementalRows || []) as Array<any>),
+        ];
+        const dedupRows = new Map<string, any>();
+        for (const row of baseRows) dedupRows.set(String(row.id), row);
+
+        const normalized = Array.from(dedupRows.values()) as Array<{
           id: string | number;
           doc_type: string | null;
           file_size: number | null;
@@ -1684,6 +1717,7 @@ export const appRouter = router({
         const folderStats = new Map<string, { docCount: number; lastUpdated: string | null }>();
         let totalStorageBytes = 0;
         let lastUpdatedOverall: string | null = null;
+        const totalDocumentCount = normalized.length;
 
         for (const row of normalized) {
           const folderPath = normalizeDocTypeValue(row.doc_type ?? "Other");
@@ -1721,7 +1755,7 @@ export const appRouter = router({
         return {
           totals: {
             totalFolders: 0,
-            totalDocuments: count ?? normalized.length,
+            totalDocuments: totalDocumentCount,
             storageBytes: totalStorageBytes,
             lastUpdated: lastUpdatedOverall,
           },
@@ -1855,15 +1889,80 @@ export const appRouter = router({
 
         // Staff/accountants default to personal operational document area
         // (their own uploads only, no tenant context) unless they explicitly select a tenant via View as.
-        const effectiveDocType = input.folderPath ?? input.docType;
+        const selectedDocType = input.folderPath ?? input.docType;
+        const isChatAttachmentsScope =
+          selectedDocType === "Chat Attachments" ||
+          selectedDocType === "chat_attachment" ||
+          String(selectedDocType ?? "").startsWith("Chat Attachments/") ||
+          String(selectedDocType ?? "").startsWith("chat_attachment/");
+
+        const toLegacyChatDocType = (value: string | undefined): string | undefined => {
+          if (!value) return value;
+          if (value === "Chat Attachments") return "chat_attachment";
+          if (value.startsWith("Chat Attachments/")) return `chat_attachment/${value.slice("Chat Attachments/".length)}`;
+          return value;
+        };
+
+        const toDisplayChatDocType = (value: string | undefined): string | undefined => {
+          if (!value) return value;
+          if (value === "chat_attachment") return "Chat Attachments";
+          if (value.startsWith("chat_attachment/")) return `Chat Attachments/${value.slice("chat_attachment/".length)}`;
+          return value;
+        };
+
+        const effectiveDocType = toLegacyChatDocType(selectedDocType);
+        const alternateChatDocType = isChatAttachmentsScope ? toDisplayChatDocType(effectiveDocType) : undefined;
 
         if (isStaffPortfolioUser && !input.tenantSlug) {
+          if (isChatAttachmentsScope) {
+            const [accessibleSlugs, personalPrimary, personalAlternate] = await Promise.all([
+              resolveTenantSlugsForUser(ctx.user, undefined),
+              getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
+                tenantIsNullOnly: true,
+              }),
+              alternateChatDocType && alternateChatDocType !== effectiveDocType
+                ? getDocumentsByUploader(ctx.user.id, input.year, input.month, alternateChatDocType, undefined, {
+                    tenantIsNullOnly: true,
+                  })
+                : Promise.resolve([]),
+            ]);
+
+            const tenantDocsArrays = await Promise.all(
+              accessibleSlugs.flatMap((slug) => [
+                getDocuments(slug, input.year, input.month, effectiveDocType),
+                alternateChatDocType && alternateChatDocType !== effectiveDocType
+                  ? getDocuments(slug, input.year, input.month, alternateChatDocType)
+                  : Promise.resolve([]),
+              ]),
+            );
+
+            const merged = new Map<string, any>();
+            for (const doc of personalPrimary) merged.set(String(doc.id), doc);
+            for (const doc of personalAlternate) merged.set(String(doc.id), doc);
+            for (const arr of tenantDocsArrays) {
+              for (const doc of arr) merged.set(String(doc.id), doc);
+            }
+
+            return Array.from(merged.values());
+          }
+
           return getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
             tenantIsNullOnly: true,
           });
         }
 
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        if (isChatAttachmentsScope && alternateChatDocType && alternateChatDocType !== effectiveDocType) {
+          const [primaryDocs, alternateDocs] = await Promise.all([
+            getDocuments(slug, input.year, input.month, effectiveDocType),
+            getDocuments(slug, input.year, input.month, alternateChatDocType),
+          ]);
+          const merged = new Map<string, any>();
+          for (const doc of primaryDocs) merged.set(String(doc.id), doc);
+          for (const doc of alternateDocs) merged.set(String(doc.id), doc);
+          return Array.from(merged.values());
+        }
+
         return getDocuments(slug, input.year, input.month, effectiveDocType);
       }),
     upload: protectedProcedure
@@ -2226,9 +2325,63 @@ export const appRouter = router({
           return { success: true, document: existingRow };
         }
 
-        // Staff/accountants in personal document area (no explicit tenant context)
-        // should only update their own tenant-null documents.
+        // Staff/accountants in default context (no explicit tenant selected).
+        // - If the document belongs to an assigned tenant, allow move.
+        // - If tenant is null, only allow moving their own personal docs.
         if (isStaffPortfolioUser && !input.tenantSlug) {
+          const existingTenantSlug = String(existingRow.tenant_slug ?? "").trim().toLowerCase();
+
+          if (existingTenantSlug) {
+            const allowedSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+            if (!allowedSlugs.includes(existingTenantSlug)) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: "You can only move documents for clients you are assigned to.",
+              });
+            }
+
+            const updated = await updateDocumentType(existingTenantSlug, input.id, input.docType);
+            const movedAt = new Date().toISOString();
+            void deliverDocumentMovedWebhook({
+              document_id: String(updated.id),
+              tenant_slug: updated.tenant_slug ? String(updated.tenant_slug) : existingTenantSlug,
+              moved_by_user_id: String(ctx.user.id),
+              moved_by_name: ctx.user.name ?? null,
+              moved_by_email: ctx.user.email ?? null,
+              moved_by_role: ctx.user.role,
+              previous_folder: previousFolder,
+              new_folder: String(updated.doc_type ?? input.docType),
+              file_name: (updated.file_name ?? updated.name ?? null) as string | null,
+              file_path: (updated.file_key ?? null) as string | null,
+              moved_at: movedAt,
+              destination_folder_id: input.destinationFolderId ?? null,
+              destination_folder_name: input.destinationFolderPath ? String(input.destinationFolderPath).split("/").pop() ?? null : null,
+              destination_folder_path: input.destinationFolderPath ?? null,
+            });
+
+            await writeActivityLog({
+              req: ctx.req,
+              actor: ctx.user,
+              action_type: "file_moved",
+              entity_type: "document",
+              entity_id: String(updated.id),
+              tenant_slug: updated.tenant_slug ? String(updated.tenant_slug) : existingTenantSlug,
+              organization_id: (updated.organization_id ?? null) as string | null,
+              client_id: (updated.client_id ?? null) as string | null,
+              file_name: (updated.file_name ?? updated.name ?? null) as string | null,
+              previous_value: previousFolder,
+              new_value: String(updated.doc_type ?? input.docType),
+              metadata: {
+                file_key: (updated.file_key ?? null) as string | null,
+                moved_at: movedAt,
+                source: "portal_documents",
+              },
+              status: "success",
+            });
+
+            return { success: true, document: updated };
+          }
+
           const { data, error } = await supabase
             .from("documents_metadata")
             .update({ doc_type: input.docType, updated_at: new Date().toISOString() })

@@ -74,6 +74,7 @@ const WORKSPACE_FOLDERS = [
   "Payroll",
   "Client Uploads",
   "Financials For Client",
+  "Chat Attachments",
 ] as const;
 
 type WorkspaceFolder = (typeof WORKSPACE_FOLDERS)[number];
@@ -133,6 +134,7 @@ const DOC_TYPE_COLORS: Record<string, string> = {
   Payroll: "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
   "Client Uploads": "bg-amber-500/20 text-amber-300 border-amber-500/30",
   "Financials For Client": "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+  "Chat Attachments": "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
   Financials: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
   "Tax Returns": "bg-blue-500/20 text-blue-400 border-blue-500/30",
   "W-2 / 1099": "bg-purple-500/20 text-purple-400 border-purple-500/30",
@@ -144,7 +146,7 @@ const DOC_TYPE_COLORS: Record<string, string> = {
 function normalizeDocType(value?: string | null): string {
   if (!value || !String(value).trim()) return "Other";
   const raw = String(value).trim();
-  if (raw.toLowerCase() === "chat_attachment") return "Chat Attachment";
+  if (raw.toLowerCase() === "chat_attachment" || raw.toLowerCase() === "chat attachment") return "Chat Attachments";
   return raw;
 }
 
@@ -938,26 +940,36 @@ export default function Documents() {
   }, [localDocs]);
 
   const folderCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      [ALL_FOLDERS]: Number(dashboardData?.totals?.totalDocuments ?? 0),
-    };
-
-    for (const folder of WORKSPACE_FOLDERS) counts[folder] = 0;
+    const counts: Record<string, number> = {};
 
     const stats = (dashboardData?.folderStats ?? {}) as Record<string, { docCount?: number }>;
-    for (const [folder, value] of Object.entries(stats)) {
-      counts[folder] = Number(value?.docCount ?? 0);
+    for (const [folderPath, value] of Object.entries(stats)) {
+      counts[String(folderPath)] = Number(value?.docCount ?? 0);
     }
 
-    if (!Object.keys(stats).length && currentFolderPath) {
+    // Fallback path-driven counting when dashboard stats are unavailable.
+    // Count each document into all ancestor paths so any new folder/subfolder
+    // automatically gets accurate recursive totals.
+    if (!Object.keys(stats).length) {
       for (const d of localDocs) {
-        const normalized = normalizedDocTypeById.get(String(d.id)) ?? "Other";
-        counts[normalized] = (counts[normalized] || 0) + 1;
+        const normalizedPath = String(normalizedDocTypeById.get(String(d.id)) ?? "Other").trim();
+        if (!normalizedPath) continue;
+        const segments = normalizedPath.split("/").filter(Boolean);
+        if (!segments.length) continue;
+        for (let i = 0; i < segments.length; i++) {
+          const path = segments.slice(0, i + 1).join("/");
+          counts[path] = (counts[path] || 0) + 1;
+        }
       }
     }
 
+    counts[ALL_FOLDERS] = Number(
+      dashboardData?.totals?.totalDocuments ??
+      localDocs.length,
+    );
+
     return counts;
-  }, [currentFolderPath, localDocs, normalizedDocTypeById, dashboardData]);
+  }, [localDocs, normalizedDocTypeById, dashboardData]);
 
   const subfolderCountsByPath = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1009,6 +1021,7 @@ export default function Documents() {
   }, [currentFolderPath, childFolders, orderedLegacyFolders]);
 
   const selectedSet = useMemo(() => new Set(selectedDocIds.map((id) => String(id))), [selectedDocIds]);
+  const isClientUploadsRootView = currentFolderPath === "Client Uploads";
 
   const toggleSelect = useCallback((id: string | number) => {
     const key = String(id);
@@ -1912,10 +1925,22 @@ export default function Documents() {
           isLoading ? (
             <div className="text-center py-16 text-muted-foreground">Loading documents...</div>
           ) : docsForFilter.length === 0 ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 py-20 text-center text-muted-foreground">
-              <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="font-medium">No documents in this folder yet.</p>
-            </div>
+            isClientUploadsRootView ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 text-sm text-zinc-300">
+                <h3 className="text-base font-semibold text-zinc-100 mb-2">Client Uploads Overview</h3>
+                <p className="text-zinc-400 mb-3">
+                  Files uploaded by your assigned clients appear here before being organized into their final destination folders.
+                </p>
+                <p className="text-zinc-400">
+                  Use Preview and Move actions to review incoming files and place them into Bank Statements, Payroll, Financials, Tax, or other folders.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 py-20 text-center text-muted-foreground">
+                <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                <p className="font-medium">No documents in this folder yet.</p>
+              </div>
+            )
           ) : (
             <div className="space-y-8">
               {sortedYears.map((year) => {
@@ -2080,7 +2105,7 @@ export default function Documents() {
           )
         )}
 
-        {currentFolderPath && (
+        {currentFolderPath && !isClientUploadsRootView && (
           <div
             role="button"
             tabIndex={0}
