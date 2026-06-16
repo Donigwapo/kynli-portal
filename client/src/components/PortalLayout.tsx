@@ -64,7 +64,7 @@ interface PortalLayoutProps {
 }
 
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
@@ -101,10 +101,27 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const navItems = isAdmin
     ? ADMIN_NAV
     : CLIENT_NAV.filter(item => {
+        // Hide chat while in View-as-Client impersonation mode.
+        if (item.id === "chat" && impersonatingTenantSlug) {
+          return false;
+        }
         if (item.id === "activity_log") {
-          return !!user && (["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role));
+          // Admin-only, and hidden during View-as-Client impersonation.
+          return !!user && user.role === "admin" && !impersonatingTenantSlug;
+        }
+        if (item.id === "profile") {
+          // Hide Settings in client-like experiences:
+          // - real client login
+          // - staff/admin View-as-Client impersonation
+          return !!user && user.role !== "client" && !impersonatingTenantSlug;
         }
         if (isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
+          return false;
+        }
+        // Accountants access client portal via Admin/Clients -> View As Client,
+        // so hide direct "Portal" nav entry in their normal sidebar only.
+        // Keep it visible while impersonating (View As Client).
+        if (user?.role === "accountant" && item.id === "documents" && !impersonatingTenantSlug) {
           return false;
         }
         return !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy");
@@ -142,7 +159,13 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           <div className="mx-3 mt-2 px-2 py-1.5 rounded" style={{ backgroundColor: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
             <p className="text-xs font-medium leading-tight" style={{ color: "#f59e0b" }}>Viewing as client</p>
             <button
-              onClick={() => { setImpersonatingTenantSlug(null); setEffectiveTier("cfo"); }}
+              onClick={() => {
+                setImpersonatingTenantSlug(null);
+                setEffectiveTier("cfo");
+                if (user?.role === "admin") {
+                  navigate("/admin/clients");
+                }
+              }}
               className="text-xs underline mt-0.5 hover:opacity-80 transition-opacity"
               style={{ color: "rgba(245,158,11,0.7)" }}
             >

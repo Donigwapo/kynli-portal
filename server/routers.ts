@@ -1745,12 +1745,81 @@ export const appRouter = router({
           }
         }
 
-        const recent = normalized.slice(0, 10).map((row) => ({
+        const clientFacingRecent = (ctx.user.role === "client") || hasExplicitTenantContext;
+
+        const prettifyPath = (raw: string | null | undefined): string => {
+          const normalizedPath = normalizeDocTypeValue(raw ?? "");
+          return String(normalizedPath || "").split("/").filter(Boolean).join(" > ");
+        };
+
+        const extractPathRoot = (raw: string | null | undefined): string => {
+          const normalizedPath = normalizeDocTypeValue(raw ?? "");
+          return String(normalizedPath || "").split("/")[0] ?? "";
+        };
+
+        const staffActorRoles = ["admin", "accounting_manager", "tax_manager", "accountant"];
+        const clientActionTypes = ["file_uploaded", "file_moved", "file_renamed", "file_deleted", "folder_created", "folder_renamed", "folder_deleted"];
+
+        let recent: Array<{ id: string; file_name: string; folder_path: string; updated_at: string | null; message?: string | null }> = normalized.slice(0, 10).map((row) => ({
           id: String(row.id),
           file_name: row.file_name ?? row.name ?? "Document",
           folder_path: normalizeDocTypeValue(row.doc_type ?? "Other"),
           updated_at: row.updated_at ?? row.created_at ?? null,
+          message: null,
         }));
+
+        if (clientFacingRecent) {
+          const recentTenantSlug = hasExplicitTenantContext
+            ? sanitizeTenantSlug(input.tenantSlug)
+            : sanitizeTenantSlug(await resolveChatTenantSlug(ctx.user, undefined));
+
+          const { data: activityRows, error: activityErr } = await supabase
+            .from("activity_logs")
+            .select("id,actor_name,actor_role,action_type,file_name,previous_value,new_value,metadata,created_at,status")
+            .eq("tenant_slug", recentTenantSlug)
+            .in("action_type", clientActionTypes)
+            .eq("status", "success")
+            .order("created_at", { ascending: false })
+            .limit(40);
+
+          if (!activityErr && activityRows) {
+            const filteredRows = (activityRows as Array<any>).filter((row) => {
+              const roots = [
+                extractPathRoot(row?.new_value),
+                extractPathRoot(row?.previous_value),
+                extractPathRoot((row?.metadata as any)?.folder_path),
+              ].filter(Boolean);
+              // Keep chat attachment activity visible to clients.
+              return !roots.some((r) => r === "Internal Info");
+            });
+
+            recent = filteredRows.slice(0, 10).map((row) => {
+              const actor = String(row.actor_name ?? row.actor_email ?? "A team member");
+              const fileName = String(row.file_name ?? "Document");
+              const toPath = prettifyPath(row.new_value ?? (row?.metadata as any)?.folder_path ?? null);
+              const fromPath = prettifyPath(row.previous_value ?? null);
+
+              let message = `${actor} updated ${fileName}`;
+              if (row.action_type === "file_uploaded") message = `${actor} uploaded ${fileName}`;
+              if (row.action_type === "file_moved") message = `${actor} moved ${fileName}${toPath ? ` to ${toPath}` : ""}`;
+              if (row.action_type === "file_renamed") message = `${actor} renamed ${fromPath || "a file"} to ${fileName}`;
+              if (row.action_type === "file_deleted") message = `${actor} deleted ${fileName}`;
+              if (row.action_type === "folder_created") message = `${actor} created folder ${toPath || fileName}`;
+              if (row.action_type === "folder_renamed") message = `${actor} renamed folder ${fromPath || ""}${toPath ? ` to ${toPath}` : ""}`;
+              if (row.action_type === "folder_deleted") message = `${actor} deleted folder ${fromPath || fileName}`;
+
+              return {
+                id: String(row.id),
+                file_name: fileName,
+                folder_path: toPath || fromPath || "",
+                updated_at: row.created_at ?? null,
+                message,
+              };
+            });
+          } else if (activityErr) {
+            console.error("[documents.dashboard] client-facing recent activity load failed", activityErr.message);
+          }
+        }
 
         return {
           totals: {
@@ -1895,6 +1964,9 @@ export const appRouter = router({
           selectedDocType === "chat_attachment" ||
           String(selectedDocType ?? "").startsWith("Chat Attachments/") ||
           String(selectedDocType ?? "").startsWith("chat_attachment/");
+        const isClientUploadsScope =
+          selectedDocType === "Client Uploads" ||
+          String(selectedDocType ?? "").startsWith("Client Uploads/");
 
         const toLegacyChatDocType = (value: string | undefined): string | undefined => {
           if (!value) return value;
@@ -1912,6 +1984,57 @@ export const appRouter = router({
 
         const effectiveDocType = toLegacyChatDocType(selectedDocType);
         const alternateChatDocType = isChatAttachmentsScope ? toDisplayChatDocType(effectiveDocType) : undefined;
+
+        const mergeAndDedupe = (arrays: Array<Array<any>>) => {
+          const merged = new Map<string, any>();
+          for (const arr of arrays) {
+            for (const doc of arr) {
+              const normalizedDocType = normalizeDocTypeValue((doc as any).doc_type);
+              if (isClientUploadsScope && !String(normalizedDocType).startsWith("Client Uploads")) continue;
+              merged.set(String((doc as any).id), doc);
+            }
+          }
+          return Array.from(merged.values());
+        };
+
+        const logClientUploadsDebug = async (docs: Array<any>, assignedSlugs: string[]) => {
+          if (!isClientUploadsScope) return;
+          const uploaderIds = Array.from(new Set(docs.map((d) => String(d.uploaded_by_user_id ?? "")).filter(Boolean)));
+          const { data: uploaderRows } = uploaderIds.length
+            ? await supabase
+                .from("portal_users")
+                .select("id,role,name,email")
+                .in("id", uploaderIds)
+            : { data: [] as any[] };
+          const uploaderById = new Map(((uploaderRows || []) as Array<any>).map((u) => [String(u.id), u]));
+
+          const clientRoleSet = new Set(["client", "external_member", "business_member"]);
+          const uploadedByAssignedClients = docs.filter((d) => {
+            const role = String(uploaderById.get(String(d.uploaded_by_user_id ?? ""))?.role ?? "").toLowerCase();
+            return clientRoleSet.has(role);
+          });
+          const assignmentMatched = docs.filter((d) => assignedSlugs.includes(sanitizeTenantSlug(d.tenant_slug)));
+
+          console.log("[documents.list][client_uploads_debug]", {
+            userId: ctx.user.id,
+            userRole: ctx.user.role,
+            assignedTenantSlugs: assignedSlugs,
+            totalReturned: docs.length,
+            uploadedByAssignedClientRoles: uploadedByAssignedClients.length,
+            assignmentMatched: assignmentMatched.length,
+            docs: docs.map((d) => {
+              const uploader = uploaderById.get(String(d.uploaded_by_user_id ?? ""));
+              return {
+                id: d.id,
+                file_name: d.file_name ?? d.name ?? null,
+                uploaded_by_user_id: d.uploaded_by_user_id ?? null,
+                uploader_role: uploader?.role ?? null,
+                tenant_slug: d.tenant_slug ?? null,
+                assignment_match: assignedSlugs.includes(sanitizeTenantSlug(d.tenant_slug)),
+              };
+            }),
+          });
+        };
 
         if (isStaffPortfolioUser && !input.tenantSlug) {
           if (isChatAttachmentsScope) {
@@ -1936,14 +2059,24 @@ export const appRouter = router({
               ]),
             );
 
-            const merged = new Map<string, any>();
-            for (const doc of personalPrimary) merged.set(String(doc.id), doc);
-            for (const doc of personalAlternate) merged.set(String(doc.id), doc);
-            for (const arr of tenantDocsArrays) {
-              for (const doc of arr) merged.set(String(doc.id), doc);
-            }
+            const docs = mergeAndDedupe([personalPrimary, personalAlternate, ...tenantDocsArrays]);
+            await logClientUploadsDebug(docs, accessibleSlugs);
+            return docs;
+          }
 
-            return Array.from(merged.values());
+          if (isClientUploadsScope) {
+            const [accessibleSlugs, personalDocs] = await Promise.all([
+              resolveTenantSlugsForUser(ctx.user, undefined),
+              getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
+                tenantIsNullOnly: true,
+              }),
+            ]);
+            const tenantDocsArrays = await Promise.all(
+              accessibleSlugs.map((slug) => getDocuments(slug, input.year, input.month, effectiveDocType)),
+            );
+            const docs = mergeAndDedupe([personalDocs, ...tenantDocsArrays]);
+            await logClientUploadsDebug(docs, accessibleSlugs);
+            return docs;
           }
 
           return getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
@@ -1957,10 +2090,7 @@ export const appRouter = router({
             getDocuments(slug, input.year, input.month, effectiveDocType),
             getDocuments(slug, input.year, input.month, alternateChatDocType),
           ]);
-          const merged = new Map<string, any>();
-          for (const doc of primaryDocs) merged.set(String(doc.id), doc);
-          for (const doc of alternateDocs) merged.set(String(doc.id), doc);
-          return Array.from(merged.values());
+          return mergeAndDedupe([primaryDocs, alternateDocs]);
         }
 
         return getDocuments(slug, input.year, input.month, effectiveDocType);

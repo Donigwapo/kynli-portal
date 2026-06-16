@@ -54,6 +54,12 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       return;
     }
 
+    // View-as-client should not allow chat access while impersonating.
+    if (impersonatingTenantSlug && location === "/portal/chat") {
+      navigate("/portal");
+      return;
+    }
+
   }, [loading, isAuthenticated, user, requireAdmin, location, navigate, impersonatingTenantSlug]);
 
   if (loading) {

@@ -8,16 +8,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -46,10 +36,9 @@ import {
   RefreshCw,
   Search,
   StickyNote,
-  Trash2,
   Users,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { PACKAGE_COLORS, PACKAGE_LABELS, PackageTier } from "../../../../shared/tiers";
 import { usePortal } from "../../contexts/PortalContext";
@@ -96,7 +85,6 @@ export default function AdminClients() {
   const [selectedTenant, setSelectedTenant] = useState<{ slug: string; name: string; notes: string } | null>(null);
   const [ghlNotes, setGhlNotes] = useState("");
   const [addClientOpen, setAddClientOpen] = useState(false);
-  const [deleteConfirmSlug, setDeleteConfirmSlug] = useState<string | null>(null);
   const [, navigate] = useLocation();
   const { setImpersonatingTenantSlug, setEffectiveTier } = usePortal();
 
@@ -123,14 +111,8 @@ export default function AdminClients() {
     onError: (e) => toast.error(`Restore failed: ${e.message}`),
   });
 
-  const deleteTenant = trpc.tenant.delete.useMutation({
-    onSuccess: () => {
-      toast.success("Client permanently deleted.");
-      setDeleteConfirmSlug(null);
-      utils.tenant.list.invalidate();
-    },
-    onError: (e) => toast.error(`Delete failed: ${e.message}`),
-  });
+  // TODO(permanent-delete): Re-enable tenant.delete only after a full purge workflow is implemented
+  // (portal_tenants + tenant-scoped docs/storage/chat/folders/assignments/users/activity/notifications).
 
   const filtered = (tenants ?? []).filter((t) => {
     const matchSearch =
@@ -158,8 +140,6 @@ export default function AdminClients() {
     setGhlNotes(tenant.ghl_notes ?? "");
     setGhlDialogOpen(true);
   }
-
-  const tenantToDelete = tenants?.find((t) => t.slug === deleteConfirmSlug);
 
   return (
     <div className="p-6 space-y-6">
@@ -334,14 +314,7 @@ export default function AdminClients() {
                                   Archive (Churn)
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuSeparator className="bg-border" />
-                              <DropdownMenuItem
-                                className="text-sm gap-2 cursor-pointer text-red-400 focus:text-red-400"
-                                onClick={() => setDeleteConfirmSlug(tenant.slug)}
-                              >
-                                <Trash2 size={13} />
-                                Delete Permanently
-                              </DropdownMenuItem>
+                              {/* TODO(permanent-delete): hidden until safe full-tenant purge workflow exists. */}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
@@ -388,33 +361,6 @@ export default function AdminClients() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteConfirmSlug} onOpenChange={(open) => !open && setDeleteConfirmSlug(null)}>
-        <AlertDialogContent className="bg-card border-border">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground">Delete Client Permanently?</AlertDialogTitle>
-            <AlertDialogDescription className="text-muted-foreground">
-              This will permanently remove <strong className="text-foreground">{tenantToDelete?.company_name}</strong> from the portal.
-              Their Supabase data tables will be preserved, but the client record and portal access will be gone.
-              <br /><br />
-              <span className="text-red-400 font-medium">This action cannot be undone.</span> Consider archiving instead.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="bg-transparent border-border text-foreground hover:bg-muted/20">
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={() => deleteConfirmSlug && deleteTenant.mutate({ slug: deleteConfirmSlug })}
-              disabled={deleteTenant.isPending}
-            >
-              {deleteTenant.isPending ? "Deleting…" : "Delete Permanently"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       {/* Add Client Dialog */}
       <AddClientDialog
         open={addClientOpen}
@@ -423,6 +369,23 @@ export default function AdminClients() {
       />
     </div>
   );
+}
+
+function slugifyCompanyName(input: string): string {
+  return String(input ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function buildUniqueSlug(base: string, existing: Set<string>): string {
+  const normalizedBase = slugifyCompanyName(base) || "client";
+  if (!existing.has(normalizedBase)) return normalizedBase;
+  let n = 2;
+  while (existing.has(`${normalizedBase}_${n}`)) n += 1;
+  return `${normalizedBase}_${n}`;
 }
 
 function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose: () => void; onSuccess: () => void }) {
@@ -435,6 +398,29 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
   });
   const [sendInvite, setSendInvite] = useState(false);
   const [provisionResult, setProvisionResult] = useState<{ tables_created: string[]; tables_existed: string[]; errors: { table: string; error: string }[] } | null>(null);
+
+  const { data: existingTenants } = trpc.tenant.list.useQuery();
+
+  const existingSlugSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of existingTenants ?? []) {
+      if (t?.slug) set.add(String(t.slug).toLowerCase());
+    }
+    return set;
+  }, [existingTenants]);
+
+  useEffect(() => {
+    const generated = buildUniqueSlug(form.companyName, existingSlugSet);
+    setForm((prev) => ({ ...prev, slug: generated }));
+  }, [form.companyName, existingSlugSet]);
+
+  useEffect(() => {
+    if (!open) {
+      setForm({ slug: "", companyName: "", contactName: "", email: "", packageTier: "legacy" as PackageTier });
+      setSendInvite(false);
+      setProvisionResult(null);
+    }
+  }, [open]);
 
   const upsert = trpc.tenant.upsert.useMutation({
     onSuccess: (data) => {
@@ -457,33 +443,27 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
           <DialogTitle className="text-foreground">Add New Client</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 pt-2">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Slug * (e.g. grit-media)</Label>
-              <Input
-                value={form.slug}
-                onChange={(e) => setForm({ ...form, slug: e.target.value })}
-                placeholder="client-slug"
-                className="bg-background border-border text-foreground text-sm"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Package</Label>
-              <Select value={form.packageTier} onValueChange={(v) => setForm({ ...form, packageTier: v as PackageTier })}>
-                <SelectTrigger className="bg-background border-border text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-card border-border">
-                  {Object.entries(PACKAGE_LABELS).map(([k, v]) => (
-                    <SelectItem key={k} value={k} className="text-sm">{v}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
           <div>
             <Label className="text-xs text-muted-foreground mb-1.5 block">Company Name</Label>
-            <Input value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} className="bg-background border-border text-foreground text-sm" />
+            <Input
+              value={form.companyName}
+              onChange={(e) => setForm({ ...form, companyName: e.target.value })}
+              className="bg-background border-border text-foreground text-sm"
+            />
+          </div>
+
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1.5 block">Package</Label>
+            <Select value={form.packageTier} onValueChange={(v) => setForm({ ...form, packageTier: v as PackageTier })}>
+              <SelectTrigger className="bg-background border-border text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border">
+                {Object.entries(PACKAGE_LABELS).map(([k, v]) => (
+                  <SelectItem key={k} value={k} className="text-sm">{v}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground mb-1.5 block">Contact Name</Label>
@@ -512,16 +492,19 @@ function AddClientDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
             <Button
               size="sm"
               className="bg-primary text-primary-foreground"
-              disabled={!form.slug || !form.companyName || upsert.isPending}
-              onClick={() => upsert.mutate({
-                slug: form.slug,
-                companyName: form.companyName,
-                contactName: form.contactName || undefined,
-                email: form.email || undefined,
-                packageTier: form.packageTier,
-                sendInvite: sendInvite && !!form.email,
-                portalOrigin: window.location.origin,
-              })}
+              disabled={!form.companyName || upsert.isPending}
+              onClick={() => {
+                const slugToSubmit = buildUniqueSlug(form.companyName, existingSlugSet);
+                upsert.mutate({
+                  slug: slugToSubmit,
+                  companyName: form.companyName,
+                  contactName: form.contactName || undefined,
+                  email: form.email || undefined,
+                  packageTier: form.packageTier,
+                  sendInvite: sendInvite && !!form.email,
+                  portalOrigin: window.location.origin,
+                });
+              }}
             >
               {upsert.isPending ? "Adding…" : "Add Client"}
             </Button>

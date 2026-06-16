@@ -2,6 +2,7 @@ import { useMemo, useState, useRef, useEffect, useCallback, memo, type ReactNode
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
+import { useAuth } from "@/_core/hooks/useAuth";
 import {
   FolderOpen,
   FileText,
@@ -64,6 +65,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const ALL_FOLDERS = "All Folders" as const;
+
+const CLIENT_VISIBLE_ROOT_FOLDERS = ["Client Uploads", "Financials For Client", "Chat Attachments"] as const;
 
 const WORKSPACE_FOLDERS = [
   "Internal Info",
@@ -420,11 +423,13 @@ const DraggableDocCard = memo(function DraggableDocCard({
 
 export default function Documents() {
   const { impersonatingTenantSlug } = usePortal();
+  const { user } = useAuth();
   const [location] = useLocation();
   const [selectedType, setSelectedType] = useState<FolderFilter>(ALL_FOLDERS);
   const [currentFolderPath, setCurrentFolderPath] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const shouldRestrictClientFolders = user?.role === "client";
 
   const [showUpload, setShowUpload] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
@@ -893,21 +898,31 @@ export default function Documents() {
         }
       }
 
-      return Array.from(byPath.values()).filter((f) => {
+      let results = Array.from(byPath.values()).filter((f) => {
         const name = String(f.name).toLowerCase();
         const path = String(f.full_path).toLowerCase();
         return name.includes(query) || path.includes(query);
       });
+
+      if (shouldRestrictClientFolders) {
+        const allowed = new Set<string>(CLIENT_VISIBLE_ROOT_FOLDERS as unknown as string[]);
+        results = results.filter((f) => {
+          const root = String(f.full_path).split("/")[0] ?? "";
+          return allowed.has(root);
+        });
+      }
+
+      return results;
     }
 
     return Array.from(byPath.values()).filter((f) => {
       const path = String(f.full_path);
       return (path.startsWith(`${currentFolderPath}/`) && path !== currentFolderPath) && (path.toLowerCase().includes(query) || String(f.name).toLowerCase().includes(query));
     });
-  }, [searchResults, currentFolderPath, normalizedSearch, folderByPath]);
+  }, [searchResults, currentFolderPath, normalizedSearch, folderByPath, shouldRestrictClientFolders]);
 
   const scopedSearchDocuments = useMemo(() => {
-    const docs = (searchResults?.documents ?? []) as Array<{
+    let docs = (searchResults?.documents ?? []) as Array<{
       id: string;
       display_name: string;
       original_name: string | null;
@@ -917,12 +932,20 @@ export default function Documents() {
       file_size: number | null;
       mime_type: string | null;
     }>;
+    if (shouldRestrictClientFolders) {
+      const allowed = new Set<string>(CLIENT_VISIBLE_ROOT_FOLDERS as unknown as string[]);
+      docs = docs.filter((d) => {
+        const root = String(d.folder_path || "").split("/")[0] ?? "";
+        return allowed.has(root);
+      });
+    }
+
     if (!currentFolderPath) return docs;
     return docs.filter((d) => {
       const path = String(d.folder_path || "");
       return path === currentFolderPath || path.startsWith(`${currentFolderPath}/`);
     });
-  }, [searchResults, currentFolderPath]);
+  }, [searchResults, currentFolderPath, shouldRestrictClientFolders]);
 
 
   const yearOptions = useMemo(() => {
@@ -1074,7 +1097,44 @@ export default function Documents() {
       setPulsedFolder(newType);
       setTimeout(() => setPulsedFolder(null), 260);
       toast.success(`Moved to ${newType}`);
-      await utils.documents.list.invalidate();
+
+      const nowIso = new Date().toISOString();
+      const movedFileName = (doc.file_name ?? doc.name ?? "Document") as string;
+      const moverName = user?.name ?? user?.email ?? "A team member";
+      const optimisticMessage = `${moverName} moved ${movedFileName}`;
+
+      utils.documents.dashboard.setData(
+        { tenantSlug: impersonatingTenantSlug ?? undefined },
+        (prev) => {
+          if (!prev) return prev;
+          const optimisticRecent = {
+            id: `optimistic-move-${String(documentId)}-${Date.now()}`,
+            file_name: movedFileName,
+            folder_path: newType,
+            updated_at: nowIso,
+            message: optimisticMessage,
+          } as any;
+
+          const deduped = [
+            optimisticRecent,
+            ...(prev.recent ?? []).filter((item: any) => !(
+              String(item?.file_name ?? "") === movedFileName &&
+              String(item?.folder_path ?? "") === newType &&
+              String(item?.message ?? "") === optimisticMessage
+            )),
+          ].slice(0, 10);
+
+          return {
+            ...prev,
+            recent: deduped,
+          } as any;
+        },
+      );
+
+      await Promise.all([
+        utils.documents.list.invalidate(),
+        utils.documents.dashboard.invalidate(),
+      ]);
     } catch (error) {
       setLocalDocs((prev) =>
         prev.map((d) => (String(d.id) === String(documentId) ? { ...d, doc_type: previousType } : d)),
@@ -1155,9 +1215,16 @@ export default function Documents() {
     if (currentFolderPath) {
       return filteredChildFolders.map((f) => ({ id: Number(f.id), name: String(f.name), fullPath: String(f.full_path) }));
     }
-    if (!normalizedSearch) return rootFallbackFolders;
-    return rootFallbackFolders.filter((f) => String(f.name).toLowerCase().includes(normalizedSearch));
-  }, [currentFolderPath, filteredChildFolders, rootFallbackFolders, normalizedSearch]);
+
+    const baseRootFolders = !normalizedSearch
+      ? rootFallbackFolders
+      : rootFallbackFolders.filter((f) => String(f.name).toLowerCase().includes(normalizedSearch));
+
+    if (!shouldRestrictClientFolders) return baseRootFolders;
+
+    const allowed = new Set<string>(CLIENT_VISIBLE_ROOT_FOLDERS as unknown as string[]);
+    return baseRootFolders.filter((f) => allowed.has(String(f.fullPath)) || allowed.has(String(f.name)));
+  }, [currentFolderPath, filteredChildFolders, rootFallbackFolders, normalizedSearch, shouldRestrictClientFolders]);
 
   const moveFolderTargets = useMemo<Array<{ id: number | null; name: string; fullPath: string }>>(() => {
     const fromDb = folders.map((f) => ({ id: Number(f.id), name: String(f.name), fullPath: String(f.full_path) }));
@@ -1165,8 +1232,14 @@ export default function Documents() {
     const defaults = [...WORKSPACE_FOLDERS, ...orderedLegacyFolders]
       .filter((x) => !seen.has(String(x)))
       .map((x) => ({ id: null, name: String(x), fullPath: String(x) }));
-    return [...fromDb, ...defaults];
-  }, [folders, orderedLegacyFolders]);
+    const allTargets = [...fromDb, ...defaults];
+    if (!shouldRestrictClientFolders) return allTargets;
+    const allowed = new Set<string>(CLIENT_VISIBLE_ROOT_FOLDERS as unknown as string[]);
+    return allTargets.filter((f) => {
+      const root = String(f.fullPath).split("/")[0] ?? "";
+      return allowed.has(root);
+    });
+  }, [folders, orderedLegacyFolders, shouldRestrictClientFolders]);
 
   const rootFolderOptions = useMemo<Array<{ id: number | null; name: string; fullPath: string }>>(() => {
     const fromDbRoots = folders
@@ -1178,8 +1251,11 @@ export default function Documents() {
       .filter((x) => !seen.has(String(x)))
       .map((x) => ({ id: null, name: String(x), fullPath: String(x) }));
 
-    return [...fromDbRoots, ...defaults];
-  }, [folders, orderedLegacyFolders]);
+    const allRoots = [...fromDbRoots, ...defaults];
+    if (!shouldRestrictClientFolders) return allRoots;
+    const allowed = new Set<string>(CLIENT_VISIBLE_ROOT_FOLDERS as unknown as string[]);
+    return allRoots.filter((f) => allowed.has(String(f.fullPath)) || allowed.has(String(f.name)));
+  }, [folders, orderedLegacyFolders, shouldRestrictClientFolders]);
 
   const uploadFolderOptions = rootFolderOptions;
 
@@ -1941,6 +2017,62 @@ export default function Documents() {
                 <p className="font-medium">No documents in this folder yet.</p>
               </div>
             )
+          ) : isClientUploadsRootView ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-zinc-900/80 text-zinc-400">
+                    <tr>
+                      <th className="text-left px-4 py-2 font-medium">Document Name</th>
+                      <th className="text-left px-4 py-2 font-medium">Client</th>
+                      <th className="text-left px-4 py-2 font-medium">Uploaded By</th>
+                      <th className="text-left px-4 py-2 font-medium">Uploaded Date</th>
+                      <th className="text-left px-4 py-2 font-medium">File Size</th>
+                      <th className="text-right px-4 py-2 font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {docsForFilter.map((doc) => {
+                      const docName = String(doc.file_name || doc.name || "Document");
+                      const clientName = String((doc as any).tenant_slug ?? impersonatingTenantSlug ?? "Assigned Client");
+                      const uploadedBy = String((doc as any).uploaded_by_name ?? "Unknown");
+                      const uploadedAt = (doc as any).created_at ?? doc.updated_at ?? null;
+                      return (
+                        <tr key={String(doc.id)} className="border-t border-zinc-800/70 hover:bg-zinc-900/40">
+                          <td className="px-4 py-2 text-zinc-200 max-w-[320px] truncate" title={docName}>{docName}</td>
+                          <td className="px-4 py-2 text-zinc-300">{clientName}</td>
+                          <td className="px-4 py-2 text-zinc-400">{uploadedBy}</td>
+                          <td className="px-4 py-2 text-zinc-400">{formatRelative(uploadedAt)}</td>
+                          <td className="px-4 py-2 text-zinc-400">{formatBytes(Number(doc.file_size ?? 0))}</td>
+                          <td className="px-4 py-2">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button size="sm" variant="outline" className="h-7 px-2 border-zinc-700" onClick={() => {
+                                const folderPath = String(normalizedDocTypeById.get(String(doc.id)) ?? "Client Uploads");
+                                openSearchPreview({
+                                  id: String(doc.id),
+                                  display_name: docName,
+                                  folder_path: folderPath,
+                                  uploaded_at: uploadedAt,
+                                  file_size: Number(doc.file_size ?? 0),
+                                  mime_type: doc.mime_type ?? null,
+                                  file_url: doc.file_url ?? null,
+                                  description: doc.description ?? null,
+                                } as any);
+                              }}>
+                                Preview
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 border-zinc-700" onClick={() => openMoveFolderDialog(doc)}>
+                                Move
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           ) : (
             <div className="space-y-8">
               {sortedYears.map((year) => {
@@ -2141,7 +2273,7 @@ export default function Documents() {
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
               <h3 className="text-sm font-semibold text-zinc-100 mb-3">Recent Activity</h3>
               {(dashboardData?.recent?.length ?? 0) === 0 ? (
-                <p className="text-xs text-zinc-500">No recent activity yet.</p>
+                <p className="text-xs text-zinc-500">No recent document activity yet.</p>
               ) : (
                 <div className="space-y-3">
                   {(dashboardData?.recent ?? []).slice(0, 10).map((item) => (
@@ -2149,7 +2281,7 @@ export default function Documents() {
                       <div className="flex items-start gap-2">
                         <FileText className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                         <div className="min-w-0">
-                          <p className="text-xs font-medium text-zinc-200 truncate" title={item.file_name}>{item.file_name}</p>
+                          <p className="text-xs font-medium text-zinc-200 truncate" title={(item as any).message || item.file_name}>{(item as any).message || item.file_name}</p>
                           <p className="text-[11px] text-zinc-500">Updated {formatRelative(item.updated_at)}</p>
                           <p className="text-[11px] text-zinc-500 truncate" title={item.folder_path}>{prettifyFolderPath(item.folder_path)}</p>
                         </div>
