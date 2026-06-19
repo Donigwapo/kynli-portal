@@ -37,6 +37,7 @@ import AdminClientDetail from "./pages/admin/AdminClientDetail";
 import AdminChat from "./pages/admin/AdminChat";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminTeam from "./pages/admin/AdminTeam";
+import AdminProfile from "./pages/admin/AdminProfile";
 
 function PortalRoute({ component: Component, featureKey }: { component: React.ComponentType; featureKey?: string }) {
   return (
@@ -99,7 +100,7 @@ function Router() {
       <Route path="/admin/chat" component={() => <AdminRoute component={AdminChat} />} />
       <Route path="/admin/data-entry" component={() => <AdminRoute component={AdminDataEntry} />} />
       <Route path="/admin/team" component={() => <AdminRoute component={AdminTeam} />} />
-      <Route path="/admin/profile" component={() => <AdminRoute component={Profile} />} />
+      <Route path="/admin/profile" component={() => <AdminRoute component={AdminProfile} />} />
       <Route path="/admin/activity-log" component={() => <AdminRoute component={ActivityLogPage} />} />
 
       {/* 404 */}
