@@ -3,7 +3,6 @@ import { cn } from "@/lib/utils";
 import {
   BarChart3,
   BookOpen,
-  Clock,
   FolderOpen,
   KeyRound,
   LayoutDashboard,
@@ -16,7 +15,7 @@ import {
   Bell,
   Activity,
 } from "lucide-react";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
@@ -39,7 +38,6 @@ const CLIENT_NAV: NavItem[] = [
   { id: "clients",           label: "Clients",           featureKey: "clients",           icon: <Users size={16} />,           href: "/portal/clients" },
   { id: "sales_tracker",     label: "Sales Tracker",     featureKey: "sales_tracker",     icon: <ShoppingCart size={16} />,    href: "/portal/sales" },
   { id: "financials",        label: "Financials",        featureKey: "financials",        icon: <BarChart3 size={16} />,       href: "/portal/financials" },
-  { id: "time_intelligence", label: "Time Intelligence", featureKey: "time_intelligence", icon: <Clock size={16} />,           href: "/portal/time" },
   { id: "coaching",          label: "Coaching",          featureKey: "coaching",          icon: <BookOpen size={16} />,        href: "/portal/coaching" },
   { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
@@ -65,6 +63,7 @@ interface PortalLayoutProps {
 
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location, navigate] = useLocation();
+  const [coachingExpanded, setCoachingExpanded] = useState(false);
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
@@ -98,13 +97,9 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     displayLabel,
   });
 
-  const navItems = isAdmin
-    ? ADMIN_NAV
-    : CLIENT_NAV.filter(item => {
-        // Hide chat while in View-as-Client impersonation mode.
-        if (item.id === "chat" && impersonatingTenantSlug) {
-          return false;
-        }
+  const baseNav = isAdmin && !impersonatingTenantSlug ? ADMIN_NAV : CLIENT_NAV;
+
+  const navItems = baseNav.filter(item => {
         if (item.id === "activity_log") {
           // Admin-only, and hidden during View-as-Client impersonation.
           return !!user && user.role === "admin" && !impersonatingTenantSlug;
@@ -126,6 +121,12 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         }
         return !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy");
       });
+
+  useEffect(() => {
+    if (location.startsWith("/portal/coaching")) {
+      setCoachingExpanded(true);
+    }
+  }, [location]);
 
   const initials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -177,9 +178,64 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
           {navItems.map((item) => {
-            const isActive =
-              location === item.href ||
-              (item.href.length > 6 && location.startsWith(item.href));
+            const isCoaching = item.id === "coaching";
+            const coachingChildren = [
+              { id: "deep_dive", label: "Deep Dive", href: "/portal/coaching/deep-dive" },
+              { id: "client_meeting", label: "Client Meeting", href: "/portal/coaching/client-meeting" },
+              { id: "check_in_calls", label: "Check-in Calls", href: "/portal/coaching/check-in-calls" },
+            ];
+            const isActive = isCoaching
+              ? location.startsWith("/portal/coaching")
+              : (location === item.href || (item.href.length > 6 && location.startsWith(item.href)));
+
+            if (isCoaching) {
+              return (
+                <div key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => setCoachingExpanded((v) => !v)}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-all duration-150",
+                      isActive ? "font-medium" : "hover:opacity-80"
+                    )}
+                    style={isActive
+                      ? { color: "#00d4aa", backgroundColor: "rgba(0,212,170,0.08)" }
+                      : { color: "#888" }
+                    }
+                  >
+                    <span className="shrink-0">{item.icon}</span>
+                    <span className="truncate">{item.label}</span>
+                    <span className="ml-auto text-[10px]" style={{ color: isActive ? "#00d4aa" : "#666" }}>
+                      {coachingExpanded ? "▾" : "▸"}
+                    </span>
+                  </button>
+                  {coachingExpanded && (
+                    <div className="ml-6 mt-1 space-y-0.5">
+                      {coachingChildren.map((child) => {
+                        const childActive = location === child.href;
+                        return (
+                          <Link key={child.id} href={child.href}>
+                            <div
+                              className={cn(
+                                "px-3 py-1.5 rounded-md text-xs transition-all duration-150",
+                                childActive ? "font-medium" : "hover:opacity-80"
+                              )}
+                              style={childActive
+                                ? { color: "#00d4aa", backgroundColor: "rgba(0,212,170,0.08)" }
+                                : { color: "#777" }
+                              }
+                            >
+                              {child.label}
+                            </div>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <Link key={item.id} href={item.href}>
                 <div
@@ -195,7 +251,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                   }
                 >
                   <span className="shrink-0">{item.icon}</span>
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate">{impersonatingTenantSlug && item.id === "chat" ? "Workspace Chat" : item.label}</span>
                   {isActive && <span className="ml-auto shrink-0 w-1 h-1 rounded-full" style={{ backgroundColor: "#00d4aa" }} />}
                 </div>
               </Link>

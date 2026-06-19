@@ -8,6 +8,14 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const SUPABASE_URL_SAFE = (() => {
+  try {
+    const u = new URL(SUPABASE_URL);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return "invalid_supabase_url";
+  }
+})();
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
@@ -35,6 +43,13 @@ function isLikelyServiceRoleKey(key: string): boolean {
 function isMissingColumnError(error: unknown, columnName: string): boolean {
   const msg = String((error as any)?.message ?? error ?? "").toLowerCase();
   return msg.includes("schema cache") && msg.includes(columnName.toLowerCase());
+}
+
+function errorWithStack(error: unknown): { message: string; stack: string | null } {
+  if (error instanceof Error) {
+    return { message: error.message, stack: error.stack ?? null };
+  }
+  return { message: String(error), stack: null };
 }
 
 // Service-role client — bypasses RLS, used for all server-side operations
@@ -1566,6 +1581,7 @@ export async function upsertSalesTracker(slug: string, data: Omit<SalesTracker, 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
 const GLOBAL_CHAT_TABLE = "portal_chat_messages";
+const CHAT_READS_TABLE = "portal_chat_reads";
 
 type PortalChatMessageRow = {
   id: number;
@@ -1630,6 +1646,7 @@ export async function getGlobalChatMessages(
   assignmentId?: number | null,
   assignmentNullOnly = false,
   dmKey?: string | null,
+  visibilityScope: "workspace_public" | "staff_only" = "workspace_public",
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1645,6 +1662,7 @@ export async function getGlobalChatMessages(
 
   query = query
     .in("message_type", ["text", "file", "attachment"])
+    .eq("visibility_scope", visibilityScope)
     .is("thread_id", null)
     .order("id", { ascending: false })
     .limit(limit);
@@ -1717,6 +1735,7 @@ export async function insertGlobalChatTextMessage(input: {
   sender_name: string | null;
   sender_role: string | null;
   message_text: string;
+  visibility_scope?: "workspace_public" | "staff_only";
   thread_id?: number | null;
   parent_message_id?: number | null;
   reply_count?: number | null;
@@ -1733,6 +1752,7 @@ export async function insertGlobalChatTextMessage(input: {
     sender_name: input.sender_name,
     sender_role: input.sender_role,
     message_text: input.message_text,
+    visibility_scope: input.visibility_scope ?? "workspace_public",
     message_type: "text",
     thread_id: input.thread_id ?? input.parent_message_id ?? null,
     parent_message_id: input.parent_message_id ?? input.thread_id ?? null,
@@ -1760,6 +1780,7 @@ export async function insertGlobalChatFileMessage(input: {
   sender_name: string | null;
   sender_role: string | null;
   message_text: string | null;
+  visibility_scope?: "workspace_public" | "staff_only";
   file_url: string;
   file_key: string;
   file_name: string;
@@ -1783,6 +1804,7 @@ export async function insertGlobalChatFileMessage(input: {
     sender_name: input.sender_name,
     sender_role: input.sender_role,
     message_text: input.message_text,
+    visibility_scope: input.visibility_scope ?? "workspace_public",
     message_type: input.message_type ?? "file",
     thread_id: input.thread_id ?? input.parent_message_id ?? null,
     parent_message_id: input.parent_message_id ?? input.thread_id ?? null,
@@ -1809,11 +1831,12 @@ export async function getChatMessages(
   assignmentId?: number | null,
   assignmentNullOnly = false,
   dmKey?: string | null,
+  visibilityScope: "workspace_public" | "staff_only" = "workspace_public",
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
   try {
-    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search, assignmentId, assignmentNullOnly, dmKey);
+    const globalMessages = await getGlobalChatMessages(tenantSlug, limit, beforeId, search, assignmentId, assignmentNullOnly, dmKey, visibilityScope);
     if (globalMessages.length > 0) return globalMessages;
   } catch (error) {
     console.error("[getChatMessages] global chat query failed; attempting legacy fallback", {
@@ -1870,12 +1893,272 @@ export async function getChatMessages(
   return ((data || []) as ChatMessage[]).reverse();
 }
 
+export async function getChatReadState(input: {
+  userId: number;
+  tenantSlug: string;
+  assignmentId?: number | null;
+  dmKey?: string | null;
+}): Promise<{ lastReadMessageId: number | null; lastReadAt: string | null } | null> {
+  const safeSlug = sanitizeTenantSlug(input.tenantSlug);
+  let query = supabase
+    .from(CHAT_READS_TABLE)
+    .select("last_read_message_id,last_read_at")
+    .eq("user_id", Number(input.userId))
+    .eq("tenant_slug", safeSlug)
+    .limit(1);
+
+  if (input.dmKey) {
+    query = query.eq("dm_key", input.dmKey).is("assignment_id", null);
+  } else if (input.assignmentId != null) {
+    query = query.eq("assignment_id", Number(input.assignmentId)).is("dm_key", null);
+  } else {
+    query = query.is("assignment_id", null).is("dm_key", null);
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error) {
+    console.error("[getChatReadState] failed", error.message);
+    return null;
+  }
+  if (!data) return null;
+
+  return {
+    lastReadMessageId: data.last_read_message_id == null ? null : Number(data.last_read_message_id),
+    lastReadAt: data.last_read_at == null ? null : String(data.last_read_at),
+  };
+}
+
+export async function upsertChatReadState(input: {
+  userId: number;
+  tenantSlug: string;
+  assignmentId?: number | null;
+  dmKey?: string | null;
+  lastReadMessageId?: number | null;
+  lastReadAt?: string | null;
+}): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(input.tenantSlug);
+  const laneAssignmentId = input.dmKey ? null : (input.assignmentId != null ? Number(input.assignmentId) : null);
+  const laneDmKey = input.dmKey ?? null;
+
+  const payload: Record<string, unknown> = {
+    user_id: Number(input.userId),
+    tenant_slug: safeSlug,
+    assignment_id: laneAssignmentId,
+    dm_key: laneDmKey,
+    last_read_message_id: input.lastReadMessageId ?? null,
+    last_read_at: input.lastReadAt ?? null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const debugContext = {
+    supabaseUrl: SUPABASE_URL_SAFE,
+    table: CHAT_READS_TABLE,
+    scope: {
+      user_id: Number(input.userId),
+      tenant_slug: safeSlug,
+      assignment_id: laneAssignmentId,
+      dm_key: laneDmKey,
+    },
+    payload,
+  };
+
+  let findQuery = supabase
+    .from(CHAT_READS_TABLE)
+    .select("id")
+    .eq("user_id", Number(input.userId))
+    .eq("tenant_slug", safeSlug)
+    .limit(1);
+
+  if (laneDmKey) {
+    findQuery = findQuery.eq("dm_key", laneDmKey).is("assignment_id", null);
+  } else if (laneAssignmentId != null) {
+    findQuery = findQuery.eq("assignment_id", laneAssignmentId).is("dm_key", null);
+  } else {
+    findQuery = findQuery.is("assignment_id", null).is("dm_key", null);
+  }
+
+  const { data: existing, error: findErr } = await findQuery.maybeSingle();
+  if (findErr) {
+    console.error("[upsertChatReadState] find failed", {
+      ...debugContext,
+      stage: "find",
+      error: findErr.message,
+      code: (findErr as any)?.code,
+      details: (findErr as any)?.details,
+      hint: (findErr as any)?.hint,
+    });
+    throw new Error(findErr.message);
+  }
+
+  if (existing?.id) {
+    console.log("[upsertChatReadState] update start", { ...debugContext, stage: "update", targetId: Number((existing as any).id) });
+    try {
+      const { error } = await supabase
+        .from(CHAT_READS_TABLE)
+        .update(payload)
+        .eq("id", Number((existing as any).id));
+      if (error) {
+        console.error("[upsertChatReadState] update failed", {
+          ...debugContext,
+          stage: "update",
+          targetId: Number((existing as any).id),
+          error: error.message,
+          code: (error as any)?.code,
+          details: (error as any)?.details,
+          hint: (error as any)?.hint,
+        });
+        throw new Error(error.message);
+      }
+      console.log("[upsertChatReadState] update success", { ...debugContext, stage: "update", targetId: Number((existing as any).id) });
+      return;
+    } catch (err) {
+      const stack = errorWithStack(err);
+      console.error("[upsertChatReadState] update exception", {
+        ...debugContext,
+        stage: "update",
+        targetId: Number((existing as any).id),
+        error: stack.message,
+        stack: stack.stack,
+      });
+      throw err instanceof Error ? err : new Error(stack.message);
+    }
+  }
+
+  console.log("[upsertChatReadState] insert start", { ...debugContext, stage: "insert" });
+  let insertResultError: any = null;
+  try {
+    const { error } = await supabase
+      .from(CHAT_READS_TABLE)
+      .insert(payload);
+    insertResultError = error;
+  } catch (err) {
+    const stack = errorWithStack(err);
+    console.error("[upsertChatReadState] insert exception", {
+      ...debugContext,
+      stage: "insert",
+      error: stack.message,
+      stack: stack.stack,
+    });
+    throw err instanceof Error ? err : new Error(stack.message);
+  }
+
+  if (!insertResultError) {
+    console.log("[upsertChatReadState] insert success", { ...debugContext, stage: "insert" });
+    return;
+  }
+
+  const code = (insertResultError as any)?.code;
+  // Race-safe fallback: another request inserted the same lane cursor first.
+  if (code === "23505") {
+    let retryUpdate = supabase
+      .from(CHAT_READS_TABLE)
+      .update(payload)
+      .eq("user_id", Number(input.userId))
+      .eq("tenant_slug", safeSlug);
+
+    if (laneDmKey) {
+      retryUpdate = retryUpdate.eq("dm_key", laneDmKey).is("assignment_id", null);
+    } else if (laneAssignmentId != null) {
+      retryUpdate = retryUpdate.eq("assignment_id", laneAssignmentId).is("dm_key", null);
+    } else {
+      retryUpdate = retryUpdate.is("assignment_id", null).is("dm_key", null);
+    }
+
+    console.log("[upsertChatReadState] duplicate fallback update start", { ...debugContext, stage: "duplicate_fallback_update" });
+    try {
+      const { error: retryErr } = await retryUpdate;
+      if (!retryErr) {
+        console.log("[upsertChatReadState] duplicate fallback update success", { ...debugContext, stage: "duplicate_fallback_update" });
+        return;
+      }
+
+      console.error("[upsertChatReadState] duplicate fallback update failed", {
+        ...debugContext,
+        stage: "duplicate_fallback_update",
+        error: retryErr.message,
+        code: (retryErr as any)?.code,
+        details: (retryErr as any)?.details,
+        hint: (retryErr as any)?.hint,
+      });
+      throw new Error(retryErr.message);
+    } catch (err) {
+      const stack = errorWithStack(err);
+      console.error("[upsertChatReadState] duplicate fallback update exception", {
+        ...debugContext,
+        stage: "duplicate_fallback_update",
+        error: stack.message,
+        stack: stack.stack,
+      });
+      throw err instanceof Error ? err : new Error(stack.message);
+    }
+  }
+
+  console.error("[upsertChatReadState] insert failed", {
+    ...debugContext,
+    stage: "insert",
+    error: insertResultError.message,
+    code,
+    details: (insertResultError as any)?.details,
+    hint: (insertResultError as any)?.hint,
+  });
+  throw new Error(insertResultError.message);
+}
+
+export async function getChatUnreadCount(input: {
+  userId: number;
+  tenantSlug: string;
+  assignmentId?: number | null;
+  assignmentNullOnly?: boolean;
+  dmKey?: string | null;
+  visibilityScope?: "workspace_public" | "staff_only";
+}): Promise<number> {
+  const safeSlug = sanitizeTenantSlug(input.tenantSlug);
+  const state = await getChatReadState({
+    userId: input.userId,
+    tenantSlug: safeSlug,
+    assignmentId: input.assignmentId,
+    dmKey: input.dmKey,
+  });
+
+  const visibilityScope = input.visibilityScope ?? "workspace_public";
+
+  let query = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("id", { count: "exact", head: true })
+    .eq("visibility_scope", visibilityScope);
+
+  if (input.dmKey) {
+    query = query.eq("dm_key", input.dmKey);
+  } else {
+    query = query.eq("tenant_slug", safeSlug).is("dm_key", null);
+    if (input.assignmentId != null) {
+      query = query.eq("assignment_id", Number(input.assignmentId));
+    } else if (input.assignmentNullOnly) {
+      query = query.is("assignment_id", null);
+    }
+  }
+
+  query = query.neq("sender_user_id", Number(input.userId));
+
+  if (state?.lastReadAt) {
+    query = query.gt("created_at", state.lastReadAt);
+  }
+
+  const { count, error } = await query;
+  if (error) {
+    console.error("[getChatUnreadCount] failed", error.message);
+    return 0;
+  }
+  return Number(count ?? 0);
+}
+
 export async function getThreadReplies(
   slug: string,
   parentId: number,
   assignmentId?: number | null,
   assignmentNullOnly = false,
   dmKey?: string | null,
+  visibilityScope: "workspace_public" | "staff_only" = "workspace_public",
 ): Promise<ChatMessage[]> {
   const tenantSlug = sanitizeTenantSlug(slug);
 
@@ -1883,7 +2166,8 @@ export async function getThreadReplies(
     let query = supabase
       .from(GLOBAL_CHAT_TABLE)
       .select("*")
-      .or(`thread_id.eq.${parentId},parent_message_id.eq.${parentId}`);
+      .or(`thread_id.eq.${parentId},parent_message_id.eq.${parentId}`)
+      .eq("visibility_scope", visibilityScope);
 
     if (dmKey) {
       query = query.eq("dm_key", dmKey);
@@ -3007,4 +3291,194 @@ export async function removeTenantMember(params: {
   }
 
   await unassignStaffFromClient(params.memberId, safeSlug);
+}
+
+// ─── Client Meetings ──────────────────────────────────────────────────────────
+export type ClientMeeting = {
+  id: number;
+  tenant_slug: string;
+  title: string;
+  meeting_date: string;
+  meeting_type: string | null;
+  notes: string | null;
+  status: string;
+  created_by_user_id: number | null;
+  updated_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClientMeetingActionItem = {
+  id: number;
+  meeting_id: number;
+  tenant_slug: string;
+  title: string;
+  details: string | null;
+  status: string;
+  due_date: string | null;
+  completed_at: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listClientMeetings(tenantSlug: string): Promise<ClientMeeting[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("client_meetings")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .order("meeting_date", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data || []) as ClientMeeting[];
+}
+
+export async function getClientMeetingById(tenantSlug: string, meetingId: number): Promise<ClientMeeting | null> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("client_meetings")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .eq("id", meetingId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as ClientMeeting | null) ?? null;
+}
+
+export async function listClientMeetingActionItems(tenantSlug: string, meetingId: number): Promise<ClientMeetingActionItem[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("client_meeting_action_items")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .eq("meeting_id", meetingId)
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []) as ClientMeetingActionItem[];
+}
+
+export async function insertClientMeeting(input: {
+  tenant_slug: string;
+  title: string;
+  meeting_date: string;
+  meeting_type?: string | null;
+  notes?: string | null;
+  status?: string;
+  created_by_user_id?: number | null;
+  updated_by_user_id?: number | null;
+}): Promise<ClientMeeting> {
+  const payload = {
+    tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    title: input.title,
+    meeting_date: input.meeting_date,
+    meeting_type: input.meeting_type ?? null,
+    notes: input.notes ?? null,
+    status: input.status ?? "completed",
+    created_by_user_id: input.created_by_user_id ?? null,
+    updated_by_user_id: input.updated_by_user_id ?? null,
+  };
+  const { data, error } = await supabase.from("client_meetings").insert(payload).select("*").single();
+  if (error) throw new Error(error.message);
+  return data as ClientMeeting;
+}
+
+export async function updateClientMeeting(input: {
+  tenant_slug: string;
+  id: number;
+  title: string;
+  meeting_date: string;
+  meeting_type?: string | null;
+  notes?: string | null;
+  status?: string;
+  updated_by_user_id?: number | null;
+}): Promise<ClientMeeting> {
+  const payload = {
+    title: input.title,
+    meeting_date: input.meeting_date,
+    meeting_type: input.meeting_type ?? null,
+    notes: input.notes ?? null,
+    status: input.status ?? "completed",
+    updated_by_user_id: input.updated_by_user_id ?? null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from("client_meetings")
+    .update(payload)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .eq("id", input.id)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as ClientMeeting;
+}
+
+export async function deleteClientMeeting(tenantSlug: string, meetingId: number): Promise<void> {
+  const { error } = await supabase
+    .from("client_meetings")
+    .delete()
+    .eq("tenant_slug", sanitizeTenantSlug(tenantSlug))
+    .eq("id", meetingId);
+  if (error) throw new Error(error.message);
+}
+
+export async function replaceClientMeetingActionItems(input: {
+  tenant_slug: string;
+  meeting_id: number;
+  items: Array<{
+    title: string;
+    details?: string | null;
+    status?: string;
+    due_date?: string | null;
+    completed_at?: string | null;
+    sort_order?: number;
+  }>;
+}): Promise<ClientMeetingActionItem[]> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+
+  const { error: delErr } = await supabase
+    .from("client_meeting_action_items")
+    .delete()
+    .eq("tenant_slug", safeSlug)
+    .eq("meeting_id", input.meeting_id);
+  if (delErr) throw new Error(delErr.message);
+
+  if (!input.items.length) return [];
+
+  const rows = input.items.map((it, idx) => ({
+    meeting_id: input.meeting_id,
+    tenant_slug: safeSlug,
+    title: it.title,
+    details: it.details ?? null,
+    status: it.status ?? "open",
+    due_date: it.due_date ?? null,
+    completed_at: it.completed_at ?? null,
+    sort_order: it.sort_order ?? idx,
+  }));
+
+  const { data, error } = await supabase
+    .from("client_meeting_action_items")
+    .insert(rows)
+    .select("*")
+    .order("sort_order", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []) as ClientMeetingActionItem[];
+}
+
+export async function updateClientMeetingActionItemStatus(input: {
+  tenant_slug: string;
+  id: number;
+  status: string;
+}): Promise<ClientMeetingActionItem> {
+  const completedAt = input.status === "completed" ? new Date().toISOString() : null;
+  const { data, error } = await supabase
+    .from("client_meeting_action_items")
+    .update({ status: input.status, completed_at: completedAt, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .eq("id", input.id)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as ClientMeetingActionItem;
 }

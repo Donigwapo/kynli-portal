@@ -105,6 +105,7 @@ type Msg = {
   replyToSenderName?: string | null;
   replyToMessagePreview?: string | null;
   createdAt: string | Date;
+  visibilityScope?: "workspace_public" | "staff_only";
   localStatus?: "sending" | "failed";
   localError?: string;
 };
@@ -126,6 +127,7 @@ function normalizeMsg(raw: any): Msg {
     replyToSenderName: raw.reply_to_sender_name ?? null,
     replyToMessagePreview: raw.reply_to_message_preview ?? null,
     createdAt: raw.created_at,
+    visibilityScope: raw.visibility_scope === "staff_only" ? "staff_only" : "workspace_public",
   };
 }
 
@@ -193,6 +195,7 @@ function MessageBubble({
   threadActive?: boolean;
   mentionLabels?: string[];
 }) {
+  const isInternalNote = msg.visibilityScope === "staff_only";
   return (
     <div className={`flex gap-3 group ${isMine ? "flex-row-reverse" : "flex-row"}`}>
       <div
@@ -208,9 +211,14 @@ function MessageBubble({
       <div className={`max-w-[78%] flex flex-col gap-1.5 ${isMine ? "items-end" : "items-start"}`}>
         <div className={`flex items-center gap-2 text-xs text-muted-foreground ${isMine ? "flex-row-reverse" : ""}`}>
           <span className="font-medium text-foreground">{msg.senderName}</span>
-          {msg.senderRole === "admin" && (
-            <Badge variant="outline" className="text-[10px] px-1 py-0 text-primary border-primary/30 bg-primary/10">
-              KynLi
+          {msg.senderRole && (
+            <Badge variant="outline" className="text-[10px] px-1 py-0 border-border bg-muted/40 text-foreground/80">
+              {roleLabel(msg.senderRole)}
+            </Badge>
+          )}
+          {isInternalNote && (
+            <Badge variant="outline" className="text-[10px] px-1 py-0 border-amber-400/35 bg-amber-500/10 text-amber-300">
+              Internal Note
             </Badge>
           )}
           <span title={fmtFull(msg.createdAt)} className="cursor-default hover:text-foreground transition-colors">
@@ -224,8 +232,8 @@ function MessageBubble({
             highlighted ? "ring-2 ring-cyan-400/70 ring-offset-1 ring-offset-background" : ""
           }
             ${isMine
-              ? "bg-primary text-primary-foreground rounded-tr-sm"
-              : "bg-card border border-border text-foreground rounded-tl-sm"
+              ? (isInternalNote ? "bg-amber-500/20 text-amber-100 border border-amber-400/35 rounded-tr-sm" : "bg-primary text-primary-foreground rounded-tr-sm")
+              : (isInternalNote ? "bg-amber-500/10 border border-amber-400/30 text-amber-100 rounded-tl-sm" : "bg-card border border-border text-foreground rounded-tl-sm")
             }`}
         >
           {(msg.replyToMessageId || msg.replyToSenderName || msg.replyToMessagePreview) && (
@@ -682,6 +690,8 @@ function ThreadPanel({
   onClose,
   mentionCandidates,
   mentionLabels,
+  visibilityScope,
+  viewAsClient,
 }: {
   parentMsg: Msg;
   tenantSlug: string | undefined;
@@ -692,12 +702,14 @@ function ThreadPanel({
   onClose: () => void;
   mentionCandidates: MentionCandidate[];
   mentionLabels: string[];
+  visibilityScope: "workspace_public" | "staff_only";
+  viewAsClient: boolean;
 }) {
   const utils = trpc.useUtils();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { data: replies = [] } = trpc.chat.getThread.useQuery(
-    { tenantSlug, assignmentId, dmKey, parentId: parentMsg.id },
+    { tenantSlug, assignmentId, dmKey, visibilityScope, viewAsClient, parentId: parentMsg.id },
     { refetchInterval: 3000, refetchIntervalInBackground: false },
   );
 
@@ -791,7 +803,7 @@ function ThreadPanel({
           onSend={async (body) => {
             setSending(true);
             try {
-              await sendReplyMutation.mutateAsync({ tenantSlug, assignmentId, dmKey, parentId: parentMsg.id, body });
+              await sendReplyMutation.mutateAsync({ tenantSlug, assignmentId, dmKey, visibilityScope, viewAsClient, parentId: parentMsg.id, body });
             } finally {
               setSending(false);
             }
@@ -809,6 +821,8 @@ function ThreadPanel({
                   tenantSlug,
                   assignmentId,
                   dmKey,
+                  visibilityScope,
+                  viewAsClient,
                   parentId: parentMsg.id,
                   body: i === 0 ? (caption || undefined) : undefined,
                   fileBase64: base64,
@@ -848,6 +862,10 @@ export default function Chat() {
   const isStaff = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const currentUserId = (user as any)?.id as number | undefined;
   const isAdmin = user?.role === "admin";
+  const isWorkspaceChatMode = !!impersonatingTenantSlug && (isStaff || isAdmin);
+  const viewAsClient = isWorkspaceChatMode;
+  const [workspaceChatTab, setWorkspaceChatTab] = useState<"workspace_public" | "staff_only">("workspace_public");
+  const chatVisibilityScope: "workspace_public" | "staff_only" = isWorkspaceChatMode ? workspaceChatTab : "workspace_public";
 
   const { data: tenants = [] } = trpc.tenant.list.useQuery(undefined, {
     enabled: !!user,
@@ -891,6 +909,21 @@ export default function Chat() {
 
   const conversations = useMemo<Conversation[]>(() => {
     const rows: Conversation[] = [];
+
+    if (isWorkspaceChatMode) {
+      const baseTenant = (tenants.find((t: any) => t.slug === impersonatingTenantSlug) as any) || null;
+      const baseSlug = (baseTenant?.slug as string | undefined) || impersonatingTenantSlug || "";
+      const baseTitle = ((baseTenant?.company_name as string | undefined) || baseSlug || "Workspace");
+      if (!baseSlug) return [];
+      return [{
+        key: `tenant:${baseSlug}`,
+        tenantSlug: baseSlug,
+        title: `${baseTitle} Workspace Chat`,
+        subtitle: "Client workspace conversation",
+        groupLabel: "WORKSPACE CHAT",
+        packageTier: (baseTenant?.package_tier as PackageTier) ?? null,
+      }];
+    }
 
     if (isStaff || isAdmin) {
       rows.push({
@@ -1025,7 +1058,7 @@ export default function Chat() {
     const merged = Array.from(map.values());
     console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
     return merged;
-  }, [isStaff, tenants, user?.role, assignments, impersonatingTenantSlug, conversationsOverride]);
+  }, [isStaff, isAdmin, isWorkspaceChatMode, tenants, user?.role, assignments, impersonatingTenantSlug, conversationsOverride]);
 
   const laneStorageKey = useMemo(() => {
     const tenantPart = impersonatingTenantSlug || "tenant";
@@ -1081,6 +1114,7 @@ export default function Chat() {
   const activeTenantSlug = activeConversation?.tenantSlug;
   const activeAssignmentId = activeConversation?.assignmentId;
   const activeDmKey = activeConversation?.dmKey;
+  const isDmConversation = !!activeDmKey || !!selectedConversationKey?.startsWith("dm:");
   console.log("[DM_ACTIVE_KEY]", {
     selectedConversationKey,
     activeDmKey: activeDmKey ?? null,
@@ -1108,7 +1142,7 @@ export default function Chat() {
     [mentionCandidates],
   );
 
-  const unifiedSearchEnabled = isAdmin || isStaff;
+  const unifiedSearchEnabled = (isAdmin || isStaff) && !isWorkspaceChatMode;
   const peopleSearchQuery = useMemo(() => {
     if (!unifiedSearchEnabled) return "";
     const raw = searchQuery.trim();
@@ -1124,6 +1158,24 @@ export default function Chat() {
   // Conversation previews (last message, timestamp, unread placeholder)
   const [previews, setPreviews] = useState<Record<string, ConversationPreview>>({});
 
+  const { data: unreadSummary = {} } = trpc.chat.unreadSummary.useQuery(
+    {
+      viewAsClient,
+      lanes: conversations.map((c) => ({
+        key: c.key,
+        tenantSlug: c.tenantSlug,
+        assignmentId: c.assignmentId ?? null,
+        dmKey: c.dmKey ?? null,
+        visibilityScope: chatVisibilityScope,
+      })),
+    },
+    {
+      enabled: conversations.length > 0,
+      staleTime: 10_000,
+      refetchInterval: 20_000,
+    },
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -1131,7 +1183,7 @@ export default function Chat() {
       const entries = await Promise.all(
         conversations.map(async (c) => {
           try {
-            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, dmKey: c.dmKey, limit: 1 });
+            const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, dmKey: c.dmKey, visibilityScope: chatVisibilityScope, viewAsClient, limit: 1 });
             const raw = rows?.[0];
             if (!raw) return [c.key, {}] as const;
             const m = normalizeMsg(raw as any);
@@ -1161,14 +1213,22 @@ export default function Chat() {
     return () => {
       cancelled = true;
     };
-  }, [conversations, utils.chat.list]);
+  }, [conversations, utils.chat.list, chatVisibilityScope, viewAsClient]);
 
   useEffect(() => {
     // reset stickiness and transient compose/thread state when switching conversations
     shouldStickToBottomRef.current = true;
+    markReadInFlightRef.current = false;
+    lastMarkedMessageIdRef.current = null;
     setReplyTarget(null);
     setThreadMsg(null);
   }, [activeConversation?.key]);
+
+  useEffect(() => {
+    if (!isWorkspaceChatMode && workspaceChatTab !== "workspace_public") {
+      setWorkspaceChatTab("workspace_public");
+    }
+  }, [isWorkspaceChatMode, workspaceChatTab]);
 
   useEffect(() => {
     if (unifiedSearchEnabled && searchQuery.trim().startsWith("@")) {
@@ -1194,11 +1254,15 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const markReadInFlightRef = useRef(false);
+  const lastMarkedMessageIdRef = useRef<number | null>(null);
 
   const listPayload = {
     tenantSlug: activeTenantSlug,
     assignmentId: activeAssignmentId,
     dmKey: activeDmKey,
+    visibilityScope: chatVisibilityScope,
+    viewAsClient,
     limit: 200,
     search: debouncedSearch || undefined,
   };
@@ -1244,13 +1308,53 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, debouncedSearch]);
 
+  const markReadMutation = trpc.chat.markRead.useMutation();
+
+  const markLaneAsRead = useCallback(() => {
+    if (!activeTenantSlug) return;
+    if (!messages.length) return;
+    const latest = messages[messages.length - 1];
+    if (!latest?.id) return;
+
+    if (lastMarkedMessageIdRef.current === latest.id) return;
+    if (markReadInFlightRef.current) return;
+
+    markReadInFlightRef.current = true;
+    void markReadMutation.mutateAsync({
+      tenantSlug: activeTenantSlug,
+      assignmentId: activeAssignmentId ?? undefined,
+      dmKey: activeDmKey ?? undefined,
+      visibilityScope: chatVisibilityScope,
+      viewAsClient,
+      lastReadMessageId: latest.id,
+    }).then(() => {
+      lastMarkedMessageIdRef.current = latest.id;
+      // Background refresh only; do not block chat UX.
+      void utils.chat.unreadSummary.invalidate();
+    }).catch(() => {
+      // best-effort; avoid interrupting chat UX
+    }).finally(() => {
+      markReadInFlightRef.current = false;
+    });
+  }, [activeTenantSlug, activeAssignmentId, activeDmKey, chatVisibilityScope, viewAsClient, messages, markReadMutation, utils.chat.unreadSummary]);
+
   const handleMessagesScroll = useCallback(() => {
     const el = messagesScrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     // If user scrolled up, don't auto-jump to bottom on polling updates.
     shouldStickToBottomRef.current = distanceFromBottom < 80;
-  }, []);
+    if (distanceFromBottom < 80) {
+      markLaneAsRead();
+    }
+  }, [markLaneAsRead]);
+  useEffect(() => {
+    if (!messages.length) return;
+    if (debouncedSearch) return;
+    if (!shouldStickToBottomRef.current) return;
+    markLaneAsRead();
+  }, [messages.length, debouncedSearch, markLaneAsRead, activeConversation?.key]);
+
   const openThreadForMessage = useCallback((m: Msg) => {
     setThreadMsg(m);
     setHighlightedMessageId(m.id);
@@ -1288,6 +1392,8 @@ export default function Chat() {
         tenantSlug: activeTenantSlug,
         assignmentId: activeAssignmentId,
         dmKey: activeDmKey,
+        visibilityScope: chatVisibilityScope,
+        viewAsClient,
         body,
         replyToMessageId: replyTarget?.id,
         replyToSenderName: replyTarget?.senderName,
@@ -1299,7 +1405,7 @@ export default function Chat() {
     } finally {
       setSending(false);
     }
-  }, [activeTenantSlug, activeAssignmentId, activeDmKey, sendMutation, replyTarget]);
+  }, [activeTenantSlug, activeAssignmentId, activeDmKey, chatVisibilityScope, viewAsClient, sendMutation, replyTarget]);
 
   const handleSendFiles = useCallback(async (
     files: File[],
@@ -1330,6 +1436,7 @@ export default function Chat() {
           replyCount: 0,
           threadId: null,
           createdAt: new Date(),
+          visibilityScope: chatVisibilityScope,
           localStatus: "sending",
         };
         setPendingMessages((prev) => [...prev, pendingBubble]);
@@ -1340,6 +1447,8 @@ export default function Chat() {
             tenantSlug: activeTenantSlug,
             assignmentId: activeAssignmentId,
             dmKey: activeDmKey,
+            visibilityScope: chatVisibilityScope,
+            viewAsClient,
             body: i === 0 ? caption : undefined,
             fileBase64: base64,
             fileName: file.name,
@@ -1374,7 +1483,7 @@ export default function Chat() {
     } finally {
       setSending(false);
     }
-  }, [activeTenantSlug, activeAssignmentId, activeDmKey, sendFileMutation, fileToBase64, user, utils.chat.list, replyTarget]);
+  }, [activeTenantSlug, activeAssignmentId, activeDmKey, chatVisibilityScope, viewAsClient, sendFileMutation, fileToBase64, user, utils.chat.list, replyTarget]);
 
   type DayGroup = { key: string; label: string; msgs: Msg[] };
   const dayGroups = useMemo<DayGroup[]>(() => {
@@ -1410,7 +1519,6 @@ export default function Chat() {
   }, [conversations]);
 
 
-  const isDmConversation = !!activeDmKey || !!selectedConversationKey?.startsWith("dm:");
   const isGroupConversation = !!activeConversation?.tenantSlug && activeAssignmentId == null && !isDmConversation;
 
   const groupMembers = useMemo(() => {
@@ -1434,6 +1542,19 @@ export default function Chat() {
     return `${names.length} member${names.length === 1 ? "" : "s"} • ${shown.join(", ")}${remaining > 0 ? `, +${remaining} more` : ""}`;
   }, [groupMembers]);
 
+  const workspaceMembers = useMemo(() => {
+    if (!isWorkspaceChatMode) return [] as MentionCandidate[];
+    const seen = new Set<string>();
+    const rows: MentionCandidate[] = [];
+    for (const c of (mentionCandidates as MentionCandidate[])) {
+      const key = `${c.source}:${c.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(c);
+    }
+    return rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [isWorkspaceChatMode, mentionCandidates]);
+
   const dmHandle = useMemo(() => {
     const base = (activeConversation?.title || "").trim();
     if (!base) return "";
@@ -1447,48 +1568,78 @@ export default function Chat() {
       : "Internal Team Thread";
 
   const isOperationalInbox = isAdmin || isStaff;
-  const hasConversationSidebar = isOperationalInbox || user?.role === "client";
+  const hasConversationSidebar = (isOperationalInbox || user?.role === "client") && !isWorkspaceChatMode;
 
 
   const mainConversationPanel = (
     <div className="min-w-0 min-h-0 h-full flex">
       <div className={`flex flex-col min-w-0 min-h-0 h-full transition-all duration-200 ${threadMsg ? "w-[68%]" : "w-full"}`}>
         <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-card/40 backdrop-blur-sm">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-              <MessageSquare className="w-4.5 h-4.5 text-primary" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold text-foreground truncate">{activeConversation?.title ?? "Conversation"}</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {isOperationalInbox ? `${clientHeaderSubtitle} · Last active 11m ago` : clientHeaderSubtitle}
-              </p>
-            </div>
-            {isGroupConversation && groupMembers.length > 0 && (
-              <div className="ml-auto flex items-center gap-2">
-                <div className="flex -space-x-2">
-                  {groupMembers.slice(0, 5).map((m) => (
-                    <div
-                      key={`gm-${m.source}-${m.id}`}
-                      title={`${m.displayName}${m.role ? ` • ${roleLabel(m.role)}` : ""}`}
-                      className="w-7 h-7 rounded-full border border-background bg-muted text-[10px] font-semibold text-foreground flex items-center justify-center"
-                    >
-                      {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
-                    </div>
-                  ))}
+          {isWorkspaceChatMode ? (
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                <MessageSquare className="w-4.5 h-4.5 text-emerald-300" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-foreground truncate">Workspace Chat</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Workspace: {activeConversation?.title?.replace(/\s+Workspace Chat$/, "") || activeConversation?.title || "Workspace"}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-400/30 bg-amber-500/10 text-amber-300">Viewing as Client</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-700 bg-zinc-900/60 text-zinc-300">You are: {user?.name || user?.email || "Team Member"}{user?.role ? ` (${roleLabel(user.role)})` : ""}</span>
                 </div>
-                {groupMembers.length > 5 && (
-                  <span className="text-[11px] text-muted-foreground">+{groupMembers.length - 5}</span>
-                )}
+                <div className="mt-3 inline-flex items-center rounded-lg border border-zinc-700 bg-zinc-900/70 p-0.5">
+                  <button
+                    onClick={() => setWorkspaceChatTab("workspace_public")}
+                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "workspace_public" ? "bg-primary/20 text-primary border border-primary/30" : "text-zinc-400 hover:text-zinc-200"}`}
+                  >
+                    Client Conversation
+                  </button>
+                  <button
+                    onClick={() => setWorkspaceChatTab("staff_only")}
+                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "staff_only" ? "bg-amber-500/15 text-amber-300 border border-amber-400/30" : "text-zinc-400 hover:text-zinc-200"}`}
+                  >
+                    Internal Notes 🔒
+                  </button>
+                </div>
               </div>
-            )}
-            {!isGroupConversation && !isDmConversation && isOperationalInbox && (
-              <div className="ml-auto text-right">
-                <p className="text-[11px] text-muted-foreground">Unread uploads</p>
-                <p className="text-sm font-semibold text-foreground">0</p>
+            </div>
+          ) : (
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+                <MessageSquare className="w-4.5 h-4.5 text-primary" />
               </div>
-            )}
-          </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-foreground truncate">{activeConversation?.title ?? "Conversation"}</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {isOperationalInbox ? `${clientHeaderSubtitle} · Last active 11m ago` : clientHeaderSubtitle}
+                </p>
+              </div>
+              {isGroupConversation && groupMembers.length > 0 && (
+                <div className="ml-auto flex items-center gap-2">
+                  <div className="flex -space-x-2">
+                    {groupMembers.slice(0, 5).map((m) => (
+                      <div
+                        key={`gm-${m.source}-${m.id}`}
+                        title={`${m.displayName}${m.role ? ` • ${roleLabel(m.role)}` : ""}`}
+                        className="w-7 h-7 rounded-full border border-background bg-muted text-[10px] font-semibold text-foreground flex items-center justify-center"
+                      >
+                        {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
+                      </div>
+                    ))}
+                  </div>
+                  {groupMembers.length > 5 && (
+                    <span className="text-[11px] text-muted-foreground">+{groupMembers.length - 5}</span>
+                  )}
+                </div>
+              )}
+              {!isGroupConversation && !isDmConversation && isOperationalInbox && (
+                <div className="ml-auto text-right">
+                  <p className="text-[11px] text-muted-foreground">Unread uploads</p>
+                  <p className="text-sm font-semibold text-foreground">0</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 scroll-smooth overscroll-contain">
@@ -1497,11 +1648,13 @@ export default function Chat() {
               <div className="w-16 h-16 rounded-2xl bg-muted/30 border border-border flex items-center justify-center mb-4">
                 <MessageSquare className="w-7 h-7 text-muted-foreground opacity-50" />
               </div>
-              <p className="text-sm font-medium text-foreground">No messages yet</p>
+              <p className="text-sm font-medium text-foreground">{isWorkspaceChatMode ? "Start the conversation" : "No messages yet"}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                {isDmConversation
-                  ? `This is the beginning of your direct conversation${activeConversation?.title ? ` with ${activeConversation.title}` : ""}.`
-                  : `Start the conversation${isOperationalInbox ? " in this client workspace." : "."}`}
+                {isWorkspaceChatMode
+                  ? "Use Workspace Chat to communicate with the client and assigned team members for this workspace."
+                  : (isDmConversation
+                    ? `This is the beginning of your direct conversation${activeConversation?.title ? ` with ${activeConversation.title}` : ""}.`
+                    : `Start the conversation${isOperationalInbox ? " in this client workspace." : "."}`)}
               </p>
             </div>
           ) : (
@@ -1572,8 +1725,40 @@ export default function Chat() {
             onClose={() => setThreadMsg(null)}
             mentionCandidates={mentionCandidates as MentionCandidate[]}
             mentionLabels={mentionLabels}
+            visibilityScope={chatVisibilityScope}
+            viewAsClient={viewAsClient}
           />
         </div>
+      )}
+
+      {isWorkspaceChatMode && !threadMsg && (
+        <aside className="w-[30%] min-w-[280px] max-w-[380px] border-l border-border bg-[#0f1012] p-4 overflow-y-auto">
+          <h3 className="text-sm font-semibold text-foreground">Workspace Members</h3>
+          <p className="text-[11px] text-muted-foreground mt-1">People participating in this workspace conversation</p>
+
+          <div className="mt-4 space-y-2">
+            {workspaceMembers.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No workspace participants found yet.</p>
+            ) : (
+              workspaceMembers.map((m) => {
+                const isMe = String(m.id) === String(user?.id);
+                return (
+                  <div key={`wm-${m.source}-${m.id}`} className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <div className="w-7 h-7 rounded-full border border-zinc-700 bg-zinc-800 text-[10px] font-semibold text-zinc-200 flex items-center justify-center">
+                        {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
+                        <p className="text-[11px] text-zinc-400">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </aside>
       )}
     </div>
   );
@@ -1758,9 +1943,9 @@ export default function Chat() {
                           {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : conv.subtitle)}
                         </p>
                       </div>
-                      {(pv.unreadCount ?? 0) > 0 ? (
+                      {(Number((unreadSummary as any)[conv.key] ?? (pv.unreadCount ?? 0)) > 0) ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
-                          {pv.unreadCount}
+                          {Number((unreadSummary as any)[conv.key] ?? (pv.unreadCount ?? 0))}
                         </span>
                       ) : (
                         <Circle className={`w-2.5 h-2.5 mt-1 ${active ? "text-cyan-400 fill-cyan-400" : "text-transparent"}`} />

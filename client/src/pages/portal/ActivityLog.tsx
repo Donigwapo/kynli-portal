@@ -24,6 +24,12 @@ const DEFAULT_ACTIONS = [
   "message_sent",
   "message_deleted",
   "mention_created",
+  "meeting_created",
+  "meeting_updated",
+  "meeting_deleted",
+  "meeting_action_item_created",
+  "meeting_action_item_updated",
+  "meeting_action_item_completed",
 ] as const;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -38,6 +44,12 @@ const ACTION_LABELS: Record<string, string> = {
   message_sent: "Sent a message",
   message_deleted: "Deleted a message",
   mention_created: "Mentioned a user",
+  meeting_created: "Created a meeting",
+  meeting_updated: "Updated a meeting",
+  meeting_deleted: "Deleted a meeting",
+  meeting_action_item_created: "Created a meeting action item",
+  meeting_action_item_updated: "Updated a meeting action item",
+  meeting_action_item_completed: "Completed a meeting action item",
 };
 
 function getActionLabel(actionType?: string | null): string {

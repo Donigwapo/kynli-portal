@@ -72,6 +72,8 @@ import {
   upsertCoachingNote,
   getLineItemsByYear,
   getChatMessages,
+  getChatUnreadCount,
+  upsertChatReadState,
   getThreadReplies,
   incrementReplyCount,
   decrementReplyCount,
@@ -108,6 +110,14 @@ import {
   getDocumentFolderById,
   countDocumentsInFolderPath,
   deleteDocumentFolderById,
+  listClientMeetings,
+  getClientMeetingById,
+  listClientMeetingActionItems,
+  insertClientMeeting,
+  updateClientMeeting,
+  deleteClientMeeting,
+  replaceClientMeetingActionItems,
+  updateClientMeetingActionItemStatus,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
@@ -460,6 +470,8 @@ function toMessagePreview(text: string | null | undefined, max = 180): string {
   return raw.length > max ? `${raw.slice(0, max)}…` : raw;
 }
 
+type ChatVisibilityScope = "workspace_public" | "staff_only";
+
 function buildConversationId(input: {
   tenantSlug: string;
   assignmentId: number | null;
@@ -468,6 +480,22 @@ function buildConversationId(input: {
   if (input.dmKey) return `dm:${input.dmKey}`;
   if (input.assignmentId != null) return `assignment:${sanitizeTenantSlug(input.tenantSlug)}:${input.assignmentId}`;
   return `team:${sanitizeTenantSlug(input.tenantSlug)}`;
+}
+
+function resolveVisibilityScope(scope?: string | null): ChatVisibilityScope {
+  return scope === "staff_only" ? "staff_only" : "workspace_public";
+}
+
+function assertVisibilityScopeAccess(user: PortalUser, visibilityScope: ChatVisibilityScope, viewAsClient = false): void {
+  if (visibilityScope !== "staff_only") return;
+  const role = String(user.role || "");
+  const canUseInternal = role === "admin" || STAFF_PORTAL_ROLES.has(role as any);
+  if (!canUseInternal) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal notes are staff-only." });
+  }
+  if (!viewAsClient) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal notes are only available in Workspace Chat mode." });
+  }
 }
 
 function normalizeDocTypeValue(value: string | null | undefined): string {
@@ -2823,6 +2851,191 @@ export const appRouter = router({
         await upsertCoachingNote(slug, input.year, input.quarter, input.content);
         return { success: true };
       }),
+    meetingsList: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const meetings = await listClientMeetings(slug);
+        const withCounts = await Promise.all(meetings.map(async (m) => {
+          const items = await listClientMeetingActionItems(slug, m.id);
+          const openCount = items.filter((i) => i.status !== "completed").length;
+          return { ...m, open_action_items: openCount };
+        }));
+        return withCounts;
+      }),
+    meetingsGet: protectedProcedure
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const meeting = await getClientMeetingById(slug, input.id);
+        if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+        const actionItems = await listClientMeetingActionItems(slug, input.id);
+        return { meeting, actionItems };
+      }),
+    meetingsCreate: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        title: z.string().min(1),
+        meetingDate: z.string().min(1),
+        meetingType: z.enum(["quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"]).optional().nullable(),
+        notes: z.string().optional().nullable(),
+        status: z.enum(["scheduled", "completed", "cancelled"]).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create meetings." });
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const meeting = await insertClientMeeting({
+          tenant_slug: slug,
+          title: input.title,
+          meeting_date: input.meetingDate,
+          meeting_type: input.meetingType ?? null,
+          notes: input.notes ?? null,
+          status: input.status ?? "completed",
+          created_by_user_id: ctx.user.id,
+          updated_by_user_id: ctx.user.id,
+        });
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "meeting_created",
+          entity_type: "meeting",
+          entity_id: String(meeting.id),
+          tenant_slug: slug,
+          file_name: meeting.title,
+          new_value: meeting.status,
+          metadata: { meeting_id: meeting.id, meeting_date: meeting.meeting_date, meeting_type: meeting.meeting_type },
+        });
+        return { success: true, meeting };
+      }),
+    meetingsUpdate: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        tenantSlug: z.string().optional(),
+        title: z.string().min(1),
+        meetingDate: z.string().min(1),
+        meetingType: z.enum(["quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"]).optional().nullable(),
+        notes: z.string().optional().nullable(),
+        status: z.enum(["scheduled", "completed", "cancelled"]).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit meetings." });
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const meeting = await updateClientMeeting({
+          tenant_slug: slug,
+          id: input.id,
+          title: input.title,
+          meeting_date: input.meetingDate,
+          meeting_type: input.meetingType ?? null,
+          notes: input.notes ?? null,
+          status: input.status ?? "completed",
+          updated_by_user_id: ctx.user.id,
+        });
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "meeting_updated",
+          entity_type: "meeting",
+          entity_id: String(meeting.id),
+          tenant_slug: slug,
+          file_name: meeting.title,
+          new_value: meeting.status,
+          metadata: { meeting_id: meeting.id, meeting_date: meeting.meeting_date, meeting_type: meeting.meeting_type },
+        });
+        return { success: true, meeting };
+      }),
+    meetingsDelete: protectedProcedure
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete meetings." });
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const existing = await getClientMeetingById(slug, input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+        await deleteClientMeeting(slug, input.id);
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "meeting_deleted",
+          entity_type: "meeting",
+          entity_id: String(input.id),
+          tenant_slug: slug,
+          file_name: existing.title,
+          previous_value: existing.status,
+          metadata: { meeting_id: input.id, meeting_date: existing.meeting_date },
+        });
+        return { success: true };
+      }),
+    meetingActionItemsUpsertBatch: protectedProcedure
+      .input(z.object({
+        meetingId: z.number(),
+        tenantSlug: z.string().optional(),
+        items: z.array(z.object({
+          title: z.string().min(1),
+          details: z.string().optional().nullable(),
+          status: z.enum(["open", "in_progress", "completed"]).optional(),
+          dueDate: z.string().optional().nullable(),
+          completedAt: z.string().optional().nullable(),
+          sortOrder: z.number().optional(),
+        })),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit action items." });
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const meeting = await getClientMeetingById(slug, input.meetingId);
+        if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+        const existingItems = await listClientMeetingActionItems(slug, input.meetingId);
+        const rows = await replaceClientMeetingActionItems({
+          tenant_slug: slug,
+          meeting_id: input.meetingId,
+          items: input.items.map((it) => ({
+            title: it.title,
+            details: it.details ?? null,
+            status: it.status ?? "open",
+            due_date: it.dueDate ?? null,
+            completed_at: it.completedAt ?? null,
+            sort_order: it.sortOrder,
+          })),
+        });
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: existingItems.length === 0 && rows.length > 0 ? "meeting_action_item_created" : "meeting_action_item_updated",
+          entity_type: "meeting_action_item",
+          entity_id: String(input.meetingId),
+          tenant_slug: slug,
+          file_name: meeting.title,
+          metadata: { meeting_id: input.meetingId, item_count: rows.length },
+        });
+        return { success: true, items: rows };
+      }),
+    meetingActionItemsUpdateStatus: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        status: z.enum(["open", "in_progress", "completed"]),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const updated = await updateClientMeetingActionItemStatus({ tenant_slug: slug, id: input.id, status: input.status });
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: input.status === "completed" ? "meeting_action_item_completed" : "meeting_action_item_updated",
+          entity_type: "meeting_action_item",
+          entity_id: String(updated.id),
+          tenant_slug: slug,
+          file_name: updated.title,
+          new_value: updated.status,
+          metadata: { meeting_id: updated.meeting_id },
+        });
+        return { success: true, item: updated };
+      }),
   }),
 
   kpi: router({
@@ -3774,12 +3987,16 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         limit: z.number().min(1).max(500).default(200),
         beforeId: z.number().optional(),
         search: z.string().optional(),
       }))
       .query(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         if (!isInternalChatSlug(slug)) {
           const tenant = await getTenantBySlug(slug);
@@ -3788,11 +4005,103 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
         if (input.dmKey) {
           await assertDmAccess(currentUserId, input.dmKey);
-          return getChatMessages(slug, input.limit, input.beforeId, input.search, undefined, false, input.dmKey);
+          return getChatMessages(slug, input.limit, input.beforeId, input.search, undefined, false, input.dmKey, visibilityScope);
         }
 
         const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
-        return getChatMessages(slug, input.limit, input.beforeId, input.search, scope.assignmentId, scope.assignmentNullOnly);
+        return getChatMessages(slug, input.limit, input.beforeId, input.search, scope.assignmentId, scope.assignmentNullOnly, undefined, visibilityScope);
+      }),
+
+    markRead: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        assignmentId: z.number().optional(),
+        dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
+        lastReadMessageId: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+
+        if (input.dmKey) {
+          await assertDmAccess(currentUserId, input.dmKey);
+          await upsertChatReadState({
+            userId: currentUserId,
+            tenantSlug: slug,
+            dmKey: input.dmKey,
+            lastReadMessageId: input.lastReadMessageId ?? null,
+            lastReadAt: new Date().toISOString(),
+          });
+          return { success: true };
+        }
+
+        const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
+        await upsertChatReadState({
+          userId: currentUserId,
+          tenantSlug: slug,
+          assignmentId: scope.assignmentId,
+          lastReadMessageId: input.lastReadMessageId ?? null,
+          lastReadAt: new Date().toISOString(),
+        });
+        return { success: true };
+      }),
+
+    unreadSummary: protectedProcedure
+      .input(z.object({
+        viewAsClient: z.boolean().optional(),
+        lanes: z.array(z.object({
+          key: z.string().min(1),
+          tenantSlug: z.string().optional(),
+          assignmentId: z.number().nullable().optional(),
+          dmKey: z.string().nullable().optional(),
+          visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        })).max(200),
+      }))
+      .query(async ({ ctx, input }) => {
+        const currentUserId = normalizeUserId(ctx.user.id);
+        const out: Record<string, number> = {};
+
+        for (const lane of input.lanes) {
+          try {
+            const visibilityScope = resolveVisibilityScope(lane.visibilityScope);
+            assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
+            const slug = await resolveChatTenantSlug(ctx.user, lane.tenantSlug);
+
+            if (lane.dmKey) {
+              await assertDmAccess(currentUserId, lane.dmKey);
+              out[lane.key] = await getChatUnreadCount({
+                userId: currentUserId,
+                tenantSlug: slug,
+                dmKey: lane.dmKey,
+                visibilityScope,
+              });
+              continue;
+            }
+
+            const scope = await resolveChatAssignmentIdForUser(
+              ctx.user,
+              slug,
+              lane.assignmentId == null ? undefined : Number(lane.assignmentId),
+            );
+
+            out[lane.key] = await getChatUnreadCount({
+              userId: currentUserId,
+              tenantSlug: slug,
+              assignmentId: scope.assignmentId,
+              assignmentNullOnly: scope.assignmentNullOnly,
+              visibilityScope,
+            });
+          } catch {
+            // inaccessible/invalid lanes are treated as zero unread
+            out[lane.key] = 0;
+          }
+        }
+
+        return out;
       }),
 
     // Fetch all replies for a thread (parent message)
@@ -3801,19 +4110,23 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         parentId: z.number(),
       }))
       .query(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
 
         if (input.dmKey) {
           await assertDmAccess(currentUserId, input.dmKey);
-          return getThreadReplies(slug, input.parentId, undefined, false, input.dmKey);
+          return getThreadReplies(slug, input.parentId, undefined, false, input.dmKey, visibilityScope);
         }
 
         const scope = await resolveChatAssignmentIdForUser(ctx.user, slug, input.assignmentId);
-        return getThreadReplies(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly);
+        return getThreadReplies(slug, input.parentId, scope.assignmentId, scope.assignmentNullOnly, undefined, visibilityScope);
       }),
 
     // Send a text message (Phase 1 global chat table)
@@ -3822,6 +4135,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         body: z.string().min(1).max(4000),
         replyToMessageId: z.number().optional(),
         replyToSenderName: z.string().optional(),
@@ -3829,6 +4144,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       }))
       .mutation(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
         if (!isInternalChatSlug(slug) && !tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
@@ -3853,6 +4170,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
             sender_role: ctx.user.role === "admin" ? "admin" : "client",
             message_text: input.body,
+            visibility_scope: visibilityScope,
             reply_to_message_id: input.replyToMessageId ?? null,
             reply_to_sender_name: input.replyToSenderName ?? null,
             reply_to_message_preview: input.replyToMessagePreview ?? null,
@@ -3884,22 +4202,24 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             status: "success",
           });
 
-          await createMentionNotifications({
-            req: ctx.req,
-            actor: ctx.user,
-            tenantSlug: slug,
-            tenantName: tenant?.company_name ?? null,
-            assignmentId,
-            dmKey,
-            messageId,
-            body: input.body,
-          }).catch((err) => {
-            console.error("[chat.send] mention notification failed", {
+          if (visibilityScope === "workspace_public") {
+            await createMentionNotifications({
+              req: ctx.req,
+              actor: ctx.user,
               tenantSlug: slug,
+              tenantName: tenant?.company_name ?? null,
+              assignmentId,
+              dmKey,
               messageId,
-              error: err instanceof Error ? err.message : String(err),
+              body: input.body,
+            }).catch((err) => {
+              console.error("[chat.send] mention notification failed", {
+                tenantSlug: slug,
+                messageId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             });
-          });
+          }
 
           return msg;
         } catch (error) {
@@ -3922,11 +4242,15 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         parentId: z.number(),
         body: z.string().min(1).max(4000),
       }))
       .mutation(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
         if (!isInternalChatSlug(slug) && !tenant) {
@@ -3954,6 +4278,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
           sender_role: ctx.user.role === "admin" ? "admin" : "client",
           message_text: input.body,
+          visibility_scope: visibilityScope,
           parent_message_id: input.parentId,
           thread_id: input.parentId,
           reply_count: 0,
@@ -3984,24 +4309,26 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           status: "success",
         });
 
-        await createMentionNotifications({
-          req: ctx.req,
-          actor: ctx.user,
-          tenantSlug: slug,
-          tenantName: tenant?.company_name ?? null,
-          assignmentId,
-          dmKey,
-          messageId,
-          parentId: input.parentId,
-          body: input.body,
-        }).catch((err) => {
-          console.error("[chat.sendReply] mention notification failed", {
+        if (visibilityScope === "workspace_public") {
+          await createMentionNotifications({
+            req: ctx.req,
+            actor: ctx.user,
             tenantSlug: slug,
+            tenantName: tenant?.company_name ?? null,
+            assignmentId,
+            dmKey,
             messageId,
             parentId: input.parentId,
-            error: err instanceof Error ? err.message : String(err),
+            body: input.body,
+          }).catch((err) => {
+            console.error("[chat.sendReply] mention notification failed", {
+              tenantSlug: slug,
+              messageId,
+              parentId: input.parentId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           });
-        });
+        }
 
         // Increment reply count on parent (non-blocking)
         await incrementReplyCount(slug, input.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
@@ -4014,6 +4341,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         parentId: z.number(),
         body: z.string().optional(),
         fileBase64: z.string(),
@@ -4023,6 +4352,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       }))
       .mutation(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
         if (!isInternalChatSlug(slug) && !tenant) {
@@ -4096,6 +4427,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
           sender_role: ctx.user.role === "admin" ? "admin" : "client",
           message_text: input.body ?? null,
+          visibility_scope: visibilityScope,
           file_url: fileUrl,
           file_key: fileKey,
           file_name: input.fileName,
@@ -4135,24 +4467,26 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           status: "success",
         });
 
-        await createMentionNotifications({
-          req: ctx.req,
-          actor: ctx.user,
-          tenantSlug: slug,
-          tenantName: tenant?.company_name ?? null,
-          assignmentId,
-          dmKey,
-          messageId,
-          parentId: input.parentId,
-          body: input.body,
-        }).catch((err) => {
-          console.error("[chat.sendReplyFile] mention notification failed", {
+        if (visibilityScope === "workspace_public") {
+          await createMentionNotifications({
+            req: ctx.req,
+            actor: ctx.user,
             tenantSlug: slug,
+            tenantName: tenant?.company_name ?? null,
+            assignmentId,
+            dmKey,
             messageId,
             parentId: input.parentId,
-            error: err instanceof Error ? err.message : String(err),
+            body: input.body,
+          }).catch((err) => {
+            console.error("[chat.sendReplyFile] mention notification failed", {
+              tenantSlug: slug,
+              messageId,
+              parentId: input.parentId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           });
-        });
+        }
 
         await incrementReplyCount(slug, input.parentId, assignmentId, assignmentNullOnly, dmKey).catch(() => {});
         return reply;
@@ -4164,6 +4498,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         tenantSlug: z.string().optional(),
         assignmentId: z.number().optional(),
         dmKey: z.string().optional(),
+        visibilityScope: z.enum(["workspace_public", "staff_only"]).optional(),
+        viewAsClient: z.boolean().optional(),
         body: z.string().optional(), // optional caption
         fileBase64: z.string(), // base64-encoded file content
         fileName: z.string(),
@@ -4175,6 +4511,8 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
       }))
       .mutation(async ({ ctx, input }) => {
         const currentUserId = normalizeUserId(ctx.user.id);
+        const visibilityScope = resolveVisibilityScope(input.visibilityScope);
+        assertVisibilityScopeAccess(ctx.user, visibilityScope, input.viewAsClient === true);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         const tenant = isInternalChatSlug(slug) ? null : await getTenantBySlug(slug);
         if (!isInternalChatSlug(slug) && !tenant) {
@@ -4257,6 +4595,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           sender_name: ctx.user.name ?? ctx.user.email ?? "Unknown",
           sender_role: ctx.user.role === "admin" ? "admin" : "client",
           message_text: input.body ?? null,
+          visibility_scope: visibilityScope,
           file_url: fileUrl,
           file_key: fileKey,
           file_name: input.fileName,
@@ -4334,22 +4673,24 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           status: "success",
         });
 
-        await createMentionNotifications({
-          req: ctx.req,
-          actor: ctx.user,
-          tenantSlug: slug,
-          tenantName: tenant?.company_name ?? null,
-          assignmentId,
-          dmKey,
-          messageId,
-          body: input.body ?? null,
-        }).catch((err) => {
-          console.error("[chat.sendFile] mention notification failed", {
+        if (visibilityScope === "workspace_public") {
+          await createMentionNotifications({
+            req: ctx.req,
+            actor: ctx.user,
             tenantSlug: slug,
+            tenantName: tenant?.company_name ?? null,
+            assignmentId,
+            dmKey,
             messageId,
-            error: err instanceof Error ? err.message : String(err),
+            body: input.body ?? null,
+          }).catch((err) => {
+            console.error("[chat.sendFile] mention notification failed", {
+              tenantSlug: slug,
+              messageId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           });
-        });
+        }
 
         return msg;
       }),
