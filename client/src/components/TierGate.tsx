@@ -39,15 +39,15 @@ export default function TierGate({ featureKey, children }: TierGateProps) {
   const { impersonatingTenantSlug, effectiveTier } = usePortal();
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
 
-  // Staff/admin should never receive client package gating in normal mode.
-  if (isStaffOrAdmin && !impersonatingTenantSlug) {
-    return <>{children}</>;
-  }
-
   // Fetch real tenant tier (only for non-impersonating client sessions)
   const { data: tenant, isLoading } = trpc.tenant.me.useQuery(undefined, {
     enabled: !impersonatingTenantSlug,
   });
+
+  // Staff/admin should never receive client package gating in normal mode.
+  if (isStaffOrAdmin && !impersonatingTenantSlug) {
+    return <>{children}</>;
+  }
 
   const activeTier: PackageTier = impersonatingTenantSlug
     ? effectiveTier
