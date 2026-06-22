@@ -3941,7 +3941,11 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     list: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "clients", input.tenantSlug);
+        const isStaffOrAdmin = STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin";
+        // Package tier gating applies to client tenant views, not staff/admin roster mode.
+        if (!isStaffOrAdmin) {
+          await assertTierAccess(ctx.user, "clients", input.tenantSlug);
+        }
         const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
 
         if (ctx.user.role === "admin" || ctx.user.role === "client") {

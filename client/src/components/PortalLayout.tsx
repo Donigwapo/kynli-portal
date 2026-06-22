@@ -300,7 +300,19 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
             </button>
           )}
           <button
-            onClick={logout}
+            onClick={async () => {
+              try {
+                await fetch("/api/auth/view-as-client/stop", {
+                  method: "POST",
+                  credentials: "include",
+                });
+              } catch {
+                // ignore; logout will still proceed and clear local state
+              }
+              setImpersonatingTenantSlug(null);
+              setEffectiveTier("cfo");
+              await logout();
+            }}
             className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80"
             style={{ color: "#555" }}
           >

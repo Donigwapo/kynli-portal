@@ -1,7 +1,8 @@
 import { ReactNode } from "react";
 import { usePortal } from "../contexts/PortalContext";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "../lib/trpc";
-import { TAB_ACCESS, hasAccess, PACKAGE_TIERS, type PackageTier } from "../../../shared/tiers";
+import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import { Lock } from "lucide-react";
 
 interface TierGateProps {
@@ -34,7 +35,14 @@ const FEATURE_LABELS: Record<string, string> = {
  * Admins bypass all tier checks (they can view any page).
  */
 export default function TierGate({ featureKey, children }: TierGateProps) {
+  const { user } = useAuth();
   const { impersonatingTenantSlug, effectiveTier } = usePortal();
+  const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+
+  // Staff/admin should never receive client package gating in normal mode.
+  if (isStaffOrAdmin && !impersonatingTenantSlug) {
+    return <>{children}</>;
+  }
 
   // Fetch real tenant tier (only for non-impersonating client sessions)
   const { data: tenant, isLoading } = trpc.tenant.me.useQuery(undefined, {

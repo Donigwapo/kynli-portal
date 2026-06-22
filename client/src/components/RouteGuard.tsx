@@ -38,13 +38,22 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       navigate("/portal");
       return;
     }
-    // First-login: client must set a password before accessing the portal
+    const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+
+    // First-login password setup is client-only.
+    // Staff/admin users can enter the portal directly and change password later in Settings.
     if (
       user?.must_reset_password &&
-      user.role !== "admin" &&
+      !isStaffOrAdmin &&
       location !== "/portal/set-password"
     ) {
       navigate("/portal/set-password");
+      return;
+    }
+
+    // Staff/admin should not linger on client-only set-password screen.
+    if (location === "/portal/set-password" && isStaffOrAdmin) {
+      navigate(user?.role === "admin" ? "/admin" : "/portal");
       return;
     }
 
@@ -54,7 +63,6 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       return;
     }
 
-    const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
     if (location === "/portal/notes") {
       const canAccessNotes = isStaffOrAdmin && !!impersonatingTenantSlug;
       if (!canAccessNotes) {

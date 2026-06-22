@@ -1,6 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -11,10 +12,13 @@ export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath = "/login" } =
     options ?? {};
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
     retry: false,
     refetchOnWindowFocus: false,
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 
   const logoutMutation = trpc.auth.logout.useMutation({
@@ -35,10 +39,14 @@ export function useAuth(options?: UseAuthOptions) {
       }
       throw error;
     } finally {
+      // Ensure all user-scoped cached data is purged between accounts.
       utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
+      queryClient.clear();
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("kynli-user-info");
+      }
     }
-  }, [logoutMutation, utils]);
+  }, [logoutMutation, utils, queryClient]);
 
   const state = useMemo(() => {
     localStorage.setItem(
@@ -58,6 +66,28 @@ export function useAuth(options?: UseAuthOptions) {
     logoutMutation.error,
     logoutMutation.isPending,
   ]);
+
+  const lastIdentityRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!meQuery.data) {
+      lastIdentityRef.current = null;
+      return;
+    }
+
+    const currentIdentity = `${meQuery.data.id}:${meQuery.data.email ?? ""}`;
+    const previousIdentity = lastIdentityRef.current;
+
+    if (previousIdentity && previousIdentity !== currentIdentity) {
+      // Session identity changed without a full page refresh; clear user-scoped stale cache/state.
+      queryClient.clear();
+      localStorage.removeItem("kynli-user-info");
+      utils.auth.me.setData(undefined, meQuery.data);
+    }
+
+    lastIdentityRef.current = currentIdentity;
+  }, [meQuery.data, queryClient, utils.auth.me]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;

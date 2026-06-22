@@ -32,14 +32,21 @@ export default function Profile() {
     error: userError,
   } = trpc.auth.me.useQuery();
 
+  const isStaffOrAdmin = !!authUser && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(authUser.role);
+  const isClientUser = authUser?.role === "client";
+
   const {
     data: tenant,
     isLoading: tenantLoading,
     error: tenantError,
-  } = trpc.tenant.me.useQuery(undefined, { enabled: !impersonatingTenantSlug });
+  } = trpc.tenant.me.useQuery(undefined, {
+    // Tenant profile is client-facing only in normal mode.
+    // Staff/admin should not bind to a client tenant unless explicitly in client context flows.
+    enabled: !!authUser && isClientUser && !impersonatingTenantSlug,
+  });
 
-  const isLoading = userLoading || (!impersonatingTenantSlug && tenantLoading);
-  const error = userError ?? tenantError;
+  const isLoading = userLoading || (isClientUser && !impersonatingTenantSlug && tenantLoading);
+  const error = userError ?? (isClientUser ? tenantError : null);
 
   const permissionDiagnostics = useMemo(() => getNotificationPermissionDiagnostics(), [authUser?.id]);
   const permissionState = permissionDiagnostics.permission;
@@ -130,46 +137,68 @@ export default function Profile() {
     );
   }
 
-  if (!tenant) {
-    return (
-      <div className="p-6">
-        <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">
-          No tenant profile found for this account.
-        </div>
-      </div>
-    );
-  }
-
-  const packageLabel = PACKAGE_LABELS[tenant.package_tier] ?? tenant.package_tier;
-  const status = tenant.is_churned ? "Churned" : tenant.is_active ? "Active" : "Inactive";
-  const inviteAccepted = tenant.invite_accepted ? "Accepted" : "Pending";
+  const packageLabel = tenant ? (PACKAGE_LABELS[tenant.package_tier] ?? tenant.package_tier) : null;
+  const status = tenant ? (tenant.is_churned ? "Churned" : tenant.is_active ? "Active" : "Inactive") : null;
+  const inviteAccepted = tenant ? (tenant.invite_accepted ? "Accepted" : "Pending") : null;
 
   return (
     <div className="p-6 space-y-6 max-w-4xl">
-      <div className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-            <Building2 size={20} />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Client Profile</h1>
-            <p className="text-sm text-muted-foreground">Your account and company details</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <CheckCircle2 size={14} className={tenant.invite_accepted ? "text-emerald-400" : "text-amber-400"} />
-          Invite status: <span className="text-foreground font-medium">{inviteAccepted}</span>
-        </div>
-      </div>
+      {isClientUser ? (
+        <>
+          {!tenant ? (
+            <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">
+              No tenant profile found for this account.
+            </div>
+          ) : (
+            <>
+              <div className="rounded-xl border border-border bg-card p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                    <Building2 size={20} />
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-semibold text-foreground">Client Profile</h1>
+                    <p className="text-sm text-muted-foreground">Your account and company details</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <CheckCircle2 size={14} className={tenant.invite_accepted ? "text-emerald-400" : "text-amber-400"} />
+                  Invite status: <span className="text-foreground font-medium">{inviteAccepted}</span>
+                </div>
+              </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Field label="Company Name" value={tenant.company_name || "—"} />
-        <Field label="Contact Name" value={tenant.contact_name || authUser?.name || "—"} />
-        <Field label="Email" value={tenant.email || authUser?.email || "—"} />
-        <Field label="Package / Tier" value={packageLabel} />
-        <Field label="Status" value={status} />
-        <Field label="Client Slug" value={tenant.slug} />
-      </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field label="Company Name" value={tenant.company_name || "—"} />
+                <Field label="Contact Name" value={tenant.contact_name || authUser?.name || "—"} />
+                <Field label="Email" value={tenant.email || authUser?.email || "—"} />
+                <Field label="Package / Tier" value={packageLabel || "—"} />
+                <Field label="Status" value={status || "—"} />
+                <Field label="Client Slug" value={tenant.slug} />
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="rounded-xl border border-border bg-card p-5">
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                <User size={20} />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold text-foreground">Staff Profile</h1>
+                <p className="text-sm text-muted-foreground">Your account details</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="Name" value={authUser?.name || "—"} />
+            <Field label="Email" value={authUser?.email || "—"} />
+            <Field label="Role" value={authUser?.role || "—"} />
+          </div>
+        </>
+      )}
 
       <div className="rounded-xl border border-border bg-card p-4 flex items-center gap-2 text-sm text-muted-foreground">
         <User size={16} />
