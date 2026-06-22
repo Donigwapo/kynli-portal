@@ -325,13 +325,32 @@ export async function getPortalUserByUid(uid: string): Promise<PortalUser | null
 }
 
 export async function getPortalUserByEmail(email: string): Promise<PortalUser | null> {
+  const normalized = (email || "").trim().toLowerCase();
   const { data, error } = await supabase
     .from("portal_users")
     .select("*")
-    .eq("email", email)
-    .single();
-  if (error || !data) return null;
-  return data as PortalUser;
+    .ilike("email", normalized);
+  if (error || !data || !data.length) return null;
+
+  const rows = data as PortalUser[];
+  const roleRank = (role: string | null | undefined) => {
+    if (role === "admin") return 0;
+    if (role === "accounting_manager") return 1;
+    if (role === "tax_manager") return 2;
+    if (role === "accountant") return 3;
+    if (role === "client") return 9;
+    return 8;
+  };
+
+  rows.sort((a, b) => {
+    const r = roleRank(a.role) - roleRank(b.role);
+    if (r !== 0) return r;
+    const aUpdated = new Date(a.updated_at || a.created_at || 0).getTime();
+    const bUpdated = new Date(b.updated_at || b.created_at || 0).getTime();
+    return bUpdated - aUpdated;
+  });
+
+  return rows[0] ?? null;
 }
 
 export async function upsertPortalUser(user: Partial<PortalUser> & { email: string }): Promise<PortalUser | null> {

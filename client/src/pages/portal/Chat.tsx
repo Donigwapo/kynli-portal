@@ -993,11 +993,10 @@ export default function Chat() {
       }
 
       const staffRows: Conversation[] = [...rows];
-      for (const t of tenants as any[]) {
-        const slug = String(t.slug || "");
-        if (!slug) continue;
-        const pkgLabel = (PACKAGE_LABELS[(t.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
-        const companyName = String(t.company_name || slug);
+      for (const slug of byTenant.keys()) {
+        const t = (tenants as any[]).find((x) => String(x.slug || "") === slug) as any | undefined;
+        const pkgLabel = (PACKAGE_LABELS[(t?.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
+        const companyName = String(t?.company_name || slug);
 
         // tenant-wide shared lane (assignment_id = null)
         staffRows.push({
@@ -1006,7 +1005,7 @@ export default function Chat() {
           title: `${companyName} Group Chat`,
           subtitle: "Shared workspace conversation",
           groupLabel: pkgLabel,
-          packageTier: (t.package_tier as PackageTier) ?? null,
+          packageTier: (t?.package_tier as PackageTier) ?? null,
         });
 
         // personal assignment lanes under same section
@@ -1023,7 +1022,7 @@ export default function Chat() {
             title: personName,
             subtitle: `${companyName} • Personal client conversation`,
             groupLabel: pkgLabel,
-            packageTier: (t.package_tier as PackageTier) ?? null,
+            packageTier: (t?.package_tier as PackageTier) ?? null,
           });
         }
       }

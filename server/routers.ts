@@ -1692,6 +1692,16 @@ export const appRouter = router({
       .query(async ({ input }) => getTenantBySlug(input.slug)),
     list: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role === "admin") return getAllPortalTenants();
+
+      // Staff/accountants with no assignments should see an empty tenant list,
+      // not an error (prevents stale client-side cache from older sessions).
+      if (STAFF_PORTAL_ROLES.has(ctx.user.role)) {
+        const assignedSlugs = await getAssignedTenantSlugsForUser(ctx.user);
+        if (!assignedSlugs.length) return [];
+        const all = await getAllPortalTenants();
+        return all.filter((t) => assignedSlugs.includes(sanitizeTenantSlug(t.slug)));
+      }
+
       const slugs = await resolveTenantSlugsForUser(ctx.user);
       const all = await getAllPortalTenants();
       return all.filter((t) => slugs.includes(sanitizeTenantSlug(t.slug)));
