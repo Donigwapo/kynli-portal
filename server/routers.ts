@@ -118,6 +118,22 @@ import {
   deleteClientMeeting,
   replaceClientMeetingActionItems,
   updateClientMeetingActionItemStatus,
+  type WorkspaceNote,
+  type WorkspaceNoteCategory,
+  type WorkspaceNoteComment,
+  listWorkspaceNotes,
+  getWorkspaceNoteById,
+  createWorkspaceNote,
+  updateWorkspaceNote,
+  setWorkspaceNotePinned,
+  setWorkspaceNoteArchived,
+  softDeleteWorkspaceNote,
+  listWorkspaceNoteComments,
+  getWorkspaceNoteCommentById,
+  createWorkspaceNoteComment,
+  updateWorkspaceNoteComment,
+  softDeleteWorkspaceNoteComment,
+  countWorkspaceNoteCommentsByNoteIds,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
@@ -291,6 +307,64 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
 async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
   const slugs = await resolveTenantSlugsForUser(user, impersonateSlug);
   return slugs[0];
+}
+
+const INTERNAL_NOTES_ALLOWED_ROLES = new Set<PortalUser["role"]>([
+  "admin",
+  "accounting_manager",
+  "tax_manager",
+  "accountant",
+]);
+
+type ResolvedNotesWorkspace = {
+  tenantSlug: string;
+  organizationId: string | null;
+};
+
+async function resolveActiveClientWorkspace(
+  ctx: { user: PortalUser | null; viewAsClientTenantSlug: string | null },
+): Promise<ResolvedNotesWorkspace> {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required." });
+
+  const rawRequested = (ctx.viewAsClientTenantSlug ?? "").trim();
+  if (!rawRequested) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal notes are available only in View as Client mode." });
+  }
+  const requested = sanitizeTenantSlug(rawRequested);
+
+  const slugs = await resolveTenantSlugsForUser(ctx.user, requested);
+  const tenantSlug = sanitizeTenantSlug(slugs[0]);
+
+  const { data: tenantRow } = await supabase
+    .from("portal_tenants")
+    .select("organization_id")
+    .eq("slug", tenantSlug)
+    .maybeSingle();
+
+  return {
+    tenantSlug,
+    organizationId: (tenantRow as { organization_id?: string | null } | null)?.organization_id ?? null,
+  };
+}
+
+function assertCanAccessInternalNotes(ctx: { user: PortalUser | null }): void {
+  const user = ctx.user;
+  if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required." });
+  if (!INTERNAL_NOTES_ALLOWED_ROLES.has(user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal notes are available to staff only." });
+  }
+}
+
+async function assertNoteBelongsToWorkspace(noteId: string, tenantSlug: string): Promise<WorkspaceNote> {
+  const note = await getWorkspaceNoteById({ noteId, tenant_slug: tenantSlug });
+  if (!note) throw new TRPCError({ code: "NOT_FOUND", message: "Note not found." });
+  return note;
+}
+
+async function assertCommentBelongsToWorkspace(commentId: string, tenantSlug: string): Promise<WorkspaceNoteComment> {
+  const comment = await getWorkspaceNoteCommentById({ comment_id: commentId, tenant_slug: tenantSlug });
+  if (!comment) throw new TRPCError({ code: "NOT_FOUND", message: "Comment not found." });
+  return comment;
 }
 
 async function resolveChatAssignmentIdForUser(
@@ -1099,6 +1173,392 @@ export const appRouter = router({
         }
 
         return { success: true, token: data };
+      }),
+  }),
+
+  notes: router({
+    list: protectedProcedure
+      .input(z.object({
+        q: z.string().trim().max(200).optional(),
+        category: z.enum(["general", "bookkeeping", "tax", "payroll", "urgent", "follow_up"]).optional(),
+        pinnedOnly: z.boolean().optional(),
+        includeArchived: z.boolean().optional().default(false),
+        sortBy: z.enum(["created_at", "updated_at", "title"]).optional().default("updated_at"),
+        sortDir: z.enum(["asc", "desc"]).optional().default("desc"),
+        limit: z.number().int().min(1).max(100).optional().default(25),
+        cursor: z.string().optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+
+        const items = await listWorkspaceNotes({
+          tenant_slug: workspace.tenantSlug,
+          q: input.q,
+          category: input.category as WorkspaceNoteCategory | undefined,
+          pinnedOnly: input.pinnedOnly,
+          includeArchived: input.includeArchived,
+          sortBy: input.sortBy,
+          sortDir: input.sortDir,
+          limit: input.limit,
+        });
+
+        const userIds = Array.from(
+          new Set(
+            items.flatMap((n) => [n.created_by_user_id, n.updated_by_user_id].filter(Boolean) as string[]),
+          ),
+        );
+
+        let nameByUserId = new Map<string, { name: string | null; email: string | null }>();
+        if (userIds.length > 0) {
+          const { data: users, error: usersError } = await supabase
+            .from("portal_users")
+            .select("supabase_uid,name,email")
+            .in("supabase_uid", userIds);
+          if (usersError) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: usersError.message });
+          }
+          nameByUserId = new Map(
+            (users ?? []).map((u: any) => [String(u.supabase_uid), { name: u.name ?? null, email: u.email ?? null }]),
+          );
+        }
+
+        const commentCounts = await countWorkspaceNoteCommentsByNoteIds({
+          tenant_slug: workspace.tenantSlug,
+          noteIds: items.map((n) => n.id),
+        });
+
+        const enriched = items.map((n) => {
+          const created = nameByUserId.get(String(n.created_by_user_id));
+          const updated = n.updated_by_user_id ? nameByUserId.get(String(n.updated_by_user_id)) : null;
+          const created_by_name = created?.name || created?.email || "Unknown user";
+          const updated_by_name = updated?.name || updated?.email || "Unknown user";
+          return {
+            ...n,
+            created_by_name,
+            updated_by_name,
+            comments: commentCounts[n.id] ?? 0,
+          };
+        });
+
+        return { items: enriched, nextCursor: null };
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        title: z.string().trim().min(1).max(160),
+        content: z.string().trim().min(1).max(20000),
+        category: z.enum(["general", "bookkeeping", "tax", "payroll", "urgent", "follow_up"]).optional().default("general"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+
+        const note = await createWorkspaceNote({
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          title: input.title,
+          content: input.content,
+          category: input.category as WorkspaceNoteCategory,
+          created_by_user_id: ctx.user!.supabase_uid ?? String(ctx.user!.id),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_created",
+          entity_type: "internal_note",
+          entity_id: String(note.id),
+          file_name: note.title,
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { category: note.category, is_pinned: note.is_pinned, is_archived: note.is_archived },
+        });
+
+        return { success: true as const, note };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        noteId: z.string().uuid(),
+        title: z.string().trim().min(1).max(160).optional(),
+        content: z.string().trim().min(1).max(20000).optional(),
+        category: z.enum(["general", "bookkeeping", "tax", "payroll", "urgent", "follow_up"]).optional(),
+      }).refine(v => v.title !== undefined || v.content !== undefined || v.category !== undefined, {
+        message: "At least one field must be updated.",
+      }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        const note = await updateWorkspaceNote({
+          noteId: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+          title: input.title,
+          content: input.content,
+          category: input.category as WorkspaceNoteCategory | undefined,
+          updated_by_user_id: (ctx.user!.supabase_uid ?? String(ctx.user!.id)),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_updated",
+          entity_type: "internal_note",
+          entity_id: String(note.id),
+          file_name: note.title,
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { category: note.category },
+        });
+
+        return { success: true as const, note };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ noteId: z.string().uuid() }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        const note = await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        await softDeleteWorkspaceNote({
+          noteId: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+          updated_by_user_id: (ctx.user!.supabase_uid ?? String(ctx.user!.id)),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_deleted",
+          entity_type: "internal_note",
+          entity_id: String(note.id),
+          file_name: note.title,
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { deleted_at: new Date().toISOString() },
+        });
+
+        return { success: true as const, noteId: input.noteId };
+      }),
+
+    pin: protectedProcedure
+      .input(z.object({ noteId: z.string().uuid(), isPinned: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        const note = await setWorkspaceNotePinned({
+          noteId: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+          isPinned: input.isPinned,
+          updated_by_user_id: (ctx.user!.supabase_uid ?? String(ctx.user!.id)),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_pinned",
+          entity_type: "internal_note",
+          entity_id: String(note.id),
+          file_name: note.title,
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { is_pinned: note.is_pinned },
+        });
+
+        return { success: true as const, note };
+      }),
+
+    archive: protectedProcedure
+      .input(z.object({ noteId: z.string().uuid(), isArchived: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        const note = await setWorkspaceNoteArchived({
+          noteId: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+          isArchived: input.isArchived,
+          updated_by_user_id: (ctx.user!.supabase_uid ?? String(ctx.user!.id)),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_archived",
+          entity_type: "internal_note",
+          entity_id: String(note.id),
+          file_name: note.title,
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { is_archived: note.is_archived },
+        });
+
+        return { success: true as const, note };
+      }),
+  }),
+
+  noteComments: router({
+    list: protectedProcedure
+      .input(z.object({ noteId: z.string().uuid() }))
+      .query(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        const comments = await listWorkspaceNoteComments({
+          note_id: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+        });
+
+        const userIds = Array.from(
+          new Set(
+            comments.flatMap((c) => [c.created_by_user_id, c.updated_by_user_id].filter(Boolean) as string[]),
+          ),
+        );
+
+        let nameByUserId = new Map<string, { name: string | null; email: string | null }>();
+        if (userIds.length > 0) {
+          const { data: users, error: usersError } = await supabase
+            .from("portal_users")
+            .select("supabase_uid,name,email")
+            .in("supabase_uid", userIds);
+          if (usersError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: usersError.message });
+          nameByUserId = new Map(
+            (users ?? []).map((u: any) => [String(u.supabase_uid), { name: u.name ?? null, email: u.email ?? null }]),
+          );
+        }
+
+        const items = comments.map((c) => {
+          const created = nameByUserId.get(String(c.created_by_user_id));
+          const updated = c.updated_by_user_id ? nameByUserId.get(String(c.updated_by_user_id)) : null;
+          const created_by_name = created?.name || created?.email || "Unknown user";
+          const updated_by_name = updated?.name || updated?.email || "Unknown user";
+          return {
+            ...c,
+            created_by_name,
+            updated_by_name,
+          };
+        });
+
+        return { items };
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        noteId: z.string().uuid(),
+        content: z.string().trim().min(1).max(5000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        await assertNoteBelongsToWorkspace(input.noteId, workspace.tenantSlug);
+
+        const comment = await createWorkspaceNoteComment({
+          note_id: input.noteId,
+          tenant_slug: workspace.tenantSlug,
+          content: input.content,
+          created_by_user_id: ctx.user!.supabase_uid ?? String(ctx.user!.id),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_comment_created",
+          entity_type: "internal_note_comment",
+          entity_id: String(comment.id),
+          file_name: comment.content.slice(0, 80),
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { note_id: comment.note_id },
+        });
+
+        return { success: true as const, comment };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        commentId: z.string().uuid(),
+        content: z.string().trim().min(1).max(5000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        const comment = await assertCommentBelongsToWorkspace(input.commentId, workspace.tenantSlug);
+
+        const isAdmin = ctx.user!.role === "admin";
+        const isOwner = String(comment.created_by_user_id) === String(ctx.user!.supabase_uid ?? "");
+        if (!isAdmin && !isOwner) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only edit your own comments." });
+        }
+
+        const updated = await updateWorkspaceNoteComment({
+          comment_id: input.commentId,
+          tenant_slug: workspace.tenantSlug,
+          content: input.content,
+          updated_by_user_id: ctx.user!.supabase_uid ?? String(ctx.user!.id),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_comment_updated",
+          entity_type: "internal_note_comment",
+          entity_id: String(updated.id),
+          file_name: updated.content.slice(0, 80),
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { note_id: updated.note_id },
+        });
+
+        return { success: true as const, comment: updated };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ commentId: z.string().uuid() }))
+      .mutation(async ({ ctx, input }) => {
+        assertCanAccessInternalNotes(ctx);
+        const workspace = await resolveActiveClientWorkspace(ctx as any);
+        const comment = await assertCommentBelongsToWorkspace(input.commentId, workspace.tenantSlug);
+
+        const isAdmin = ctx.user!.role === "admin";
+        const isOwner = String(comment.created_by_user_id) === String(ctx.user!.supabase_uid ?? "");
+        if (!isAdmin && !isOwner) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete your own comments." });
+        }
+
+        await softDeleteWorkspaceNoteComment({
+          comment_id: input.commentId,
+          tenant_slug: workspace.tenantSlug,
+          updated_by_user_id: ctx.user!.supabase_uid ?? String(ctx.user!.id),
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user!,
+          action_type: "internal_note_comment_deleted",
+          entity_type: "internal_note_comment",
+          entity_id: String(comment.id),
+          file_name: comment.content.slice(0, 80),
+          tenant_slug: workspace.tenantSlug,
+          organization_id: workspace.organizationId,
+          status: "success",
+          metadata: { note_id: comment.note_id, deleted_at: new Date().toISOString() },
+        });
+
+        return { success: true as const, commentId: input.commentId };
       }),
   }),
 

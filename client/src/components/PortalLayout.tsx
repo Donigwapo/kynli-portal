@@ -14,6 +14,7 @@ import {
   UserCog,
   Bell,
   Activity,
+  StickyNote,
 } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -42,6 +43,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
   { id: "chat",              label: "Chat",              featureKey: "chat",              icon: <MessageSquare size={16} />,   href: "/portal/chat" },
+  { id: "notes",             label: "Notes",             featureKey: "overview",          icon: <StickyNote size={16} />,      href: "/portal/notes" },
   { id: "activity_log",      label: "Activity Log",      featureKey: "overview",          icon: <Activity size={16} />,        href: "/portal/activity-log" },
   { id: "profile",           label: "Settings",          featureKey: "overview",          icon: <Bell size={16} />,            href: "/portal/profile" },
 ];
@@ -69,6 +71,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
+  const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
 
   const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
     enabled: !isAdmin && !impersonatingTenantSlug && !isStaffPortfolioUser,
@@ -103,6 +106,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         if (item.id === "activity_log") {
           // Admin-only, and hidden during View-as-Client impersonation.
           return !!user && user.role === "admin" && !impersonatingTenantSlug;
+        }
+        if (item.id === "notes") {
+          // Internal notes are available only in View-as-Client for staff/admin users.
+          return isStaffOrAdmin && !!impersonatingTenantSlug;
         }
         if (item.id === "profile") {
           // Hide Settings in client-like experiences:
@@ -160,7 +167,15 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           <div className="mx-3 mt-2 px-2 py-1.5 rounded" style={{ backgroundColor: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
             <p className="text-xs font-medium leading-tight" style={{ color: "#f59e0b" }}>Viewing as client</p>
             <button
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/view-as-client/stop", {
+                    method: "POST",
+                    credentials: "include",
+                  });
+                } catch {
+                  // no-op: local state reset still proceeds
+                }
                 setImpersonatingTenantSlug(null);
                 setEffectiveTier("cfo");
                 if (user?.role === "admin") {

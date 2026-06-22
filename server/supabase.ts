@@ -3482,3 +3482,315 @@ export async function updateClientMeetingActionItemStatus(input: {
   if (error) throw new Error(error.message);
   return data as ClientMeetingActionItem;
 }
+
+export type WorkspaceNoteCategory =
+  | "general"
+  | "bookkeeping"
+  | "tax"
+  | "payroll"
+  | "urgent"
+  | "follow_up";
+
+export type WorkspaceNote = {
+  id: string;
+  tenant_slug: string;
+  organization_id: string | null;
+  title: string;
+  content: string;
+  category: WorkspaceNoteCategory;
+  is_pinned: boolean;
+  is_archived: boolean;
+  created_by_user_id: string;
+  updated_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+export async function listWorkspaceNotes(input: {
+  tenant_slug: string;
+  q?: string;
+  category?: WorkspaceNoteCategory;
+  pinnedOnly?: boolean;
+  includeArchived?: boolean;
+  sortBy?: "created_at" | "updated_at" | "title";
+  sortDir?: "asc" | "desc";
+  limit?: number;
+}): Promise<WorkspaceNote[]> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const sortBy = input.sortBy ?? "updated_at";
+  const ascending = (input.sortDir ?? "desc") === "asc";
+  const limit = input.limit ?? 25;
+
+  let query = supabase
+    .from("workspace_notes")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .is("deleted_at", null)
+    .order(sortBy, { ascending })
+    .limit(limit);
+
+  if (!input.includeArchived) query = query.eq("is_archived", false);
+  if (input.pinnedOnly) query = query.eq("is_pinned", true);
+  if (input.category) query = query.eq("category", input.category);
+  if (input.q && input.q.trim()) {
+    const q = input.q.trim();
+    query = query.or(`title.ilike.%${q}%,content.ilike.%${q}%`);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data || []) as WorkspaceNote[];
+}
+
+export async function getWorkspaceNoteById(input: {
+  noteId: string;
+  tenant_slug: string;
+}): Promise<WorkspaceNote | null> {
+  const { data, error } = await supabase
+    .from("workspace_notes")
+    .select("*")
+    .eq("id", input.noteId)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as WorkspaceNote | null) ?? null;
+}
+
+export async function createWorkspaceNote(input: {
+  tenant_slug: string;
+  organization_id?: string | null;
+  title: string;
+  content: string;
+  category?: WorkspaceNoteCategory;
+  created_by_user_id: string;
+}): Promise<WorkspaceNote> {
+  const payload = {
+    tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    organization_id: input.organization_id ?? null,
+    title: input.title,
+    content: input.content,
+    category: input.category ?? "general",
+    created_by_user_id: input.created_by_user_id,
+    updated_by_user_id: input.created_by_user_id,
+  };
+  const { data, error } = await supabase.from("workspace_notes").insert(payload).select("*").single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNote;
+}
+
+export async function updateWorkspaceNote(input: {
+  noteId: string;
+  tenant_slug: string;
+  title?: string;
+  content?: string;
+  category?: WorkspaceNoteCategory;
+  updated_by_user_id: string;
+}): Promise<WorkspaceNote> {
+  const patch: Record<string, any> = {
+    updated_by_user_id: input.updated_by_user_id,
+    updated_at: new Date().toISOString(),
+  };
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.content !== undefined) patch.content = input.content;
+  if (input.category !== undefined) patch.category = input.category;
+
+  const { data, error } = await supabase
+    .from("workspace_notes")
+    .update(patch)
+    .eq("id", input.noteId)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNote;
+}
+
+export async function setWorkspaceNotePinned(input: {
+  noteId: string;
+  tenant_slug: string;
+  isPinned: boolean;
+  updated_by_user_id: string;
+}): Promise<WorkspaceNote> {
+  const { data, error } = await supabase
+    .from("workspace_notes")
+    .update({
+      is_pinned: input.isPinned,
+      updated_by_user_id: input.updated_by_user_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.noteId)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNote;
+}
+
+export async function setWorkspaceNoteArchived(input: {
+  noteId: string;
+  tenant_slug: string;
+  isArchived: boolean;
+  updated_by_user_id: string;
+}): Promise<WorkspaceNote> {
+  const { data, error } = await supabase
+    .from("workspace_notes")
+    .update({
+      is_archived: input.isArchived,
+      updated_by_user_id: input.updated_by_user_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.noteId)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNote;
+}
+
+export async function softDeleteWorkspaceNote(input: {
+  noteId: string;
+  tenant_slug: string;
+  updated_by_user_id: string;
+}): Promise<void> {
+  const { error } = await supabase
+    .from("workspace_notes")
+    .update({
+      deleted_at: new Date().toISOString(),
+      updated_by_user_id: input.updated_by_user_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.noteId)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null);
+  if (error) throw new Error(error.message);
+}
+
+export type WorkspaceNoteComment = {
+  id: string;
+  note_id: string;
+  tenant_slug: string;
+  content: string;
+  created_by_user_id: string;
+  updated_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+export async function listWorkspaceNoteComments(input: {
+  note_id: string;
+  tenant_slug: string;
+}): Promise<WorkspaceNoteComment[]> {
+  const { data, error } = await supabase
+    .from("workspace_note_comments")
+    .select("*")
+    .eq("note_id", input.note_id)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []) as WorkspaceNoteComment[];
+}
+
+export async function getWorkspaceNoteCommentById(input: {
+  comment_id: string;
+  tenant_slug: string;
+}): Promise<WorkspaceNoteComment | null> {
+  const { data, error } = await supabase
+    .from("workspace_note_comments")
+    .select("*")
+    .eq("id", input.comment_id)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as WorkspaceNoteComment | null) ?? null;
+}
+
+export async function createWorkspaceNoteComment(input: {
+  note_id: string;
+  tenant_slug: string;
+  content: string;
+  created_by_user_id: string;
+}): Promise<WorkspaceNoteComment> {
+  const { data, error } = await supabase
+    .from("workspace_note_comments")
+    .insert({
+      note_id: input.note_id,
+      tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+      content: input.content,
+      created_by_user_id: input.created_by_user_id,
+      updated_by_user_id: input.created_by_user_id,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNoteComment;
+}
+
+export async function updateWorkspaceNoteComment(input: {
+  comment_id: string;
+  tenant_slug: string;
+  content: string;
+  updated_by_user_id: string;
+}): Promise<WorkspaceNoteComment> {
+  const { data, error } = await supabase
+    .from("workspace_note_comments")
+    .update({
+      content: input.content,
+      updated_by_user_id: input.updated_by_user_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.comment_id)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return data as WorkspaceNoteComment;
+}
+
+export async function softDeleteWorkspaceNoteComment(input: {
+  comment_id: string;
+  tenant_slug: string;
+  updated_by_user_id: string;
+}): Promise<void> {
+  const { error } = await supabase
+    .from("workspace_note_comments")
+    .update({
+      deleted_at: new Date().toISOString(),
+      updated_by_user_id: input.updated_by_user_id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.comment_id)
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .is("deleted_at", null);
+  if (error) throw new Error(error.message);
+}
+
+export async function countWorkspaceNoteCommentsByNoteIds(input: {
+  tenant_slug: string;
+  noteIds: string[];
+}): Promise<Record<string, number>> {
+  const noteIds = input.noteIds.filter(Boolean);
+  if (noteIds.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from("workspace_note_comments")
+    .select("note_id")
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .in("note_id", noteIds)
+    .is("deleted_at", null);
+  if (error) throw new Error(error.message);
+
+  const counts: Record<string, number> = {};
+  for (const row of (data ?? []) as Array<{ note_id: string }>) {
+    counts[row.note_id] = (counts[row.note_id] ?? 0) + 1;
+  }
+  return counts;
+}

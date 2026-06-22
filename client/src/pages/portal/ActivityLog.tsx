@@ -30,6 +30,14 @@ const DEFAULT_ACTIONS = [
   "meeting_action_item_created",
   "meeting_action_item_updated",
   "meeting_action_item_completed",
+  "internal_note_created",
+  "internal_note_updated",
+  "internal_note_deleted",
+  "internal_note_pinned",
+  "internal_note_archived",
+  "internal_note_comment_created",
+  "internal_note_comment_updated",
+  "internal_note_comment_deleted",
 ] as const;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -50,6 +58,14 @@ const ACTION_LABELS: Record<string, string> = {
   meeting_action_item_created: "Created a meeting action item",
   meeting_action_item_updated: "Updated a meeting action item",
   meeting_action_item_completed: "Completed a meeting action item",
+  internal_note_created: "Created an internal note",
+  internal_note_updated: "Updated an internal note",
+  internal_note_deleted: "Deleted an internal note",
+  internal_note_pinned: "Pinned an internal note",
+  internal_note_archived: "Archived an internal note",
+  internal_note_comment_created: "Created an internal note comment",
+  internal_note_comment_updated: "Updated an internal note comment",
+  internal_note_comment_deleted: "Deleted an internal note comment",
 };
 
 function getActionLabel(actionType?: string | null): string {

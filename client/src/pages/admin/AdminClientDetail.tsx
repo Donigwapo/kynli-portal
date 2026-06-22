@@ -211,11 +211,25 @@ export default function AdminClientDetail() {
     setEditMode(true);
   }
 
-  function handleImpersonate() {
+  async function handleImpersonate() {
     if (!tenant) return;
-    setImpersonatingTenantSlug(tenant.slug);
-    setEffectiveTier(tenant.package_tier as PackageTier);
-    navigate("/portal");
+    try {
+      const res = await fetch("/api/auth/view-as-client/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ tenantSlug: tenant.slug }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload?.error || "Failed to start View as Client");
+      }
+      setImpersonatingTenantSlug(tenant.slug);
+      setEffectiveTier(tenant.package_tier as PackageTier);
+      navigate("/portal");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to start View as Client");
+    }
   }
 
   const members = membersQuery.data ?? [];

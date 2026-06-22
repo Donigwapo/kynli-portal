@@ -26,6 +26,7 @@ import TimeIntelligence from "./pages/portal/TimeIntelligence";
 import SalesTracker from "./pages/portal/SalesTracker";
 import Clients from "./pages/portal/Clients";
 import Chat from "./pages/portal/Chat";
+import Notes from "./pages/portal/Notes";
 import SetPassword from "./pages/portal/SetPassword";
 import ActivityLogPage from "./pages/portal/ActivityLog";
 import TierGate from "./components/TierGate";
@@ -91,6 +92,7 @@ function Router() {
       <Route path="/portal/time"         component={() => <PortalRoute component={TimeIntelligence} featureKey="time_intelligence" />} />
       <Route path="/portal/sales"        component={() => <PortalRoute component={SalesTracker}     featureKey="sales_tracker" />} />
       <Route path="/portal/chat"         component={() => <PortalRoute component={Chat}             featureKey="chat" />} />
+      <Route path="/portal/notes"        component={() => <PortalRoute component={Notes}            featureKey="overview" />} />
       <Route path="/portal/activity-log" component={() => <PortalRoute component={ActivityLogPage}  featureKey="overview" />} />
 
       {/* Admin Portal — protected + admin-only */}

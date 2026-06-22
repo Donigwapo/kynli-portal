@@ -15,6 +15,8 @@ import {
   getPortalUserByUid,
   getPortalUserByEmail,
   markInviteAccepted,
+  getStaffAssignments,
+  sanitizeTenantSlug,
   type PortalUser,
   type PortalTenant,
 } from "./supabase";
@@ -23,6 +25,7 @@ import { COOKIE_NAME } from "@shared/const";
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback-secret-change-me");
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+export const VIEW_AS_CLIENT_COOKIE = "portal_view_as_tenant";
 
 // ─── Session token helpers ────────────────────────────────────────────────────
 
@@ -251,6 +254,7 @@ export function registerAuthRoutes(app: Express) {
   app.post("/api/auth/logout", (req: Request, res: Response) => {
     const cookieOptions = getSessionCookieOptions(req);
     res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+    res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
     res.json({ success: true });
   });
 
@@ -324,6 +328,79 @@ export function registerAuthRoutes(app: Express) {
       tenant_slug: user.tenant_slug,
       must_reset_password: user.must_reset_password,
     });
+  });
+
+  // POST /api/auth/view-as-client/start
+  app.post("/api/auth/view-as-client/start", async (req: Request, res: Response) => {
+    const user = await getPortalUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: "Not authenticated" });
+      return;
+    }
+
+    if (!(user.role === "admin" || user.role === "accounting_manager" || user.role === "tax_manager" || user.role === "accountant")) {
+      res.status(403).json({ error: "View as Client is restricted to staff." });
+      return;
+    }
+
+    const tenantSlugRaw = (req.body?.tenantSlug as string | undefined) ?? "";
+    const tenantSlug = sanitizeTenantSlug(tenantSlugRaw);
+    if (!tenantSlug) {
+      res.status(400).json({ error: "tenantSlug is required" });
+      return;
+    }
+
+    if (user.role === "admin") {
+      const { data: tenant, error } = await supabase
+        .from("portal_tenants")
+        .select("slug")
+        .eq("slug", tenantSlug)
+        .maybeSingle();
+      if (error) {
+        res.status(500).json({ error: error.message });
+        return;
+      }
+      if (!tenant) {
+        res.status(404).json({ error: "Tenant not found" });
+        return;
+      }
+    } else {
+      const assignments = await getStaffAssignments(user.id);
+      const assigned = assignments.some((a) => sanitizeTenantSlug(a.tenant_slug) === tenantSlug);
+      if (!assigned) {
+        res.status(403).json({ error: "Tenant is not assigned to this staff member." });
+        return;
+      }
+    }
+
+    const cookieOptions = getSessionCookieOptions(req);
+    res.cookie(VIEW_AS_CLIENT_COOKIE, tenantSlug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+    res.json({ success: true, tenantSlug });
+  });
+
+  // POST /api/auth/view-as-client/stop
+  app.post("/api/auth/view-as-client/stop", async (req: Request, res: Response) => {
+    const user = await getPortalUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: "Not authenticated" });
+      return;
+    }
+
+    const cookieOptions = getSessionCookieOptions(req);
+    res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+    res.json({ success: true });
+  });
+
+  // GET /api/auth/view-as-client/current
+  app.get("/api/auth/view-as-client/current", async (req: Request, res: Response) => {
+    const user = await getPortalUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: "Not authenticated" });
+      return;
+    }
+
+    const tenantSlug = sanitizeTenantSlug((req.cookies?.[VIEW_AS_CLIENT_COOKIE] as string | undefined) ?? "");
+    res.json({ tenantSlug: tenantSlug || null });
   });
 
   // POST /api/auth/change-password

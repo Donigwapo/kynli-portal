@@ -54,6 +54,14 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       return;
     }
 
+    const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+    if (location === "/portal/notes") {
+      const canAccessNotes = isStaffOrAdmin && !!impersonatingTenantSlug;
+      if (!canAccessNotes) {
+        navigate("/portal");
+        return;
+      }
+    }
 
   }, [loading, isAuthenticated, user, requireAdmin, location, navigate, impersonatingTenantSlug]);
 

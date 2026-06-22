@@ -436,17 +436,26 @@ export default function Clients() {
                           variant="ghost"
                           size="sm"
                           className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1"
-                          onClick={() => {
-                            console.log("[ViewAsClient]", {
-                              userId: user?.id,
-                              role: user?.role,
-                              tenantSlug: c.tenant_slug,
-                              clientName: c.client_name,
-                            });
-                            setImpersonatingTenantSlug(c.tenant_slug ?? null);
-                            const matchedTenant = tenants.find((t) => t.slug === c.tenant_slug);
-                            if (matchedTenant?.package_tier) setEffectiveTier(matchedTenant.package_tier as any);
-                            navigate("/portal");
+                          onClick={async () => {
+                            if (!c.tenant_slug) return;
+                            try {
+                              const res = await fetch("/api/auth/view-as-client/start", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                credentials: "include",
+                                body: JSON.stringify({ tenantSlug: c.tenant_slug }),
+                              });
+                              if (!res.ok) {
+                                const payload = await res.json().catch(() => ({}));
+                                throw new Error(payload?.error || "Failed to start View as Client");
+                              }
+                              setImpersonatingTenantSlug(c.tenant_slug ?? null);
+                              const matchedTenant = tenants.find((t) => t.slug === c.tenant_slug);
+                              if (matchedTenant?.package_tier) setEffectiveTier(matchedTenant.package_tier as any);
+                              navigate("/portal");
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : "Failed to start View as Client");
+                            }
                           }}
                         >
                           <Eye className="w-3.5 h-3.5" />
