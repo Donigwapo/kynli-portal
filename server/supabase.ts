@@ -65,11 +65,20 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 const PROD_PORTAL_ORIGIN = "https://portal.kynliconsulting.com";
 
 function getInviteRedirectTo(portalOrigin?: string): string {
-  if (process.env.NODE_ENV === "production") {
-    return `${PROD_PORTAL_ORIGIN}/auth/callback`;
-  }
+  const explicit = (portalOrigin && portalOrigin.trim()) || "";
+  const envOrigin = (
+    process.env.PORTAL_ORIGIN ||
+    process.env.PUBLIC_PORTAL_ORIGIN ||
+    process.env.APP_URL ||
+    ""
+  ).trim();
 
-  const origin = (portalOrigin && portalOrigin.trim()) || "http://localhost:3000";
+  // In production, never fall back to localhost.
+  const origin =
+    process.env.NODE_ENV === "production"
+      ? (envOrigin || explicit || PROD_PORTAL_ORIGIN)
+      : (explicit || envOrigin || "http://localhost:3000");
+
   return `${origin.replace(/\/$/, "")}/auth/callback`;
 }
 
@@ -100,7 +109,7 @@ export type TenantMember = {
   tenant_slug: string | null;
   invite_sent_at?: string | null;
   invite_accepted?: boolean;
-  source: "tenant_user" | "staff_assignment";
+  source: "tenant_user" | "staff_assignment" | "global_staff";
 };
 
 export type StaffAssignment = {
@@ -3193,6 +3202,30 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
     assignedStaffUsers = (staffResult.data ?? []) as unknown as TenantUserSelectRow[];
   }
 
+  // 3) Global leadership members included in every workspace group chat.
+  const withInviteGlobal = await supabase
+    .from("portal_users")
+    .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
+    .in("role", ["admin", "accounting_manager", "tax_manager"])
+    .order("name", { ascending: true });
+
+  const globalResult =
+    withInviteGlobal.error &&
+    (isMissingColumnError(withInviteGlobal.error, "invite_sent_at") ||
+      isMissingColumnError(withInviteGlobal.error, "invite_accepted"))
+      ? await supabase
+          .from("portal_users")
+          .select("id,email,name,role,tenant_slug")
+          .in("role", ["admin", "accounting_manager", "tax_manager"])
+          .order("name", { ascending: true })
+      : withInviteGlobal;
+
+  if (globalResult.error) {
+    throw new Error(`listTenantMembers.global_staff: ${globalResult.error.message}`);
+  }
+
+  const globalLeadershipUsers = (globalResult.data ?? []) as unknown as TenantUserSelectRow[];
+
   const tenantUsers = (usersResult.data ?? []) as unknown as TenantUserSelectRow[];
   const map = new Map<number, TenantMember>();
 
@@ -3225,6 +3258,23 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
       source: "staff_assignment",
+    });
+  }
+
+  for (const u of globalLeadershipUsers) {
+    const id = Number(u.id ?? 0);
+    if (!id) continue;
+    if (map.has(id)) continue;
+
+    map.set(id, {
+      id,
+      email: String(u.email ?? ""),
+      name: u.name ?? null,
+      role: (u.role ?? "admin") as UserRole,
+      tenant_slug: safeSlug,
+      invite_sent_at: u.invite_sent_at ?? null,
+      invite_accepted: Boolean(u.invite_accepted),
+      source: "global_staff",
     });
   }
 
@@ -3701,6 +3751,17 @@ export type WorkspaceNoteComment = {
   deleted_at: string | null;
 };
 
+export type ClientWorkspaceAccess = {
+  id: string;
+  portal_user_id: number;
+  tenant_slug: string;
+  access_type: "owner" | "member";
+  is_primary: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
 export async function listWorkspaceNoteComments(input: {
   note_id: string;
   tenant_slug: string;
@@ -3812,4 +3873,73 @@ export async function countWorkspaceNoteCommentsByNoteIds(input: {
     counts[row.note_id] = (counts[row.note_id] ?? 0) + 1;
   }
   return counts;
+}
+
+export async function listClientWorkspaceAccessByUserId(portalUserId: number): Promise<ClientWorkspaceAccess[]> {
+  const { data, error } = await supabase
+    .from("client_workspace_access")
+    .select("*")
+    .eq("portal_user_id", portalUserId)
+    .is("deleted_at", null)
+    .order("is_primary", { ascending: false })
+    .order("updated_at", { ascending: false });
+
+  if (error) throw new Error(`listClientWorkspaceAccessByUserId: ${error.message}`);
+  return (data ?? []) as ClientWorkspaceAccess[];
+}
+
+export async function getClientWorkspaceAccessByUserAndTenant(
+  portalUserId: number,
+  tenantSlug: string,
+): Promise<ClientWorkspaceAccess | null> {
+  const { data, error } = await supabase
+    .from("client_workspace_access")
+    .select("*")
+    .eq("portal_user_id", portalUserId)
+    .eq("tenant_slug", tenantSlug)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (error) throw new Error(`getClientWorkspaceAccessByUserAndTenant: ${error.message}`);
+  return (data ?? null) as ClientWorkspaceAccess | null;
+}
+
+export async function upsertClientWorkspaceAccess(input: {
+  portal_user_id: number;
+  tenant_slug: string;
+  access_type?: "owner" | "member";
+  is_primary?: boolean;
+}): Promise<ClientWorkspaceAccess> {
+  const existing = await getClientWorkspaceAccessByUserAndTenant(input.portal_user_id, input.tenant_slug);
+  if (existing) {
+    const patch: Record<string, unknown> = {
+      access_type: input.access_type ?? existing.access_type,
+    };
+    if (input.is_primary === true) patch.is_primary = true;
+
+    const { data, error } = await supabase
+      .from("client_workspace_access")
+      .update(patch)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) throw new Error(`upsertClientWorkspaceAccess(update): ${error.message}`);
+    return data as ClientWorkspaceAccess;
+  }
+
+  const payload = {
+    portal_user_id: input.portal_user_id,
+    tenant_slug: input.tenant_slug,
+    access_type: input.access_type ?? "owner",
+    is_primary: input.is_primary ?? false,
+  };
+
+  const { data, error } = await supabase
+    .from("client_workspace_access")
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(`upsertClientWorkspaceAccess(insert): ${error.message}`);
+  return data as ClientWorkspaceAccess;
 }

@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
+import { CLIENT_WORKSPACE_COOKIE } from "./auth";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
@@ -28,6 +29,8 @@ import {
 import {
   getAllPortalTenants,
   getClientRoster,
+  getPortalUserByEmail,
+  upsertPortalUser,
   getCoachingItems,
   getDocuments,
   getDocumentsByUploader,
@@ -134,17 +137,30 @@ import {
   updateWorkspaceNoteComment,
   softDeleteWorkspaceNoteComment,
   countWorkspaceNoteCommentsByNoteIds,
+  listClientWorkspaceAccessByUserId,
+  getClientWorkspaceAccessByUserAndTenant,
+  upsertClientWorkspaceAccess,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
 const PROD_PORTAL_ORIGIN = "https://portal.kynliconsulting.com";
+const ONE_YEAR_MS = 1000 * 60 * 60 * 24 * 365;
 
 function getInviteRedirectTo(portalOrigin?: string): string {
-  if (process.env.NODE_ENV === "production") {
-    return `${PROD_PORTAL_ORIGIN}/auth/callback`;
-  }
+  const explicit = (portalOrigin && portalOrigin.trim()) || "";
+  const envOrigin = (
+    process.env.PORTAL_ORIGIN ||
+    process.env.PUBLIC_PORTAL_ORIGIN ||
+    process.env.APP_URL ||
+    ""
+  ).trim();
 
-  const origin = (portalOrigin && portalOrigin.trim()) || "http://localhost:3000";
+  // In production, never fall back to localhost.
+  const origin =
+    process.env.NODE_ENV === "production"
+      ? (envOrigin || explicit || PROD_PORTAL_ORIGIN)
+      : (explicit || envOrigin || "http://localhost:3000");
+
   return `${origin.replace(/\/$/, "")}/auth/callback`;
 }
 
@@ -267,7 +283,11 @@ async function getAssignedTenantSlugsForUser(user: PortalUser): Promise<string[]
   return Array.from(new Set(assignments.map((a) => sanitizeTenantSlug(a.tenant_slug)).filter(Boolean)));
 }
 
-async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?: string): Promise<string[]> {
+async function resolveTenantSlugsForUser(
+  user: PortalUser,
+  requestedTenantSlug?: string,
+  activeClientWorkspaceSlug?: string | null,
+): Promise<string[]> {
   const requested = requestedTenantSlug ? sanitizeTenantSlug(requestedTenantSlug) : null;
 
   if (user.role === "admin") {
@@ -295,6 +315,35 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
 
   if (user.tenant_slug) {
     const own = sanitizeTenantSlug(user.tenant_slug);
+
+    if (user.role === "client") {
+      const workspaceRows = await listClientWorkspaceAccessByUserId(user.id);
+      const accessible = workspaceRows.map((r) => sanitizeTenantSlug(r.tenant_slug)).filter(Boolean);
+
+      const effectiveActive = activeClientWorkspaceSlug ? sanitizeTenantSlug(activeClientWorkspaceSlug) : null;
+
+      if (requested) {
+        if (!accessible.length) {
+          if (requested !== own) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own tenant." });
+          }
+          return [own];
+        }
+        if (!accessible.includes(requested)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
+        }
+        return [requested];
+      }
+
+      if (accessible.length) {
+        if (effectiveActive && accessible.includes(effectiveActive)) return [effectiveActive];
+        const primary = workspaceRows.find((r) => r.is_primary) ?? workspaceRows[0];
+        if (primary?.tenant_slug) return [sanitizeTenantSlug(primary.tenant_slug)];
+      }
+
+      return [own];
+    }
+
     if (requested && requested !== own) {
       throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own tenant." });
     }
@@ -304,8 +353,8 @@ async function resolveTenantSlugsForUser(user: PortalUser, requestedTenantSlug?:
   throw new TRPCError({ code: "NOT_FOUND", message: "No tenant profile found for this user" });
 }
 
-async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string): Promise<string> {
-  const slugs = await resolveTenantSlugsForUser(user, impersonateSlug);
+async function resolveTenantSlug(user: PortalUser, impersonateSlug?: string, activeClientWorkspaceSlug?: string | null): Promise<string> {
+  const slugs = await resolveTenantSlugsForUser(user, impersonateSlug, activeClientWorkspaceSlug);
   return slugs[0];
 }
 
@@ -322,7 +371,7 @@ type ResolvedNotesWorkspace = {
 };
 
 async function resolveActiveClientWorkspace(
-  ctx: { user: PortalUser | null; viewAsClientTenantSlug: string | null },
+  ctx: { user: PortalUser | null; viewAsClientTenantSlug: string | null; clientWorkspaceTenantSlug?: string | null },
 ): Promise<ResolvedNotesWorkspace> {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Authentication required." });
 
@@ -332,7 +381,7 @@ async function resolveActiveClientWorkspace(
   }
   const requested = sanitizeTenantSlug(rawRequested);
 
-  const slugs = await resolveTenantSlugsForUser(ctx.user, requested);
+  const slugs = await resolveTenantSlugsForUser(ctx.user, requested, ctx.clientWorkspaceTenantSlug);
   const tenantSlug = sanitizeTenantSlug(slugs[0]);
 
   const { data: tenantRow } = await supabase
@@ -1597,9 +1646,118 @@ export const appRouter = router({
       }),
   }),
 
+  clientWorkspaces: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "client") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
+      }
+
+      const accessRows = await listClientWorkspaceAccessByUserId(ctx.user.id);
+      const slugs = accessRows.map((r) => r.tenant_slug);
+      const allTenants = await getAllPortalTenants();
+      const tenantBySlug = new Map(allTenants.map((t) => [t.slug, t]));
+
+      const items = accessRows
+        .map((a) => {
+          const tenant = tenantBySlug.get(a.tenant_slug);
+          if (!tenant) return null;
+          return {
+            slug: tenant.slug,
+            companyName: tenant.company_name,
+            isActive: tenant.is_active,
+            isChurned: tenant.is_churned,
+            accessType: a.access_type,
+            isPrimary: a.is_primary,
+          };
+        })
+        .filter(Boolean);
+
+      return items;
+    }),
+
+    current: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "client") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
+      }
+
+      const accessRows = await listClientWorkspaceAccessByUserId(ctx.user.id);
+      const slugs = accessRows.map((r) => sanitizeTenantSlug(r.tenant_slug));
+      const activeFromCookie = ctx.clientWorkspaceTenantSlug ? sanitizeTenantSlug(ctx.clientWorkspaceTenantSlug) : null;
+
+      let activeSlug: string | null = null;
+      if (activeFromCookie && slugs.includes(activeFromCookie)) {
+        activeSlug = activeFromCookie;
+      } else if (accessRows.length) {
+        const primary = accessRows.find((r) => r.is_primary) ?? accessRows[0];
+        activeSlug = sanitizeTenantSlug(primary.tenant_slug);
+      } else if (ctx.user.tenant_slug) {
+        activeSlug = sanitizeTenantSlug(ctx.user.tenant_slug);
+      }
+
+      if (!activeSlug) return { tenantSlug: null, workspace: null };
+
+      const tenant = await getTenantBySlug(activeSlug);
+      if (!tenant) return { tenantSlug: null, workspace: null };
+
+      return {
+        tenantSlug: tenant.slug,
+        workspace: {
+          slug: tenant.slug,
+          companyName: tenant.company_name,
+          isActive: tenant.is_active,
+        },
+      };
+    }),
+
+    switch: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role !== "client") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
+        }
+
+        const tenantSlug = input.tenantSlug.trim();
+        if (!tenantSlug) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "tenantSlug is required" });
+        }
+
+        const access = await getClientWorkspaceAccessByUserAndTenant(ctx.user.id, tenantSlug);
+        if (!access) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
+        }
+
+        const tenant = await getTenantBySlug(tenantSlug);
+        if (!tenant || !tenant.is_active) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(CLIENT_WORKSPACE_COOKIE, tenant.slug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+
+        return {
+          success: true,
+          tenantSlug: tenant.slug,
+          workspace: {
+            slug: tenant.slug,
+            companyName: tenant.company_name,
+            isActive: tenant.is_active,
+          },
+        };
+      }),
+
+    reset: protectedProcedure.mutation(async ({ ctx }) => {
+      if (ctx.user.role !== "client") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
+      }
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+      return { success: true };
+    }),
+  }),
+
   tenant: router({
     me: protectedProcedure.query(async ({ ctx }) => {
-      const slugs = await resolveTenantSlugsForUser(ctx.user);
+      const slugs = await resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug);
       if (!slugs.length) return null;
       return getTenantBySlug(slugs[0]);
     }),
@@ -1702,7 +1860,7 @@ export const appRouter = router({
         return all.filter((t) => assignedSlugs.includes(sanitizeTenantSlug(t.slug)));
       }
 
-      const slugs = await resolveTenantSlugsForUser(ctx.user);
+      const slugs = await resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug);
       const all = await getAllPortalTenants();
       return all.filter((t) => slugs.includes(sanitizeTenantSlug(t.slug)));
     }),
@@ -1730,6 +1888,31 @@ export const appRouter = router({
         });
         // Auto-provision all Supabase tables for this tenant
         const provision = await provisionTenant(input.slug);
+
+        // Real-client multi-workspace mapping: attach workspace to owner email without duplicating users.
+        if (input.email) {
+          const normalizedEmail = input.email.trim().toLowerCase();
+          const existingOwner = await getPortalUserByEmail(normalizedEmail);
+          const owner = existingOwner ?? await upsertPortalUser({
+            email: normalizedEmail,
+            name: input.contactName ?? normalizedEmail,
+            role: "client",
+            tenant_slug: input.slug,
+            must_reset_password: true,
+          });
+
+          if (owner) {
+            const existingAccess = await listClientWorkspaceAccessByUserId(owner.id);
+            const hasPrimary = existingAccess.some((r) => r.is_primary);
+            await upsertClientWorkspaceAccess({
+              portal_user_id: owner.id,
+              tenant_slug: input.slug,
+              access_type: "owner",
+              is_primary: hasPrimary ? false : true,
+            });
+          }
+        }
+
         // Send magic-link invite if requested and email is provided
         let invite: { sent: boolean; error?: string } | null = null;
         if (input.sendInvite && input.email) {
@@ -1799,7 +1982,7 @@ export const appRouter = router({
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         console.log("[OverviewScope]", {
           userId: ctx.user.id,
           role: ctx.user.role,
@@ -1868,7 +2051,7 @@ export const appRouter = router({
     lineItems: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         if (slugs.length === 1) {
           return getLineItems(slugs[0], input.year, input.month);
         }
@@ -1898,7 +2081,7 @@ export const appRouter = router({
     lineItemsByYear: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         if (slugs.length === 1) {
           return getLineItemsByYear(slugs[0], input.year);
         }
@@ -2165,7 +2348,7 @@ export const appRouter = router({
           query = query.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
           countQuery = countQuery.is("tenant_slug", null).eq("uploaded_by_user_id", String(ctx.user.id));
 
-          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug);
           if (accessibleSlugs.length > 0) {
             supplementalRowsPromise = supabase
               .from("documents_metadata")
@@ -2354,7 +2537,7 @@ export const appRouter = router({
         let personalFolderQuery: any = null;
 
         if (isStaffPortfolioUser && !hasExplicitTenantContext) {
-          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+          const accessibleSlugs = await resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug);
           if (accessibleSlugs.length > 0) {
             folderQuery = folderQuery.in("tenant_slug", accessibleSlugs);
             docQuery = docQuery.in("tenant_slug", accessibleSlugs);
@@ -2537,7 +2720,7 @@ export const appRouter = router({
         if (isStaffPortfolioUser && !input.tenantSlug) {
           if (isChatAttachmentsScope) {
             const [accessibleSlugs, personalPrimary, personalAlternate] = await Promise.all([
-              resolveTenantSlugsForUser(ctx.user, undefined),
+              resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug),
               getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
                 tenantIsNullOnly: true,
               }),
@@ -2564,7 +2747,7 @@ export const appRouter = router({
 
           if (isClientUploadsScope) {
             const [accessibleSlugs, personalDocs] = await Promise.all([
-              resolveTenantSlugsForUser(ctx.user, undefined),
+              resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug),
               getDocumentsByUploader(ctx.user.id, input.year, input.month, effectiveDocType, undefined, {
                 tenantIsNullOnly: true,
               }),
@@ -2960,7 +3143,7 @@ export const appRouter = router({
           const existingTenantSlug = String(existingRow.tenant_slug ?? "").trim().toLowerCase();
 
           if (existingTenantSlug) {
-            const allowedSlugs = await resolveTenantSlugsForUser(ctx.user, undefined);
+            const allowedSlugs = await resolveTenantSlugsForUser(ctx.user, undefined, ctx.clientWorkspaceTenantSlug);
             if (!allowedSlugs.includes(existingTenantSlug)) {
               throw new TRPCError({
                 code: "FORBIDDEN",
@@ -3255,7 +3438,7 @@ export const appRouter = router({
     list: protectedProcedure
       .input(z.object({ year: z.number().optional(), quarter: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         console.log("[OverviewScope]", {
           userId: ctx.user.id,
           role: ctx.user.role,
@@ -3845,7 +4028,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
         if (slugs.length === 1) {
           await assertTierAccess(ctx.user, "sales_tracker", slugs[0]);
@@ -3879,7 +4062,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
     getByYear: protectedProcedure
       .input(z.object({ year: z.number(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
         if (slugs.length === 1) {
           await assertTierAccess(ctx.user, "sales_tracker", slugs[0]);
@@ -3946,7 +4129,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         if (!isStaffOrAdmin) {
           await assertTierAccess(ctx.user, "clients", input.tenantSlug);
         }
-        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug);
+        const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
         if (ctx.user.role === "admin" || ctx.user.role === "client") {
           return getClientRoster(slugs[0]);

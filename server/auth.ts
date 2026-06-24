@@ -16,7 +16,6 @@ import {
   getPortalUserByEmail,
   markInviteAccepted,
   getStaffAssignments,
-  sanitizeTenantSlug,
   type PortalUser,
   type PortalTenant,
 } from "./supabase";
@@ -26,6 +25,7 @@ import { COOKIE_NAME } from "@shared/const";
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback-secret-change-me");
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 export const VIEW_AS_CLIENT_COOKIE = "portal_view_as_tenant";
+export const CLIENT_WORKSPACE_COOKIE = "portal_client_workspace_tenant";
 
 // ─── Session token helpers ────────────────────────────────────────────────────
 
@@ -255,6 +255,7 @@ export function registerAuthRoutes(app: Express) {
     const cookieOptions = getSessionCookieOptions(req);
     res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
     res.json({ success: true });
   });
 
@@ -344,29 +345,37 @@ export function registerAuthRoutes(app: Express) {
     }
 
     const tenantSlugRaw = (req.body?.tenantSlug as string | undefined) ?? "";
-    const tenantSlug = sanitizeTenantSlug(tenantSlugRaw);
+    const tenantSlug = typeof tenantSlugRaw === "string" ? tenantSlugRaw.trim() : "";
     if (!tenantSlug) {
       res.status(400).json({ error: "tenantSlug is required" });
       return;
     }
 
-    if (user.role === "admin") {
-      const { data: tenant, error } = await supabase
-        .from("portal_tenants")
-        .select("slug")
-        .eq("slug", tenantSlug)
-        .maybeSingle();
-      if (error) {
-        res.status(500).json({ error: error.message });
-        return;
-      }
-      if (!tenant) {
-        res.status(404).json({ error: "Tenant not found" });
-        return;
-      }
-    } else {
+    // Canonical tenant lookup by exact slug from DB (no lossy normalization).
+    const { data: tenant, error: tenantError } = await supabase
+      .from("portal_tenants")
+      .select("slug, company_name, is_active")
+      .eq("slug", tenantSlug)
+      .maybeSingle();
+
+    if (tenantError) {
+      res.status(500).json({ error: tenantError.message });
+      return;
+    }
+
+    if (!tenant) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!tenant.is_active) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (user.role !== "admin") {
       const assignments = await getStaffAssignments(user.id);
-      const assigned = assignments.some((a) => sanitizeTenantSlug(a.tenant_slug) === tenantSlug);
+      const assigned = assignments.some((a) => a.tenant_slug === tenant.slug);
       if (!assigned) {
         res.status(403).json({ error: "Tenant is not assigned to this staff member." });
         return;
@@ -374,8 +383,15 @@ export function registerAuthRoutes(app: Express) {
     }
 
     const cookieOptions = getSessionCookieOptions(req);
-    res.cookie(VIEW_AS_CLIENT_COOKIE, tenantSlug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-    res.json({ success: true, tenantSlug });
+    res.cookie(VIEW_AS_CLIENT_COOKIE, tenant.slug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+    res.json({
+      success: true,
+      tenantSlug: tenant.slug,
+      workspace: {
+        slug: tenant.slug,
+        companyName: tenant.company_name,
+      },
+    });
   });
 
   // POST /api/auth/view-as-client/stop
@@ -388,6 +404,7 @@ export function registerAuthRoutes(app: Express) {
 
     const cookieOptions = getSessionCookieOptions(req);
     res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
     res.json({ success: true });
   });
 
@@ -399,8 +416,55 @@ export function registerAuthRoutes(app: Express) {
       return;
     }
 
-    const tenantSlug = sanitizeTenantSlug((req.cookies?.[VIEW_AS_CLIENT_COOKIE] as string | undefined) ?? "");
-    res.json({ tenantSlug: tenantSlug || null });
+    const rawCookieSlug = (req.cookies?.[VIEW_AS_CLIENT_COOKIE] as string | undefined) ?? "";
+    const tenantSlug = typeof rawCookieSlug === "string" ? rawCookieSlug.trim() : "";
+
+    if (!tenantSlug) {
+      res.json({ tenantSlug: null, workspace: null });
+      return;
+    }
+
+    const { data: tenant, error } = await supabase
+      .from("portal_tenants")
+      .select("slug, company_name, is_active")
+      .eq("slug", tenantSlug)
+      .maybeSingle();
+
+    if (error || !tenant || !tenant.is_active) {
+      const cookieOptions = getSessionCookieOptions(req);
+      res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.json({ tenantSlug: null, workspace: null });
+      return;
+    }
+
+    if (user.role !== "admin") {
+      if (!(user.role === "accounting_manager" || user.role === "tax_manager" || user.role === "accountant")) {
+        const cookieOptions = getSessionCookieOptions(req);
+        res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        res.status(403).json({ error: "View as Client is restricted to staff.", tenantSlug: null, workspace: null });
+        return;
+      }
+
+      const assignments = await getStaffAssignments(user.id);
+      const assigned = assignments.some((a) => a.tenant_slug === tenant.slug);
+      if (!assigned) {
+        const cookieOptions = getSessionCookieOptions(req);
+        res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        res.status(403).json({ error: "Tenant is not assigned to this staff member.", tenantSlug: null, workspace: null });
+        return;
+      }
+    }
+
+    res.json({
+      tenantSlug: tenant.slug,
+      workspace: {
+        slug: tenant.slug,
+        companyName: tenant.company_name,
+      },
+    });
   });
 
   // POST /api/auth/change-password

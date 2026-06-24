@@ -993,7 +993,7 @@ export default function Chat() {
       }
 
       const staffRows: Conversation[] = [...rows];
-      for (const slug of byTenant.keys()) {
+      for (const slug of Array.from(byTenant.keys())) {
         const t = (tenants as any[]).find((x) => String(x.slug || "") === slug) as any | undefined;
         const pkgLabel = (PACKAGE_LABELS[(t?.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
         const companyName = String(t?.company_name || slug);

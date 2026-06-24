@@ -13,10 +13,12 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock3,
+  Star,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "../../lib/trpc";
+import { cn } from "@/lib/utils";
 import { useAuth } from "../../_core/hooks/useAuth";
 import { buildMentionLabels, renderMessageWithMentions } from "@/lib/chatMentions";
 import { PACKAGE_LABELS, type PackageTier } from "@shared/tiers";
@@ -171,6 +173,13 @@ export default function AdminChat() {
   const [dmCmdIndex, setDmCmdIndex] = useState(0);
   const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsePrefsHydrated, setCollapsePrefsHydrated] = useState(false);
+  const [collapsePrefsHasSavedValue, setCollapsePrefsHasSavedValue] = useState(false);
+  const [collapseDefaultsInitialized, setCollapseDefaultsInitialized] = useState(false);
+  const collapsedGroupsStorageKey = "adminChat.collapsedGroups.v1";
+  const [starredConversations, setStarredConversations] = useState<Set<string>>(new Set());
+  const starredStorageKey = "adminChat.starredConversations.v1";
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -686,6 +695,145 @@ export default function AdminChat() {
     return lanes;
   }, [tenants, dmLanes]);
 
+  const groupedConversationLanes = useMemo(() => {
+    const order = ["CFO", "GROWTH 2", "GROWTH 1", "MOMENTUM", "LEGACY", "DIRECT MESSAGES"];
+    const map = new Map<string, ConversationLane[]>();
+    for (const lane of conversationLanes) {
+      const list = map.get(lane.groupLabel) ?? [];
+      list.push(lane);
+      map.set(lane.groupLabel, list);
+    }
+    const groups = Array.from(map.entries())
+      .filter(([, items]) => items.length > 0)
+      .sort(([a], [b]) => {
+        const ia = order.indexOf(a);
+        const ib = order.indexOf(b);
+        if (ia === -1 && ib === -1) return a.localeCompare(b);
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
+    return groups;
+  }, [conversationLanes]);
+
+  useEffect(() => {
+    if (collapsePrefsHydrated) return;
+    if (typeof window === "undefined") {
+      setCollapsePrefsHydrated(true);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(collapsedGroupsStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+          setCollapsedGroups(new Set(valid));
+          setCollapsePrefsHasSavedValue(true);
+        }
+      }
+    } catch {
+      // ignore malformed localStorage payloads
+    } finally {
+      setCollapsePrefsHydrated(true);
+    }
+  }, [collapsePrefsHydrated, collapsedGroupsStorageKey]);
+
+  useEffect(() => {
+    if (!collapsePrefsHydrated || collapsePrefsHasSavedValue || collapseDefaultsInitialized) return;
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+
+      const groupsForDefaults = groupedConversationLanes.map(([group]) => group);
+      if (starredConversations.size > 0) groupsForDefaults.unshift("STARRED");
+
+      for (const group of groupsForDefaults) {
+        if (!next.has(group) && group !== "DIRECT MESSAGES" && group !== "STARRED") {
+          next.add(group);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setCollapseDefaultsInitialized(true);
+  }, [collapsePrefsHydrated, collapsePrefsHasSavedValue, collapseDefaultsInitialized, groupedConversationLanes, starredConversations]);
+
+  useEffect(() => {
+    if (!collapsePrefsHydrated) return;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(collapsedGroupsStorageKey, JSON.stringify(Array.from(collapsedGroups)));
+    } catch {
+      // localStorage unavailable; ignore
+    }
+  }, [collapsedGroups, collapsePrefsHydrated, collapsedGroupsStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(starredStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return;
+      const valid = parsed.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+      setStarredConversations(new Set(valid));
+    } catch {
+      // ignore malformed localStorage payloads
+    }
+  }, [starredStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(starredStorageKey, JSON.stringify(Array.from(starredConversations)));
+    } catch {
+      // localStorage unavailable; ignore
+    }
+  }, [starredConversations, starredStorageKey]);
+
+  useEffect(() => {
+    if (!selectedConversationKey) return;
+    const lane = conversationLanes.find((l) => l.key === selectedConversationKey);
+    if (!lane) return;
+    setCollapsedGroups((prev) => {
+      if (!prev.has(lane.groupLabel)) return prev;
+      const next = new Set(prev);
+      next.delete(lane.groupLabel);
+      return next;
+    });
+  }, [selectedConversationKey, conversationLanes]);
+
+  const toggleGroup = useCallback((group: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
+  }, []);
+
+  const toggleStarConversation = useCallback((laneKey: string) => {
+    setStarredConversations((prev) => {
+      const next = new Set(prev);
+      if (next.has(laneKey)) next.delete(laneKey);
+      else next.add(laneKey);
+      return next;
+    });
+  }, []);
+
+  const starredItems = useMemo(() => {
+    return conversationLanes.filter((l) => starredConversations.has(l.key));
+  }, [conversationLanes, starredConversations]);
+
+  const groupedConversationLanesWithStarred = useMemo(() => {
+    const groups = [...groupedConversationLanes];
+    if (starredItems.length > 0) {
+      groups.unshift(["STARRED", starredItems] as [string, ConversationLane[]]);
+    }
+    return groups;
+  }, [groupedConversationLanes, starredItems]);
+
   useEffect(() => {
     let cancelled = false;
     async function loadPreviews() {
@@ -871,52 +1019,105 @@ export default function AdminChat() {
         </div>
         <ScrollArea className="flex-1">
           <div className="px-2 py-2 space-y-3">
-            {Array.from(new Set(conversationLanes.map((l) => l.groupLabel))).map((group) => {
-              const items = conversationLanes.filter((l) => l.groupLabel === group);
+            {groupedConversationLanesWithStarred.map(([group, items]) => {
+              const isCollapsed = collapsedGroups.has(group);
+              const starredInGroup = items.filter((l) => starredConversations.has(l.key)).length;
               return (
-                <div key={group}>
-                  <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
-                  <div className="space-y-1">
-                    {items.map((lane) => {
-                      const active = lane.key === selectedConversationKey;
-                      const pv = previews[lane.key] ?? {};
-                      return (
-                        <button
-                          key={lane.key}
-                          onClick={() => {
-                            setSelectedSlug(lane.tenantSlug);
-                            setClientInUrl(lane.tenantSlug);
-                            setSelectedConversationKey(lane.key);
-                            setActiveDmKey(lane.dmKey ?? null);
-                          }}
-                          className={
-                            `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
-                            (active
-                              ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
-                              : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
-                          }
-                        >
-                          <div className="flex items-start gap-2.5">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
-                              {(lane.title?.charAt(0) || "?").toUpperCase()}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-[13px] font-medium text-foreground truncate">{lane.title}</p>
-                                <span className="text-[10px] text-muted-foreground shrink-0">{pv.createdAt ? formatTime(new Date(pv.createdAt)) : ""}</span>
+                <div key={group} className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group)}
+                    className="w-full px-1.5 flex items-center justify-between text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold hover:text-zinc-300 transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{group}</span>
+                      {starredInGroup > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-yellow-400">
+                          <Star size={10} className="text-yellow-400 fill-yellow-400" />
+                          <span>{starredInGroup}</span>
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px]">{isCollapsed ? "▸" : "▾"}</span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="space-y-1">
+                      {items.map((lane) => {
+                        const active = lane.key === selectedConversationKey;
+                        const pv = previews[lane.key] ?? {};
+                        return (
+                          <button
+                            key={lane.key}
+                            onClick={() => {
+                              setSelectedSlug(lane.tenantSlug);
+                              setClientInUrl(lane.tenantSlug);
+                              setSelectedConversationKey(lane.key);
+                              setActiveDmKey(lane.dmKey ?? null);
+                            }}
+                            className={
+                              `group w-full text-left rounded-lg border px-2 py-1.5 transition-all ` +
+                              (active
+                                ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
+                                : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                            }
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                                {(lane.title?.charAt(0) || "?").toUpperCase()}
                               </div>
-                              <p className="text-[11px] text-muted-foreground truncate mt-0.5">
-                                {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : lane.subtitle)}
-                              </p>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-medium text-foreground truncate">{lane.title}</p>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleStarConversation(lane.key);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          toggleStarConversation(lane.key);
+                                        }
+                                      }}
+                                      className={cn(
+                                        "p-0.5 rounded transition-colors cursor-pointer",
+                                        starredConversations.has(lane.key)
+                                          ? "text-yellow-400"
+                                          : "text-zinc-500 hover:text-zinc-300 opacity-0 group-hover:opacity-100",
+                                      )}
+                                      aria-label={starredConversations.has(lane.key) ? "Unstar conversation" : "Star conversation"}
+                                      title={starredConversations.has(lane.key) ? "Unstar" : "Star"}
+                                    >
+                                      <Star
+                                        size={12}
+                                        className={starredConversations.has(lane.key) ? "text-yellow-400 fill-yellow-400" : "text-zinc-500"}
+                                      />
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">{pv.createdAt ? formatTime(new Date(pv.createdAt)) : ""}</span>
+                                  </div>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                  {pv.body || (pv.fileName ? `📎 ${pv.fileName}` : lane.subtitle)}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                    {items.length === 0 && (
-                      <p className="px-2.5 py-2 text-[11px] text-muted-foreground">{group === "DIRECT MESSAGES" ? "No direct messages yet" : "No conversations"}</p>
-                    )}
-                  </div>
+                          </button>
+                        );
+                      })}
+                      {items.length === 0 && (
+                        <p className="px-2.5 py-2 text-[11px] text-muted-foreground">{group === "DIRECT MESSAGES" ? "No direct messages yet" : "No conversations"}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -936,10 +1137,26 @@ export default function AdminChat() {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Chat Header */}
           <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-card/30 shrink-0">
-            <div>
-              <p className="text-sm font-semibold text-foreground">
-                {activeDmLane?.title ?? tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug}
-              </p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-foreground truncate">
+                  {activeDmLane?.title ?? tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug}
+                </p>
+                {!!selectedConversationKey && (
+                  <button
+                    type="button"
+                    onClick={() => toggleStarConversation(selectedConversationKey)}
+                    className="p-0.5 rounded hover:bg-zinc-800/70 transition-colors"
+                    aria-label={starredConversations.has(selectedConversationKey) ? "Unstar conversation" : "Star conversation"}
+                    title={starredConversations.has(selectedConversationKey) ? "Unstar" : "Star"}
+                  >
+                    <Star
+                      size={14}
+                      className={starredConversations.has(selectedConversationKey) ? "text-yellow-400 fill-yellow-400" : "text-zinc-400"}
+                    />
+                  </button>
+                )}
+              </div>
               <p className="text-xs text-muted-foreground">{activeDmLane ? "Direct Message" : "Team Chat"}</p>
             </div>
             <div className="text-[11px] text-muted-foreground">

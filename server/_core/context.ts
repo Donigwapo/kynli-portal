@@ -1,5 +1,5 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import { getPortalUserFromRequest, VIEW_AS_CLIENT_COOKIE } from "../auth";
+import { CLIENT_WORKSPACE_COOKIE, getPortalUserFromRequest, VIEW_AS_CLIENT_COOKIE } from "../auth";
 import type { PortalUser } from "../supabase";
 
 export type TrpcContext = {
@@ -7,6 +7,7 @@ export type TrpcContext = {
   res: CreateExpressContextOptions["res"];
   user: PortalUser | null;
   viewAsClientTenantSlug: string | null;
+  clientWorkspaceTenantSlug: string | null;
 };
 
 export async function createContext(
@@ -23,10 +24,14 @@ export async function createContext(
   const rawViewAs = (opts.req.cookies?.[VIEW_AS_CLIENT_COOKIE] as string | undefined) ?? "";
   const viewAsClientTenantSlug = rawViewAs.trim() || null;
 
+  const rawClientWorkspace = (opts.req.cookies?.[CLIENT_WORKSPACE_COOKIE] as string | undefined) ?? "";
+  const clientWorkspaceTenantSlug = rawClientWorkspace.trim() || null;
+
   return {
     req: opts.req,
     res: opts.res,
     user,
     viewAsClientTenantSlug,
+    clientWorkspaceTenantSlug,
   };
 }
