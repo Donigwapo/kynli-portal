@@ -155,12 +155,9 @@ function getInviteRedirectTo(portalOrigin?: string): string {
     ""
   ).trim();
 
-  // In production, never fall back to localhost.
-  const origin =
-    process.env.NODE_ENV === "production"
-      ? (envOrigin || explicit || PROD_PORTAL_ORIGIN)
-      : (explicit || envOrigin || "http://localhost:3000");
-
+  // Prefer explicit/browser origin, then env origin, then hard production default.
+  // This avoids accidental localhost fallback in misconfigured production NODE_ENV.
+  const origin = explicit || envOrigin || PROD_PORTAL_ORIGIN;
   return `${origin.replace(/\/$/, "")}/auth/callback`;
 }
 
@@ -1889,9 +1886,10 @@ export const appRouter = router({
         // Auto-provision all Supabase tables for this tenant
         const provision = await provisionTenant(input.slug);
 
+        const normalizedEmail = input.email?.trim().toLowerCase();
+
         // Real-client multi-workspace mapping: attach workspace to owner email without duplicating users.
-        if (input.email) {
-          const normalizedEmail = input.email.trim().toLowerCase();
+        if (normalizedEmail) {
           const existingOwner = await getPortalUserByEmail(normalizedEmail);
           const owner = existingOwner ?? await upsertPortalUser({
             email: normalizedEmail,
@@ -1917,6 +1915,13 @@ export const appRouter = router({
         let invite: { sent: boolean; error?: string } | null = null;
         if (input.sendInvite && input.email) {
           const redirectTo = getInviteRedirectTo(input.portalOrigin);
+          console.info("[tenant.upsert] invite redirect", {
+            recipientEmail: normalizedEmail,
+            redirectTo,
+            nodeEnv: process.env.NODE_ENV,
+            portalOriginProvided: !!input.portalOrigin,
+            envPortalOriginPresent: !!(process.env.PORTAL_ORIGIN || process.env.PUBLIC_PORTAL_ORIGIN || process.env.APP_URL),
+          });
           invite = await inviteClientByEmail(
             input.email,
             input.companyName,
@@ -1937,6 +1942,13 @@ export const appRouter = router({
         const tenant = await getTenantBySlug(input.slug);
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
         const redirectTo = getInviteRedirectTo(input.portalOrigin);
+        console.info("[tenant.resendInvite] invite redirect", {
+          recipientEmail: member.email,
+          redirectTo,
+          nodeEnv: process.env.NODE_ENV,
+          portalOriginProvided: !!input.portalOrigin,
+          envPortalOriginPresent: !!(process.env.PORTAL_ORIGIN || process.env.PUBLIC_PORTAL_ORIGIN || process.env.APP_URL),
+        });
         const result = await inviteClientByEmail(
           input.email,
           tenant.company_name,

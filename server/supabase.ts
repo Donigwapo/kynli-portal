@@ -5,6 +5,7 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
+import { randomBytes } from "crypto";
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -64,7 +65,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 
 const PROD_PORTAL_ORIGIN = "https://portal.kynliconsulting.com";
 
-function getInviteRedirectTo(portalOrigin?: string): string {
+function resolvePortalOrigin(portalOrigin?: string): string {
   const explicit = (portalOrigin && portalOrigin.trim()) || "";
   const envOrigin = (
     process.env.PORTAL_ORIGIN ||
@@ -73,13 +74,17 @@ function getInviteRedirectTo(portalOrigin?: string): string {
     ""
   ).trim();
 
-  // In production, never fall back to localhost.
-  const origin =
-    process.env.NODE_ENV === "production"
-      ? (envOrigin || explicit || PROD_PORTAL_ORIGIN)
-      : (explicit || envOrigin || "http://localhost:3000");
+  // Prefer explicit/browser origin, then env origin, then hard production default.
+  // This avoids accidental localhost fallback in misconfigured production NODE_ENV.
+  return (explicit || envOrigin || PROD_PORTAL_ORIGIN).replace(/\/$/, "");
+}
 
-  return `${origin.replace(/\/$/, "")}/auth/callback`;
+function getInviteRedirectTo(portalOrigin?: string): string {
+  return `${resolvePortalOrigin(portalOrigin)}/auth/callback`;
+}
+
+function getBrandedInviteUrl(inviteToken: string, portalOrigin?: string): string {
+  return `${resolvePortalOrigin(portalOrigin)}/invite/${inviteToken}`;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -452,6 +457,35 @@ function getResendConfig() {
 
 type InviteEmailVariant = "invite" | "access";
 
+async function createPortalInviteRecord(params: {
+  email: string;
+  tenantSlug: string;
+  supabaseLink: string;
+  inviteType: "client" | "staff";
+  createdBy?: string | null;
+  expiresAt?: string;
+}): Promise<{ inviteToken: string }> {
+  const inviteToken = randomBytes(24).toString("base64url");
+  const expiresAt = params.expiresAt ?? new Date(Date.now() + 1000 * 60 * 60 * 24 * 14).toISOString();
+
+  const { error } = await supabase.from("portal_invites").insert({
+    invite_token: inviteToken,
+    email: params.email,
+    tenant_slug: params.tenantSlug,
+    supabase_link: params.supabaseLink,
+    invite_type: params.inviteType,
+    status: "pending",
+    expires_at: expiresAt,
+    created_by: params.createdBy ?? null,
+  });
+
+  if (error) {
+    throw new Error(error.message || "Failed to create portal invite record");
+  }
+
+  return { inviteToken };
+}
+
 async function sendKynliInviteEmail(params: {
   to: string;
   companyName: string;
@@ -545,6 +579,7 @@ export async function inviteClientByEmail(
   tenantSlug: string,
   redirectTo: string,
   inviteeName?: string,
+  portalOrigin?: string,
 ): Promise<{ sent: boolean; error?: string }> {
   const recipientName = inviteeName?.trim() || workspaceName;
   type GeneratedLinkResult = {
@@ -631,12 +666,36 @@ export async function inviteClientByEmail(
     return { sent: false, error: errMsg };
   }
 
-  // 3) Send branded email via Resend
+  let brandedInviteUrl = "";
+
+  // 3) Save branded invite record and derive branded URL for email
+  try {
+    const { inviteToken } = await createPortalInviteRecord({
+      email,
+      tenantSlug,
+      supabaseLink: inviteLink,
+      inviteType: "client",
+    });
+    brandedInviteUrl = getBrandedInviteUrl(inviteToken, portalOrigin);
+    console.info("[inviteClientByEmail] portal_invites record created", {
+      recipientEmail: email,
+      tenantSlug,
+      inviteTokenPreview: inviteToken.slice(0, 8),
+      brandedInviteUrl,
+      hasSupabaseLink: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown portal_invites error";
+    console.error("[inviteClientByEmail] portal_invites insert failure", { email, tenantSlug, error: message });
+    return { sent: false, error: message };
+  }
+
+  // 4) Send branded email via Resend (no raw Supabase link in email body)
   try {
     await sendKynliInviteEmail({
       to: email,
       companyName: workspaceName,
-      inviteLink,
+      inviteLink: brandedInviteUrl,
       variant: emailVariant,
     });
     console.info("[inviteClientByEmail] Resend send success", {
@@ -3308,7 +3367,7 @@ export async function upsertTenantMember(params: {
   const redirectTo = getInviteRedirectTo(params.portalOrigin);
   const tenant = await getTenantBySlug(safeSlug);
   const workspaceName = tenant?.company_name ?? safeSlug;
-  const invite = await inviteClientByEmail(normalizedEmail, workspaceName, safeSlug, redirectTo, params.fullName);
+  const invite = await inviteClientByEmail(normalizedEmail, workspaceName, safeSlug, redirectTo, params.fullName, params.portalOrigin);
 
   return {
     member,
@@ -3333,6 +3392,7 @@ export async function resendTenantMemberInvite(params: {
     safeSlug,
     redirectTo,
     params.fullName ?? params.email,
+    params.portalOrigin,
   );
 }
 

@@ -78,6 +78,91 @@ export async function getPortalUserFromRequest(req: Request): Promise<PortalUser
 // ─── Register auth routes ─────────────────────────────────────────────────────
 
 export function registerAuthRoutes(app: Express) {
+  app.get("/invite/:inviteToken", async (req: Request, res: Response) => {
+    const rawToken = String(req.params.inviteToken || "").trim();
+    if (!rawToken) {
+      res.status(404).send("Invite not found");
+      return;
+    }
+
+    const { data: invite, error } = await supabase
+      .from("portal_invites")
+      .select("invite_token, status, tenant_slug, expires_at, revoked_at, supabase_link, email")
+      .eq("invite_token", rawToken)
+      .maybeSingle();
+
+    if (error || !invite) {
+      console.warn("[invite.redirect] invite not found", {
+        inviteTokenPreview: rawToken.slice(0, 8),
+      });
+      res.status(404).send("Invite not found");
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAtMs = invite.expires_at ? new Date(invite.expires_at).getTime() : NaN;
+    const emailDomain = typeof invite.email === "string" && invite.email.includes("@") ? invite.email.split("@")[1] : undefined;
+
+    if (invite.revoked_at) {
+      console.info("[invite.redirect] invite revoked", {
+        inviteTokenPreview: rawToken.slice(0, 8),
+        status: invite.status,
+        tenantSlug: invite.tenant_slug,
+        emailDomain,
+      });
+      res.status(410).send("Invite no longer valid");
+      return;
+    }
+
+    if (invite.status !== "pending") {
+      console.info("[invite.redirect] invite status invalid", {
+        inviteTokenPreview: rawToken.slice(0, 8),
+        status: invite.status,
+        tenantSlug: invite.tenant_slug,
+        emailDomain,
+      });
+      if (invite.status === "expired") {
+        res.status(410).send("Invite expired");
+      } else if (invite.status === "revoked") {
+        res.status(410).send("Invite no longer valid");
+      } else {
+        res.status(404).send("Invite not found");
+      }
+      return;
+    }
+
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
+      console.info("[invite.redirect] invite expired by timestamp", {
+        inviteTokenPreview: rawToken.slice(0, 8),
+        status: invite.status,
+        tenantSlug: invite.tenant_slug,
+        emailDomain,
+      });
+      res.status(410).send("Invite expired");
+      return;
+    }
+
+    if (!invite.supabase_link) {
+      console.warn("[invite.redirect] invite missing supabase link", {
+        inviteTokenPreview: rawToken.slice(0, 8),
+        status: invite.status,
+        tenantSlug: invite.tenant_slug,
+        emailDomain,
+      });
+      res.status(404).send("Invite not found");
+      return;
+    }
+
+    console.info("[invite.redirect] redirecting invite", {
+      inviteTokenPreview: rawToken.slice(0, 8),
+      status: invite.status,
+      tenantSlug: invite.tenant_slug,
+      emailDomain,
+    });
+
+    res.redirect(302, invite.supabase_link);
+  });
+
   async function resolvePortalUserFromAuthUser(authUser: {
     id: string;
     email?: string | null;
