@@ -875,6 +875,14 @@ export default function Chat() {
     { tenantSlug: impersonatingTenantSlug ?? undefined },
     { enabled: !!user && (user.role === "client" || isStaff), staleTime: 30_000 },
   );
+  const { data: serverDmConversations = [] } = trpc.chat.dmConversations.useQuery(
+    { tenantSlug: impersonatingTenantSlug ?? undefined },
+    {
+      enabled: !!user && !isWorkspaceChatMode,
+      staleTime: 10_000,
+      refetchInterval: 20_000,
+    },
+  );
 
   const [conversationsOverride, setConversationsOverride] = useState<Conversation[]>([]);
 
@@ -971,11 +979,38 @@ export default function Chat() {
 
       const finalLanes = [...groupLane, ...lanes];
       const map = new Map(finalLanes.map((r) => [r.key, r] as const));
+
+      const serverDmLanes = (serverDmConversations as any[]).map((dm) => {
+        const dmKey = String(dm.dmKey || "");
+        const tenantSlug = String(dm.tenantSlug || baseSlug || "");
+        const key = `dm:${dmKey}`;
+        const title = String(dm.peerDisplayName || `User ${dm.peerUserId ?? ""}` || "Direct message");
+        const subtitle = dm.tenantName ? `Direct message • ${dm.tenantName}` : "Direct message";
+        return {
+          key,
+          dmKey,
+          tenantSlug,
+          title,
+          subtitle,
+          groupLabel: "DIRECT MESSAGES",
+        } as Conversation;
+      }).filter((c) => !!c.dmKey && !!c.tenantSlug);
+
       const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
-      console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+      console.log("[DM_LANES_BEFORE_MERGE]", {
+        localCount: dmOverrides.length,
+        serverCount: serverDmLanes.length,
+        local: dmOverrides.map((d) => d.key),
+        server: serverDmLanes.map((d) => d.key),
+      });
+
+      for (const lane of serverDmLanes) {
+        if (!map.has(lane.key)) map.set(lane.key, lane);
+      }
       for (const ov of dmOverrides) {
         if (!map.has(ov.key)) map.set(ov.key, ov);
       }
+
       const merged = Array.from(map.values());
       console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
       return merged;
@@ -1028,11 +1063,38 @@ export default function Chat() {
       }
 
       const map = new Map(staffRows.map((r) => [r.key, r] as const));
+
+      const serverDmLanes = (serverDmConversations as any[]).map((dm) => {
+        const dmKey = String(dm.dmKey || "");
+        const tenantSlug = String(dm.tenantSlug || "");
+        const key = `dm:${dmKey}`;
+        const title = String(dm.peerDisplayName || `User ${dm.peerUserId ?? ""}` || "Direct message");
+        const subtitle = dm.tenantName ? `Direct message • ${dm.tenantName}` : "Direct message";
+        return {
+          key,
+          dmKey,
+          tenantSlug,
+          title,
+          subtitle,
+          groupLabel: "DIRECT MESSAGES",
+        } as Conversation;
+      }).filter((c) => !!c.dmKey && !!c.tenantSlug);
+
       const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
-      console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+      console.log("[DM_LANES_BEFORE_MERGE]", {
+        localCount: dmOverrides.length,
+        serverCount: serverDmLanes.length,
+        local: dmOverrides.map((d) => d.key),
+        server: serverDmLanes.map((d) => d.key),
+      });
+
+      for (const lane of serverDmLanes) {
+        if (!map.has(lane.key)) map.set(lane.key, lane);
+      }
       for (const ov of dmOverrides) {
         if (!map.has(ov.key)) map.set(ov.key, ov);
       }
+
       const merged = Array.from(map.values());
       console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
       return merged;
@@ -1049,15 +1111,42 @@ export default function Chat() {
 
     const base = [...rows, ...tenantConvos];
     const map = new Map(base.map((r) => [r.key, r] as const));
+
+    const serverDmLanes = (serverDmConversations as any[]).map((dm) => {
+      const dmKey = String(dm.dmKey || "");
+      const tenantSlug = String(dm.tenantSlug || "");
+      const key = `dm:${dmKey}`;
+      const title = String(dm.peerDisplayName || `User ${dm.peerUserId ?? ""}` || "Direct message");
+      const subtitle = dm.tenantName ? `Direct message • ${dm.tenantName}` : "Direct message";
+      return {
+        key,
+        dmKey,
+        tenantSlug,
+        title,
+        subtitle,
+        groupLabel: "DIRECT MESSAGES",
+      } as Conversation;
+    }).filter((c) => !!c.dmKey && !!c.tenantSlug);
+
     const dmOverrides = conversationsOverride.filter((c) => c.key.startsWith("dm:"));
-    console.log("[DM_LANES_BEFORE_MERGE]", { count: dmOverrides.length, lanes: dmOverrides.map((d) => d.key) });
+    console.log("[DM_LANES_BEFORE_MERGE]", {
+      localCount: dmOverrides.length,
+      serverCount: serverDmLanes.length,
+      local: dmOverrides.map((d) => d.key),
+      server: serverDmLanes.map((d) => d.key),
+    });
+
+    for (const lane of serverDmLanes) {
+      if (!map.has(lane.key)) map.set(lane.key, lane);
+    }
     for (const ov of dmOverrides) {
       if (!map.has(ov.key)) map.set(ov.key, ov);
     }
+
     const merged = Array.from(map.values());
     console.log("[DM_LANES_AFTER_MERGE]", { count: merged.filter((c) => c.key.startsWith("dm:")).length, lanes: merged.filter((c) => c.key.startsWith("dm:")).map((d) => d.key) });
     return merged;
-  }, [isStaff, isAdmin, isWorkspaceChatMode, tenants, user?.role, assignments, impersonatingTenantSlug, conversationsOverride]);
+  }, [isStaff, isAdmin, isWorkspaceChatMode, tenants, user?.role, assignments, impersonatingTenantSlug, conversationsOverride, serverDmConversations]);
 
   const laneStorageKey = useMemo(() => {
     const tenantPart = impersonatingTenantSlug || "tenant";
@@ -1179,9 +1268,30 @@ export default function Chat() {
     let cancelled = false;
 
     async function loadPreviews() {
+      const serverDmByKey = new Map<string, any>(
+        (serverDmConversations as any[])
+          .map((dm) => [(`dm:${String(dm.dmKey || "")}`), dm] as [string, any])
+          .filter(([key]) => key !== "dm:"),
+      );
+
       const entries = await Promise.all(
         conversations.map(async (c) => {
           try {
+            if (c.key.startsWith("dm:")) {
+              const dm = serverDmByKey.get(c.key) as any;
+              if (dm) {
+                return [
+                  c.key,
+                  {
+                    body: dm.lastMessage ?? null,
+                    fileName: null,
+                    createdAt: dm.lastMessageAt ? String(dm.lastMessageAt) : null,
+                    unreadCount: Number(dm.unreadCount ?? 0),
+                  },
+                ] as const;
+              }
+            }
+
             const rows = await utils.chat.list.fetch({ tenantSlug: c.tenantSlug, assignmentId: c.assignmentId, dmKey: c.dmKey, visibilityScope: chatVisibilityScope, viewAsClient, limit: 1 });
             const raw = rows?.[0];
             if (!raw) return [c.key, {}] as const;
@@ -1192,7 +1302,7 @@ export default function Chat() {
                 body: m.body,
                 fileName: m.fileName,
                 createdAt: String(m.createdAt),
-                unreadCount: 0,
+                unreadCount: Number((serverDmByKey.get(c.key) as any)?.unreadCount ?? 0),
               },
             ] as const;
           } catch {
@@ -1212,7 +1322,7 @@ export default function Chat() {
     return () => {
       cancelled = true;
     };
-  }, [conversations, utils.chat.list, chatVisibilityScope, viewAsClient]);
+  }, [conversations, utils.chat.list, chatVisibilityScope, viewAsClient, serverDmConversations]);
 
   useEffect(() => {
     // reset stickiness and transient compose/thread state when switching conversations

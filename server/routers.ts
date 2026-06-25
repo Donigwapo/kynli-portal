@@ -77,6 +77,7 @@ import {
   getChatMessages,
   getChatUnreadCount,
   upsertChatReadState,
+  listDmConversationsForUser,
   getThreadReplies,
   incrementReplyCount,
   decrementReplyCount,
@@ -194,6 +195,52 @@ function sanitizeStorageFileName(rawName: string | undefined, fallbackExt: strin
   return `${safeBase}.${safeExt}`;
 }
 
+function fileExtFromName(name?: string | null): string {
+  const raw = String(name || "").trim();
+  if (!raw) return "";
+  const last = raw.replace(/[\\/]/g, "/").split("/").pop() || "";
+  const idx = last.lastIndexOf(".");
+  if (idx <= 0) return "";
+  return last.slice(idx + 1).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isAllowedVideoFile(input: { fileName?: string | null; mimeType?: string | null }): { ok: boolean; ext: string } {
+  const ext = fileExtFromName(input.fileName);
+  const mime = String(input.mimeType || "").toLowerCase().trim();
+
+  const extAllowed = !!ext && ALLOWED_VIDEO_EXTENSIONS.has(ext);
+  if (!extAllowed) return { ok: false, ext: ext || "mp4" };
+
+  if (!mime) return { ok: false, ext: ext || "mp4" };
+  if (VIDEO_MIME_DENYLIST.has(mime)) return { ok: false, ext: ext || "mp4" };
+
+  const byExt = VIDEO_MIME_BY_EXTENSION[ext] ?? new Set<string>();
+  const mimeAllowed = byExt.has(mime) || mime.startsWith("video/");
+
+  return { ok: mimeAllowed, ext: ext || "mp4" };
+}
+
+function buildDirectVideoStoragePath(args: {
+  tenantSlug: string | null;
+  userId: number;
+  docType: string;
+  year: number;
+  month?: number | null;
+  fileName: string;
+  ext: string;
+}): string {
+  const safeDocType = (args.docType || "other").toLowerCase().replace(/[^a-z0-9]/g, "-") || "other";
+  const safeYear = Number.isFinite(args.year) ? String(args.year) : "unknown_year";
+  const safeMonth = args.month && Number.isFinite(args.month)
+    ? String(args.month).padStart(2, "0")
+    : "00";
+  const timestamp = Date.now();
+  const rand = Math.random().toString(36).slice(2);
+  const sanitizedFileName = sanitizeStorageFileName(args.fileName, args.ext);
+  const storagePrefix = args.tenantSlug ?? `staff/${String(args.userId || "unknown")}`;
+  return `${storagePrefix}/${safeDocType}/${safeYear}/${safeMonth}/${timestamp}-${rand}-${sanitizedFileName}`;
+}
+
 // ─── Admin guard middleware ───────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") {
@@ -211,6 +258,26 @@ const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
 const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATION_WEBHOOK_URL?.trim() || "";
 const N8N_DOCUMENT_MOVED_WEBHOOK_URL = process.env.N8N_DOCUMENT_MOVED_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/movedfile";
+const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "documents";
+const MAX_VIDEO_UPLOAD_BYTES = 250 * 1024 * 1024;
+const ALLOWED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
+const VIDEO_MIME_BY_EXTENSION: Record<string, Set<string>> = {
+  mp4: new Set(["video/mp4", "application/mp4"]),
+  mov: new Set(["video/quicktime", "video/mp4", "application/octet-stream"]),
+  m4v: new Set(["video/x-m4v", "video/mp4", "application/octet-stream"]),
+  webm: new Set(["video/webm", "application/octet-stream"]),
+  avi: new Set(["video/x-msvideo", "video/avi", "video/msvideo", "application/octet-stream"]),
+  mkv: new Set(["video/x-matroska", "video/matroska", "application/octet-stream"]),
+};
+const VIDEO_MIME_DENYLIST = new Set([
+  "text/html",
+  "application/javascript",
+  "text/javascript",
+  "application/x-msdownload",
+  "application/x-sh",
+  "application/x-executable",
+  "application/x-dosexec",
+]);
 
 function inferActorType(role: PortalUser["role"]): string {
   if (role === "admin") return "admin";
@@ -544,6 +611,9 @@ async function canUsePeerForDm(currentUser: PortalUser, peerUserId: number, tena
   if (peerErr || !peer) return false;
 
   if (!(STAFF_PORTAL_ROLES.has(currentUser.role) || currentUser.role === "admin")) return false;
+
+  // Admin can DM any portal user (all roles) once peer exists.
+  if (currentUser.role === "admin") return true;
 
   if (tenantSlug && !isInternalChatSlug(tenantSlug)) {
     const safeSlug = sanitizeTenantSlug(tenantSlug);
@@ -1048,6 +1118,8 @@ async function authorizeDocumentDeleteScope(
   user: PortalUser,
   ids: Array<string | number>,
   tenantSlugOverride?: string,
+  activeClientWorkspaceSlug?: string | null,
+  viewAsClientTenantSlug?: string | null,
 ): Promise<{ mode: "tenant"; tenantSlug: string } | { mode: "personal" }> {
   const normalizedIds = ids.map((id) => String(id));
 
@@ -1064,9 +1136,13 @@ async function authorizeDocumentDeleteScope(
 
   const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(user.role);
   const hasExplicitTenantContext = typeof tenantSlugOverride === "string" && tenantSlugOverride.trim().length > 0;
+  const activeWorkspaceSlug = activeClientWorkspaceSlug ? sanitizeTenantSlug(activeClientWorkspaceSlug) : "";
+  const viewAsSlug = viewAsClientTenantSlug ? sanitizeTenantSlug(viewAsClientTenantSlug) : "";
+  const trustedWorkspaceSlug = activeWorkspaceSlug || viewAsSlug;
 
-  // Staff/accountants deleting from personal docs mode (tenant_slug IS NULL).
-  if (isStaffPortfolioUser && !hasExplicitTenantContext) {
+  // Staff/accountants deleting from personal docs mode (tenant_slug IS NULL),
+  // unless they are in trusted client workspace context.
+  if (isStaffPortfolioUser && !hasExplicitTenantContext && !trustedWorkspaceSlug) {
     const personalMismatches = rows.filter(
       (row) => row.tenant_slug !== null || String(row.uploaded_by_user_id ?? "") !== String(user.id),
     );
@@ -1081,7 +1157,13 @@ async function authorizeDocumentDeleteScope(
     return { mode: "personal" };
   }
 
-  const resolvedSlug = sanitizeTenantSlug(await resolveTenantSlug(user, tenantSlugOverride));
+  const resolvedSlug = sanitizeTenantSlug(
+    await resolveTenantSlug(
+      user,
+      tenantSlugOverride || trustedWorkspaceSlug || undefined,
+      trustedWorkspaceSlug || undefined,
+    ),
+  );
   const tenantMismatches = rows.filter((row) => sanitizeTenantSlug(row.tenant_slug) !== resolvedSlug);
 
   console.info("[documents.delete] authorization decision", {
@@ -1943,7 +2025,7 @@ export const appRouter = router({
         if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
         const redirectTo = getInviteRedirectTo(input.portalOrigin);
         console.info("[tenant.resendInvite] invite redirect", {
-          recipientEmail: member.email,
+          recipientEmail: input.email,
           redirectTo,
           nodeEnv: process.env.NODE_ENV,
           portalOriginProvided: !!input.portalOrigin,
@@ -2788,6 +2870,177 @@ export const appRouter = router({
 
         return getDocuments(slug, input.year, input.month, effectiveDocType);
       }),
+    createSignedUpload: protectedProcedure
+      .input(z.object({
+        fileName: z.string().min(1),
+        mimeType: z.string().min(1),
+        fileSize: z.number().positive(),
+        docType: z.string().default("Other"),
+        year: z.number(),
+        month: z.number().optional(),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const extension = fileExtFromName(input.fileName);
+        const extAllowed = !!extension && ALLOWED_VIDEO_EXTENSIONS.has(extension);
+        if (!extAllowed) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Signed upload is only available for supported video files." });
+        }
+
+        if (input.fileSize > MAX_VIDEO_UPLOAD_BYTES) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Video is too large. Maximum upload size is 250MB." });
+        }
+
+        const videoValidation = isAllowedVideoFile({ fileName: input.fileName, mimeType: input.mimeType });
+        if (!videoValidation.ok) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Unsupported video format." });
+        }
+
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        const requestedTenantSlug = input.tenantSlug;
+        const hasExplicitTenantContext = typeof requestedTenantSlug === "string" && requestedTenantSlug.trim().length > 0;
+
+        let tenantSlug: string | null = null;
+        if (!isStaffPortfolioUser || hasExplicitTenantContext) {
+          const resolvedTenantSlug = await resolveTenantSlug(ctx.user, requestedTenantSlug);
+          tenantSlug = sanitizeTenantSlug(resolvedTenantSlug);
+        }
+
+        const storagePath = buildDirectVideoStoragePath({
+          tenantSlug,
+          userId: Number(ctx.user.id),
+          docType: input.docType,
+          year: input.year,
+          month: input.month ?? null,
+          fileName: input.fileName,
+          ext: videoValidation.ext,
+        });
+
+        const bucket = SUPABASE_STORAGE_BUCKET;
+        const signed = await supabase.storage
+          .from(bucket)
+          .createSignedUploadUrl(storagePath);
+
+        if (signed.error || !signed.data?.token) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: signed.error?.message || "Failed to create signed upload URL" });
+        }
+
+        const publicUrl = supabase.storage.from(bucket).getPublicUrl(storagePath)?.data?.publicUrl ?? null;
+
+        return {
+          bucket,
+          storagePath,
+          token: signed.data.token,
+          signedUrl: signed.data.signedUrl ?? null,
+          publicUrl,
+          tenantSlug,
+          maxVideoBytes: MAX_VIDEO_UPLOAD_BYTES,
+        };
+      }),
+
+    finalizeDirectUpload: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1),
+        fileName: z.string().min(1),
+        mimeType: z.string().min(1),
+        fileSize: z.number().positive(),
+        docType: z.string().default("Other"),
+        description: z.string().optional(),
+        year: z.number(),
+        month: z.number().optional(),
+        tenantSlug: z.string().optional(),
+        storagePath: z.string().min(1),
+        bucket: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.fileSize > MAX_VIDEO_UPLOAD_BYTES) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Video is too large. Maximum upload size is 250MB." });
+        }
+
+        const isVideoMime = String(input.mimeType || "").toLowerCase().startsWith("video/");
+        const videoValidation = isAllowedVideoFile({ fileName: input.fileName, mimeType: input.mimeType });
+        if (!isVideoMime || !videoValidation.ok) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Unsupported video format." });
+        }
+
+        const isStaffPortfolioUser = STAFF_PORTAL_ROLES.has(ctx.user.role);
+        const requestedTenantSlug = input.tenantSlug;
+        const hasExplicitTenantContext = typeof requestedTenantSlug === "string" && requestedTenantSlug.trim().length > 0;
+
+        let tenantSlug: string | null = null;
+        if (!isStaffPortfolioUser || hasExplicitTenantContext) {
+          const resolvedTenantSlug = await resolveTenantSlug(ctx.user, requestedTenantSlug);
+          tenantSlug = sanitizeTenantSlug(resolvedTenantSlug);
+        }
+
+        const expectedPrefix = tenantSlug ?? `staff/${String(ctx.user.id)}`;
+        const normalizedPath = String(input.storagePath || "").replace(/^\/+/, "");
+        if (!normalizedPath.startsWith(`${expectedPrefix}/`)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Invalid upload path for current user scope." });
+        }
+
+        if (input.bucket !== SUPABASE_STORAGE_BUCKET) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid upload bucket." });
+        }
+
+        const info = await supabase.storage.from(input.bucket).info(normalizedPath);
+        if (info.error || !info.data) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Uploaded file not found in storage." });
+        }
+
+        const tenantRecord = tenantSlug ? await getTenantBySlug(tenantSlug) : null;
+        const organizationId = tenantRecord?.id != null ? String(tenantRecord.id) : null;
+        const uploadedByUserId = ctx.user.id != null ? String(ctx.user.id) : null;
+
+        const publicUrl = supabase.storage.from(input.bucket).getPublicUrl(normalizedPath)?.data?.publicUrl ?? null;
+        if (!publicUrl) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Unable to resolve uploaded file URL." });
+        }
+
+        const documentInsertPayload = {
+          organization_id: organizationId,
+          client_id: null,
+          name: input.fileName || input.name,
+          description: input.description || null,
+          doc_type: input.docType,
+          file_key: normalizedPath,
+          file_url: publicUrl,
+          file_name: input.name || input.fileName || null,
+          file_size: input.fileSize,
+          mime_type: input.mimeType,
+          year: input.year,
+          month: input.month ?? null,
+          uploaded_by_name: ctx.user.name ?? ctx.user.email ?? null,
+          uploaded_by_user_id: uploadedByUserId,
+        };
+
+        const insertedDoc = await insertDocument(tenantSlug, documentInsertPayload);
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "file_uploaded",
+          entity_type: "document",
+          entity_id: insertedDoc?.id ? String(insertedDoc.id) : null,
+          tenant_slug: insertedDoc?.tenant_slug ?? tenantSlug,
+          organization_id: insertedDoc?.organization_id ?? null,
+          client_id: insertedDoc?.client_id ?? null,
+          file_name: insertedDoc?.file_name ?? insertedDoc?.name ?? input.fileName ?? input.name,
+          new_value: String(input.docType),
+          metadata: {
+            document_name: input.name,
+            mime_type: input.mimeType,
+            file_size: input.fileSize,
+            year: input.year,
+            month: input.month ?? null,
+            source: "portal_documents_direct_upload",
+          },
+          status: "success",
+        });
+
+        return { success: true, url: publicUrl };
+      }),
+
     upload: protectedProcedure
       .input(z.object({
         name: z.string(),
@@ -3037,7 +3290,13 @@ export const appRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.union([z.string(), z.number()]), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const authorizedScope = await authorizeDocumentDeleteScope(ctx.user, [input.id], input.tenantSlug);
+        const authorizedScope = await authorizeDocumentDeleteScope(
+          ctx.user,
+          [input.id],
+          input.tenantSlug,
+          ctx.clientWorkspaceTenantSlug,
+          ctx.viewAsClientTenantSlug,
+        );
 
         const { data: existingRow } = await supabase
           .from("documents_metadata")
@@ -3074,7 +3333,13 @@ export const appRouter = router({
     bulkDelete: protectedProcedure
       .input(z.object({ ids: z.array(z.union([z.string(), z.number()])).min(1), tenantSlug: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const authorizedScope = await authorizeDocumentDeleteScope(ctx.user, input.ids, input.tenantSlug);
+        const authorizedScope = await authorizeDocumentDeleteScope(
+          ctx.user,
+          input.ids,
+          input.tenantSlug,
+          ctx.clientWorkspaceTenantSlug,
+          ctx.viewAsClientTenantSlug,
+        );
 
         const normalizedIds = input.ids.map((id) => String(id));
         const { data: existingRows } = await supabase
@@ -4535,14 +4800,70 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         await resolveChatAssignmentIdForUser(ctx.user, safeSlug, undefined);
 
         if (safeSlug === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+          const q = input.q?.trim().toLowerCase() ?? "";
+
+          // Admin: global people search across ALL portal user roles.
+          if (ctx.user.role === "admin") {
+            const { data: allUsers, error: allErr } = await supabase
+              .from("portal_users")
+              .select("id,name,email,role,tenant_slug")
+              .order("name", { ascending: true });
+            if (allErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: allErr.message });
+
+            const slugs = Array.from(
+              new Set(
+                ((allUsers || []) as Array<{ tenant_slug: string | null }>)
+                  .map((u) => sanitizeTenantSlug(u.tenant_slug))
+                  .filter(Boolean)
+              )
+            );
+
+            let tenantNameBySlug = new Map<string, string>();
+            if (slugs.length) {
+              const { data: tenants, error: tenantErr } = await supabase
+                .from("portal_tenants")
+                .select("slug,company_name")
+                .in("slug", slugs);
+              if (tenantErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: tenantErr.message });
+              tenantNameBySlug = new Map(
+                ((tenants || []) as Array<{ slug: string; company_name: string }>).map((t) => [sanitizeTenantSlug(t.slug), t.company_name])
+              );
+            }
+
+            const merged = new Map<number, any>();
+            for (const u of (allUsers || []) as Array<{ id:number; name:string|null; email:string; role:string; tenant_slug:string|null }>) {
+              const id = Number(u.id);
+              if (!Number.isFinite(id) || id <= 0) continue;
+              if (merged.has(id)) continue;
+              const tenantSlug = sanitizeTenantSlug(u.tenant_slug);
+              merged.set(id, {
+                id,
+                displayName: (u.name || u.email || `User ${u.id}`).trim(),
+                email: u.email || null,
+                role: u.role || null,
+                source: u.role === "client" ? "client" : "internal",
+                initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+                assignmentId: null as number | null,
+                tenantSlug,
+                tenantName: tenantSlug ? (tenantNameBySlug.get(tenantSlug) || null) : null,
+              });
+            }
+
+            return Array.from(merged.values()).filter((c) => {
+              if (!q) return true;
+              return c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false);
+            });
+          }
+
+          // Non-admin behavior unchanged: internal staff only in internal chat context.
           const { data: internalUsers, error: internalErr } = await supabase
             .from("portal_users")
             .select("id,name,email,role")
             .in("role", ["admin", "accounting_manager", "tax_manager", "accountant"])
             .order("name", { ascending: true });
           if (internalErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: internalErr.message });
-          const q = input.q?.trim().toLowerCase() ?? "";
-          return ((internalUsers || []) as Array<{ id:number; name:string|null; email:string; role:string }>).map((u) => ({
+
+          const internal = ((internalUsers || []) as Array<{ id:number; name:string|null; email:string; role:string }>).map((u) => ({
             id: Number(u.id),
             displayName: (u.name || u.email || `User ${u.id}`).trim(),
             email: u.email || null,
@@ -4550,7 +4871,93 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             source: "internal" as const,
             initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
             assignmentId: null as number | null,
-          })).filter((c)=> !q || c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false));
+            tenantSlug: null as string | null,
+            tenantName: null as string | null,
+          }));
+
+          return internal.filter((c)=> !q || c.displayName.toLowerCase().includes(q) || (c.email?.toLowerCase().includes(q) ?? false));
+        }
+
+        // Admin-only enhancement in tenant branch: global people search across all portal users.
+        if (ctx.user.role === "admin") {
+          const query = input.q?.trim().toLowerCase() ?? "";
+
+          const { data: allUsers, error: allErr } = await supabase
+            .from("portal_users")
+            .select("id,name,email,role,tenant_slug")
+            .order("name", { ascending: true });
+          if (allErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: allErr.message });
+
+          const userIds = Array.from(new Set(((allUsers || []) as Array<{ id: number }>).map((u) => Number(u.id)).filter((n) => Number.isFinite(n) && n > 0)));
+          let workspaceLinks: Array<{ portal_user_id: number; tenant_slug: string; is_primary: boolean | null; created_at: string | null }> = [];
+          if (userIds.length) {
+            const { data: links, error: linksErr } = await supabase
+              .from("client_workspace_access")
+              .select("portal_user_id,tenant_slug,is_primary,created_at")
+              .in("portal_user_id", userIds)
+              .is("deleted_at", null);
+            if (linksErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: linksErr.message });
+            workspaceLinks = (links || []) as Array<{ portal_user_id: number; tenant_slug: string; is_primary: boolean | null; created_at: string | null }>;
+          }
+
+          const preferredTenantByUser = new Map<number, string>();
+          for (const row of workspaceLinks) {
+            const uid = Number(row.portal_user_id);
+            const slug = sanitizeTenantSlug(row.tenant_slug);
+            if (!uid || !slug) continue;
+            const existing = preferredTenantByUser.get(uid);
+            if (!existing) {
+              preferredTenantByUser.set(uid, slug);
+              continue;
+            }
+            if (row.is_primary) preferredTenantByUser.set(uid, slug);
+          }
+
+          const slugs = Array.from(
+            new Set(
+              ((allUsers || []) as Array<{ id:number; tenant_slug:string | null }>)
+                .map((u) => sanitizeTenantSlug(u.tenant_slug) || preferredTenantByUser.get(Number(u.id)) || "")
+                .filter(Boolean)
+            )
+          );
+
+          let tenantNameBySlug = new Map<string, string>();
+          if (slugs.length) {
+            const { data: tenants, error: tenantErr } = await supabase
+              .from("portal_tenants")
+              .select("slug,company_name")
+              .in("slug", slugs);
+            if (tenantErr) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: tenantErr.message });
+            tenantNameBySlug = new Map(((tenants || []) as Array<{ slug: string; company_name: string }>).map((t) => [sanitizeTenantSlug(t.slug), t.company_name]));
+          }
+
+          const mapped = ((allUsers || []) as Array<{ id:number; name:string | null; email:string; role:string; tenant_slug:string | null }>)
+            .map((u) => {
+              const tenantSlug = sanitizeTenantSlug(u.tenant_slug) || preferredTenantByUser.get(Number(u.id)) || null;
+              return {
+                id: Number(u.id),
+                displayName: (u.name || u.email || `User ${u.id}`).trim(),
+                email: u.email || null,
+                role: u.role || null,
+                source: u.role === "client" ? ("client" as const) : ("internal" as const),
+                initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
+                assignmentId: null as number | null,
+                tenantSlug,
+                tenantName: tenantSlug ? (tenantNameBySlug.get(tenantSlug) || null) : null,
+              };
+            })
+            .filter((c) => {
+              if (!query) return true;
+              return c.displayName.toLowerCase().includes(query) || (c.email?.toLowerCase().includes(query) ?? false);
+            })
+            .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+          const deduped = new Map<number, (typeof mapped)[number]>();
+          for (const row of mapped) {
+            if (!Number.isFinite(row.id) || row.id <= 0) continue;
+            if (!deduped.has(row.id)) deduped.set(row.id, row);
+          }
+          return Array.from(deduped.values());
         }
 
         const [tenantMembers, assignmentLanes] = await Promise.all([
@@ -4648,6 +5055,52 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           peerUserId,
           tenantSlug: safeSlug,
         };
+      }),
+
+    dmConversations: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const userId = normalizeUserId(ctx.user.id);
+        const wantedTenant = input?.tenantSlug ? sanitizeTenantSlug(input.tenantSlug) : undefined;
+
+        // Resolve which tenant scopes this user can access for DM discovery.
+        const allowedTenantSlugs = isInternalChatSlug(wantedTenant)
+          ? [sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)]
+          : await resolveTenantSlugsForUser(ctx.user, wantedTenant, ctx.clientWorkspaceTenantSlug);
+
+        const chunks = await Promise.all(
+          allowedTenantSlugs.map((slug) => listDmConversationsForUser({ userId, tenantSlug: slug }))
+        );
+
+        const merged = new Map<string, any>();
+        for (const row of chunks.flat()) {
+          if (!row?.dmKey) continue;
+          const existing = merged.get(row.dmKey);
+          if (!existing) {
+            merged.set(row.dmKey, row);
+            continue;
+          }
+
+          const prevTs = new Date(existing.lastMessageAt || 0).getTime();
+          const nextTs = new Date(row.lastMessageAt || 0).getTime();
+          if (nextTs > prevTs) {
+            merged.set(row.dmKey, {
+              ...row,
+              unreadCount: Math.max(Number(existing.unreadCount || 0), Number(row.unreadCount || 0)),
+            });
+          } else {
+            merged.set(row.dmKey, {
+              ...existing,
+              unreadCount: Math.max(Number(existing.unreadCount || 0), Number(row.unreadCount || 0)),
+            });
+          }
+        }
+
+        const result = Array.from(merged.values()).sort(
+          (a, b) => new Date(String(b.lastMessageAt || 0)).getTime() - new Date(String(a.lastMessageAt || 0)).getTime()
+        );
+
+        return result;
       }),
 
     // List recent messages for the tenant's room (top-level only)

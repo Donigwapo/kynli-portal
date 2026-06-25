@@ -1697,6 +1697,27 @@ type PortalChatMessageRow = {
   updated_at: string;
 };
 
+export type DmConversationSummary = {
+  dmKey: string;
+  tenantSlug: string;
+  tenantName: string | null;
+  peerUserId: number;
+  peerDisplayName: string;
+  peerRole: string | null;
+  lastMessage: string | null;
+  lastMessageAt: string;
+  unreadCount: number;
+};
+
+function parseDmParticipants(dmKey: string): { a: number; b: number } | null {
+  const m = /^dm:u(\d+):u(\d+)$/.exec(dmKey || "");
+  if (!m) return null;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return { a, b };
+}
+
 function mapGlobalChatRowToChatMessage(row: PortalChatMessageRow): ChatMessage {
   const senderUserId = row.sender_user_id != null ? Number(row.sender_user_id) : null;
   return {
@@ -2237,6 +2258,141 @@ export async function getChatUnreadCount(input: {
     return 0;
   }
   return Number(count ?? 0);
+}
+
+export async function listDmConversationsForUser(input: {
+  userId: number;
+  tenantSlug?: string;
+}): Promise<DmConversationSummary[]> {
+  const currentUserId = Number(input.userId);
+  if (!Number.isFinite(currentUserId) || currentUserId <= 0) return [];
+
+  let query = supabase
+    .from(GLOBAL_CHAT_TABLE)
+    .select("id,dm_key,tenant_slug,message_text,file_name,created_at,sender_user_id")
+    .not("dm_key", "is", null)
+    .eq("visibility_scope", "workspace_public")
+    .order("id", { ascending: false })
+    .limit(4000);
+
+  if (input.tenantSlug) {
+    query = query.eq("tenant_slug", sanitizeTenantSlug(input.tenantSlug));
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(`listDmConversationsForUser.messages: ${error.message}`);
+  }
+
+  const rows = (data || []) as Array<{
+    id: number;
+    dm_key: string | null;
+    tenant_slug: string | null;
+    message_text: string | null;
+    file_name: string | null;
+    created_at: string | null;
+    sender_user_id: string | null;
+  }>;
+
+  const latestByDm = new Map<string, {
+    dmKey: string;
+    tenantSlug: string;
+    lastMessage: string | null;
+    lastMessageAt: string;
+  }>();
+
+  for (const row of rows) {
+    const dmKey = String(row.dm_key || "");
+    if (!dmKey) continue;
+    const parsed = parseDmParticipants(dmKey);
+    if (!parsed) continue;
+    if (parsed.a !== currentUserId && parsed.b !== currentUserId) continue;
+
+    const tenantSlug = sanitizeTenantSlug(row.tenant_slug || "");
+    if (!tenantSlug) continue;
+
+    const lastMessage = (row.message_text && row.message_text.trim())
+      ? row.message_text
+      : (row.file_name ? `📎 ${row.file_name}` : null);
+    const lastMessageAt = String(row.created_at || new Date(0).toISOString());
+
+    if (!latestByDm.has(dmKey)) {
+      latestByDm.set(dmKey, {
+        dmKey,
+        tenantSlug,
+        lastMessage,
+        lastMessageAt,
+      });
+    }
+  }
+
+  const entries = Array.from(latestByDm.values());
+  if (!entries.length) return [];
+
+  const peerIds = Array.from(new Set(entries.map((e) => {
+    const parsed = parseDmParticipants(e.dmKey)!;
+    return parsed.a === currentUserId ? parsed.b : parsed.a;
+  })));
+
+  const tenantSlugs = Array.from(new Set(entries.map((e) => e.tenantSlug).filter(Boolean)));
+
+  const [peersResult, tenantsResult] = await Promise.all([
+    peerIds.length
+      ? supabase.from("portal_users").select("id,name,email,role").in("id", peerIds)
+      : Promise.resolve({ data: [], error: null } as any),
+    tenantSlugs.length
+      ? supabase.from("portal_tenants").select("slug,company_name").in("slug", tenantSlugs)
+      : Promise.resolve({ data: [], error: null } as any),
+  ]);
+
+  if (peersResult.error) {
+    throw new Error(`listDmConversationsForUser.peers: ${peersResult.error.message}`);
+  }
+  if (tenantsResult.error) {
+    throw new Error(`listDmConversationsForUser.tenants: ${tenantsResult.error.message}`);
+  }
+
+  const peerById = new Map<number, { id: number; name: string | null; email: string | null; role: string | null }>(
+    ((peersResult.data || []) as Array<{ id: number; name: string | null; email: string | null; role: string | null }>)
+      .map((p) => [Number(p.id), p]),
+  );
+
+  const tenantNameBySlug = new Map<string, string | null>(
+    ((tenantsResult.data || []) as Array<{ slug: string; company_name: string | null }>)
+      .map((t) => [sanitizeTenantSlug(t.slug), t.company_name ?? null]),
+  );
+
+  const unreadByDm = new Map<string, number>();
+  await Promise.all(entries.map(async (entry) => {
+    const count = await getChatUnreadCount({
+      userId: currentUserId,
+      tenantSlug: entry.tenantSlug,
+      dmKey: entry.dmKey,
+      visibilityScope: "workspace_public",
+    }).catch(() => 0);
+    unreadByDm.set(entry.dmKey, Number(count || 0));
+  }));
+
+  const out: DmConversationSummary[] = entries.map((entry) => {
+    const parsed = parseDmParticipants(entry.dmKey)!;
+    const peerUserId = parsed.a === currentUserId ? parsed.b : parsed.a;
+    const peer = peerById.get(peerUserId);
+
+    return {
+      dmKey: entry.dmKey,
+      tenantSlug: entry.tenantSlug,
+      tenantName: tenantNameBySlug.get(entry.tenantSlug) ?? null,
+      peerUserId,
+      peerDisplayName: (peer?.name || peer?.email || `User ${peerUserId}`).trim(),
+      peerRole: peer?.role ?? null,
+      lastMessage: entry.lastMessage,
+      lastMessageAt: entry.lastMessageAt,
+      unreadCount: Number(unreadByDm.get(entry.dmKey) ?? 0),
+    };
+  });
+
+  out.sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime());
+  return out;
 }
 
 export async function getThreadReplies(

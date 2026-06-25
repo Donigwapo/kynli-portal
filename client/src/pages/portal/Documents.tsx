@@ -1,6 +1,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback, memo, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { supabaseClient } from "@/lib/supabase";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import {
@@ -18,6 +19,8 @@ import {
   Image as ImageIcon,
   FileSpreadsheet,
   File,
+  Video,
+  Play,
   Loader2,
   CheckCircle2,
   AlertTriangle,
@@ -96,13 +99,14 @@ const LEGACY_DOC_TYPES = ["Financials", "Tax Returns", "W-2 / 1099", "Other", "c
 const FOLDER_TEMPLATES = [
   { key: "Financials (with months)", base: "Financials", supportsMonths: true },
   { key: "Bank Statements (with months)", base: "Bank Statements", supportsMonths: true },
-  { key: "Payroll (with months)", base: "Payroll", supportsMonths: true },
+  { key: "Payroll (with years)", base: "Payroll", supportsMonths: true },
   { key: "Tax Returns (year folders only)", base: "Tax Returns", supportsMonths: false },
   { key: "Accounts Payable (with months)", base: "Accounts Payable", supportsMonths: true },
   { key: "Accounts Receivable (with months)", base: "Accounts Receivable", supportsMonths: true },
 ] as const;
 
 const TEMPLATE_YEAR_EXTRA_FOLDERS = ["Send to Accountant", "Workpapers"] as const;
+const PAYROLL_QUARTER_FOLDERS = ["Q1", "Q2", "Q3", "Q4"] as const;
 
 const TEMPLATE_BASE_NAMES: Set<string> = new Set(FOLDER_TEMPLATES.map((t) => t.base));
 
@@ -112,7 +116,7 @@ function resolveDefaultTemplateTypeForPath(path?: string | null): string {
 
   const byRoot: Record<string, string> = {
     "Bank Statements": "Bank Statements (with months)",
-    "Payroll": "Payroll (with months)",
+    "Payroll": "Payroll (with years)",
     "Accounts Payable": "Accounts Payable (with months)",
     "Accounts Receivable": "Accounts Receivable (with months)",
     "Tax": "Tax Returns (year folders only)",
@@ -180,6 +184,16 @@ function getMimeCategory(mimeType?: string | null): "image" | "pdf" | "spreadshe
   return "other";
 }
 
+function isVideoDocumentFile(input?: { mime_type?: string | null; file_name?: string | null; name?: string | null } | null): boolean {
+  if (!input) return false;
+  const mime = String(input.mime_type || "").toLowerCase();
+  if (mime.startsWith("video/")) return true;
+
+  const extFromFileNameValue = extFromFileName(String(input.file_name || ""));
+  const extFromNameValue = extFromFileName(String(input.name || ""));
+  return VIDEO_EXTENSIONS.has(extFromFileNameValue) || VIDEO_EXTENSIONS.has(extFromNameValue);
+}
+
 function DocIcon({ mimeType }: { mimeType?: string | null }) {
   const cat = getMimeCategory(mimeType);
   if (cat === "image") return <ImageIcon className="w-5 h-5 text-cyan-400" />;
@@ -188,7 +202,8 @@ function DocIcon({ mimeType }: { mimeType?: string | null }) {
   return <File className="w-5 h-5 text-zinc-400" />;
 }
 
-function openButtonLabel(mimeType?: string | null): string {
+function openButtonLabel(mimeType?: string | null, fileName?: string | null, displayName?: string | null): string {
+  if (isVideoDocumentFile({ mime_type: mimeType, file_name: fileName, name: displayName })) return "Preview Video";
   const cat = getMimeCategory(mimeType);
   if (cat === "image") return "Open Image";
   if (cat === "pdf") return "Open PDF";
@@ -243,6 +258,17 @@ function truncateFileName(name: string, max = 22): string {
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH = new Date().getMonth() + 1;
 const MAX_UPLOAD_FILES = 10;
+const MAX_VIDEO_UPLOAD_MB = 250;
+const MAX_VIDEO_UPLOAD_BYTES = MAX_VIDEO_UPLOAD_MB * 1024 * 1024;
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
+const VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/x-m4v",
+  "video/webm",
+  "video/x-msvideo",
+  "video/x-matroska",
+]);
 
 type UploadItemStatus = "pending" | "uploading" | "uploaded" | "failed";
 type UploadItem = {
@@ -251,6 +277,18 @@ type UploadItem = {
   status: UploadItemStatus;
   error?: string;
 };
+
+function extFromFileName(name: string): string {
+  const idx = name.lastIndexOf(".");
+  if (idx <= 0) return "";
+  return name.slice(idx + 1).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isVideoFile(file: File): boolean {
+  const ext = extFromFileName(file.name);
+  const mime = String(file.type || "").toLowerCase();
+  return VIDEO_EXTENSIONS.has(ext) && VIDEO_MIME_TYPES.has(mime);
+}
 
 type DocRow = {
   id: string | number;
@@ -476,6 +514,7 @@ export default function Documents() {
   const [movingDate, setMovingDate] = useState(false);
   const [showSearchPreviewDialog, setShowSearchPreviewDialog] = useState(false);
   const [searchPreviewDoc, setSearchPreviewDoc] = useState<DocRow | null>(null);
+  const [videoPreviewUnsupported, setVideoPreviewUnsupported] = useState(false);
 
   const [editingDocId, setEditingDocId] = useState<string | null>(null);
   const [editingFileName, setEditingFileName] = useState("");
@@ -529,6 +568,8 @@ export default function Documents() {
   );
 
   const uploadMutation = trpc.documents.upload.useMutation();
+  const createSignedUploadMutation = trpc.documents.createSignedUpload.useMutation();
+  const finalizeDirectUploadMutation = trpc.documents.finalizeDirectUpload.useMutation();
   const updateTypeMutation = trpc.documents.updateType.useMutation();
   const updateDateMutation = trpc.documents.updateDate.useMutation();
   const updateFileNameMutation = trpc.documents.updateFileName.useMutation();
@@ -638,7 +679,17 @@ export default function Documents() {
       toast.error(`You can upload up to ${MAX_UPLOAD_FILES} files at once. Keeping the first ${MAX_UPLOAD_FILES}.`);
     }
     const limited = files.slice(0, MAX_UPLOAD_FILES);
-    const nextItems: UploadItem[] = limited.map((file, idx) => ({
+
+    const validated = limited.filter((file) => {
+      if (!isVideoFile(file)) return true;
+      if (file.size > MAX_VIDEO_UPLOAD_BYTES) {
+        toast.error("Video is too large. Maximum upload size is 250MB.");
+        return false;
+      }
+      return true;
+    });
+
+    const nextItems: UploadItem[] = validated.map((file, idx) => ({
       id: `${Date.now()}-${idx}-${file.name}-${file.size}`,
       file,
       status: "pending",
@@ -759,21 +810,63 @@ export default function Documents() {
         const file = working[index].file;
 
         try {
-          const base64 = await fileToBase64(file);
           const derivedName = uploadItems.length === 1 ? uploadName.trim() : file.name.replace(/\.[^.]+$/, "");
+          const mimeType = file.type || "application/octet-stream";
 
-          await uploadMutation.mutateAsync({
-            name: derivedName,
-            description: uploadDesc.trim() || undefined,
-            fileBase64: base64,
-            mimeType: file.type || "application/octet-stream",
-            fileName: file.name,
-            fileSize: file.size,
-            docType: destinationPath,
-            year: Number(uploadYear),
-            month: Number(uploadMonth),
-            tenantSlug: impersonatingTenantSlug ?? undefined,
-          });
+          if (isVideoFile(file)) {
+            if (file.size > MAX_VIDEO_UPLOAD_BYTES) {
+              throw new Error("Video is too large. Maximum upload size is 250MB.");
+            }
+
+            const signed = await createSignedUploadMutation.mutateAsync({
+              fileName: file.name,
+              mimeType,
+              fileSize: file.size,
+              docType: destinationPath,
+              year: Number(uploadYear),
+              month: Number(uploadMonth),
+              tenantSlug: impersonatingTenantSlug ?? undefined,
+            });
+
+            const uploadRes = await supabaseClient.storage
+              .from(String((signed as any).bucket))
+              .uploadToSignedUrl(String((signed as any).storagePath), String((signed as any).token), file, {
+                contentType: mimeType,
+                upsert: false,
+              });
+
+            if ((uploadRes as any)?.error) {
+              throw new Error(String((uploadRes as any).error?.message || "Video upload failed"));
+            }
+
+            await finalizeDirectUploadMutation.mutateAsync({
+              name: derivedName,
+              description: uploadDesc.trim() || undefined,
+              fileName: file.name,
+              mimeType,
+              fileSize: file.size,
+              docType: destinationPath,
+              year: Number(uploadYear),
+              month: Number(uploadMonth),
+              tenantSlug: impersonatingTenantSlug ?? undefined,
+              storagePath: String((signed as any).storagePath),
+              bucket: String((signed as any).bucket),
+            });
+          } else {
+            const base64 = await fileToBase64(file);
+            await uploadMutation.mutateAsync({
+              name: derivedName,
+              description: uploadDesc.trim() || undefined,
+              fileBase64: base64,
+              mimeType,
+              fileName: file.name,
+              fileSize: file.size,
+              docType: destinationPath,
+              year: Number(uploadYear),
+              month: Number(uploadMonth),
+              tenantSlug: impersonatingTenantSlug ?? undefined,
+            });
+          }
 
           working[index] = { ...working[index], status: "uploaded", error: undefined };
           setUploadItems([...working]);
@@ -1561,7 +1654,7 @@ export default function Documents() {
   const contextTemplateType = useMemo(() => {
     if (templateContextPath === "Bank Statements") return "Bank Statements (with months)";
     if (templateContextPath === "Financials (Internal)") return "Financials (with months)";
-    if (templateContextPath === "Payroll") return "Payroll (with months)";
+    if (templateContextPath === "Payroll") return "Payroll (with years)";
     return null;
   }, [templateContextPath]);
 
@@ -1571,15 +1664,18 @@ export default function Documents() {
     const effectiveTemplateType = contextTemplateType ?? templateType;
     const tpl = FOLDER_TEMPLATES.find((t) => t.key === effectiveTemplateType) ?? FOLDER_TEMPLATES[0];
     if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) {
-      return { years: [] as number[], monthNames: [] as string[], extraFolderNames: [] as string[], yearCount: 0, monthCount: 0, extraCount: 0, templateBase: tpl.base };
+      return { years: [] as number[], monthNames: [] as string[], extraFolderNames: [] as string[], yearCount: 0, monthCount: 0, extraCount: 0, templateBase: tpl.base, periodLabel: tpl.key === "Payroll (with years)" ? "quarter" : "month" };
     }
     const years = Array.from({ length: to - from + 1 }, (_, i) => from + i);
-    const monthNames = templateCreateMonths && tpl.supportsMonths ? MONTH_NAMES : [];
+    const monthNames = templateCreateMonths && tpl.supportsMonths
+      ? (tpl.key === "Payroll (with years)" ? Array.from(PAYROLL_QUARTER_FOLDERS) : MONTH_NAMES)
+      : [];
     const includeYearExtras =
       tpl.key === "Bank Statements (with months)" ||
       tpl.key === "Financials (with months)" ||
-      tpl.key === "Payroll (with months)";
+      tpl.key === "Payroll (with years)";
     const extraFolderNames = includeYearExtras ? Array.from(TEMPLATE_YEAR_EXTRA_FOLDERS) : [];
+    const periodLabel = tpl.key === "Payroll (with years)" ? "quarter" : "month";
     return {
       years,
       monthNames,
@@ -1588,6 +1684,7 @@ export default function Documents() {
       monthCount: years.length * monthNames.length,
       extraCount: years.length * extraFolderNames.length,
       templateBase: tpl.base,
+      periodLabel,
     };
   }, [templateFromYear, templateToYear, templateType, templateCreateMonths, contextTemplateType]);
 
@@ -2107,6 +2204,42 @@ export default function Documents() {
                                       </a>
                                     )}
 
+                                    {isVideoDocumentFile({ mime_type: doc.mime_type, file_name: doc.file_name, name: doc.name }) && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openSearchPreview({
+                                            id: String(doc.id),
+                                            display_name: String(doc.file_name || doc.name || "Video"),
+                                            folder_path: String(normalizedDocTypeById.get(String(doc.id)) ?? doc.doc_type ?? "Other"),
+                                            uploaded_at: (doc as any).updated_at ?? (doc as any).created_at ?? null,
+                                            file_size: Number(doc.file_size ?? 0),
+                                            mime_type: doc.mime_type ?? null,
+                                            file_url: doc.file_url ?? null,
+                                            description: doc.description ?? null,
+                                          } as any);
+                                        }}
+                                        className="group relative block w-full text-left -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-zinc-800"
+                                        title="Preview Video"
+                                      >
+                                        <div className="relative w-full h-32 bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-900">
+                                          <div className="absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-white/[0.02] transition-colors group-hover:from-black/45" />
+                                          <Video className="absolute -right-4 -bottom-4 w-20 h-20 text-zinc-500/25" />
+                                          <div className="absolute top-2 right-2">
+                                            <Badge variant="outline" className="px-1.5 py-0 text-[10px] tracking-wide border-cyan-500/35 text-cyan-300 bg-cyan-500/10">
+                                              VIDEO
+                                            </Badge>
+                                          </div>
+                                          <div className="absolute inset-0 flex items-center justify-center">
+                                            <div className="w-12 h-12 rounded-full border border-white/30 bg-black/35 backdrop-blur-sm flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
+                                              <Play className="w-5 h-5 text-white ml-0.5" fill="currentColor" />
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </button>
+                                    )}
+
                                     <div className="flex items-start justify-between gap-2">
                                       <button
                                         type="button"
@@ -2202,7 +2335,7 @@ export default function Documents() {
                                     <div className="flex items-center gap-2">
                                       <Button size="sm" className="flex-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 gap-1.5 text-xs" disabled={!doc.file_url} onClick={() => doc.file_url && window.open(doc.file_url, "_blank")}>
                                         <ExternalLink className="w-3.5 h-3.5" />
-                                        {openButtonLabel(doc.mime_type)}
+                                        {openButtonLabel(doc.mime_type, doc.file_name, doc.name)}
                                       </Button>
                                       <Button size="sm" variant="outline" className="px-2.5 border-zinc-700 hover:bg-zinc-800" disabled={!doc.file_url} onClick={() => {
                                         if (!doc.file_url) return;
@@ -2490,7 +2623,10 @@ export default function Documents() {
         open={showSearchPreviewDialog}
         onOpenChange={(open) => {
           setShowSearchPreviewDialog(open);
-          if (!open) setSearchPreviewDoc(null);
+          if (!open) {
+            setSearchPreviewDoc(null);
+            setVideoPreviewUnsupported(false);
+          }
         }}
       >
         <DialogContent className="bg-zinc-950 border-zinc-800 max-w-2xl">
@@ -2514,6 +2650,22 @@ export default function Documents() {
                   <img src={searchPreviewDoc.file_url} alt={searchPreviewDoc.file_name || searchPreviewDoc.name} className="max-h-[380px] w-full object-contain rounded" />
                 ) : getMimeCategory(searchPreviewDoc.mime_type) === "pdf" && searchPreviewDoc.file_url ? (
                   <iframe src={searchPreviewDoc.file_url} className="w-full h-[380px] rounded" title="PDF preview" />
+                ) : isVideoDocumentFile(searchPreviewDoc) && searchPreviewDoc.file_url ? (
+                  <div className="space-y-2">
+                    <video
+                      controls
+                      src={searchPreviewDoc.file_url}
+                      className="w-full max-h-[380px] rounded"
+                      onError={() => setVideoPreviewUnsupported(true)}
+                    >
+                      Preview may not be supported for this video format. Please download the file to view it.
+                    </video>
+                    {videoPreviewUnsupported && (
+                      <div className="text-sm text-zinc-400">
+                        Preview may not be supported for this video format. Please download the file to view it.
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="h-[220px] flex items-center justify-center text-sm text-zinc-500">Preview not available for this file type.</div>
                 )}
@@ -2728,7 +2880,9 @@ export default function Documents() {
                     className="accent-emerald-500"
                     disabled={!((FOLDER_TEMPLATES.find((t) => t.key === (contextTemplateType ?? templateType)) ?? FOLDER_TEMPLATES[0]).supportsMonths)}
                   />
-                  Create month subfolders (Jan–Dec)
+                  {(contextTemplateType ?? templateType) === "Payroll (with years)"
+                    ? "Create quarter subfolders (Q1–Q4)"
+                    : "Create month subfolders (Jan–Dec)"}
                 </label>
 
                 <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
@@ -2748,7 +2902,7 @@ export default function Documents() {
                     {templatePlan.years.length === 0 && <div className="text-zinc-500">Select a valid year range.</div>}
                   </div>
                   <p className="text-[11px] text-zinc-500 mt-2">
-                    This will create {templatePlan.yearCount} year folders, {templatePlan.monthCount} month folders, and {templatePlan.extraCount} additional folders.
+                    This will create {templatePlan.yearCount} year folders, {templatePlan.monthCount} {templatePlan.periodLabel} folders, and {templatePlan.extraCount} additional folders.
                   </p>
                 </div>
 
@@ -2860,7 +3014,7 @@ export default function Documents() {
                 type="file"
                 className="hidden"
                 multiple
-                accept=".pdf,.xlsx,.xls,.docx,.doc,.csv,.png,.jpg,.jpeg"
+                accept=".pdf,.xlsx,.xls,.docx,.doc,.csv,.png,.jpg,.jpeg,.mp4,.mov,.m4v,.webm,.avi,.mkv"
                 onChange={(e) => applySelectedFiles(Array.from(e.target.files ?? []))}
               />
             </div>
