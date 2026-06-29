@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
@@ -6,7 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Filter, Plus, Pencil, Trash2 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
+import { CalendarDays, ChevronDown, Filter, Plus, Pencil, Trash2 } from "lucide-react";
 
 const MEETING_TYPES = ["all", "quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"] as const;
 const STATUSES = ["all", "scheduled", "completed", "cancelled"] as const;
@@ -38,14 +46,44 @@ function normalizeItems(items: ItemDraft[]) {
     .filter((it) => it.title.length > 0);
 }
 
-export default function CoachingClientMeeting() {
+function safeExportSlug(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function exportDateStamp(input?: string | null): string {
+  const raw = String(input || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const d = raw ? new Date(raw) : new Date();
+  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtItemStatus(status?: string | null): string {
+  const normalized = String(status || "open").replace(/_/g, " ");
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+type CoachingClientMeetingProps = {
+  mode?: "clientMeeting" | "checkInCalls";
+};
+
+export default function CoachingClientMeeting({ mode = "clientMeeting" }: CoachingClientMeetingProps) {
   const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
   const tenantSlug = impersonatingTenantSlug ?? undefined;
   const isClientReadOnly = user?.role === "client";
+  const meetingMode = mode === "checkInCalls" ? "check_in_call" : "client_meeting";
 
   const utils = trpc.useUtils();
-  const { data: meetings = [], isLoading: isMeetingsLoading } = trpc.coaching.meetingsList.useQuery({ tenantSlug });
+  const {
+    data: meetings = [],
+    isLoading: isMeetingsLoading,
+    isError: isMeetingsError,
+  } = trpc.coaching.meetingsList.useQuery({ tenantSlug, mode: meetingMode });
 
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -69,15 +107,16 @@ export default function CoachingClientMeeting() {
   const [editMeta, setEditMeta] = useState(false);
   const [editNotes, setEditNotes] = useState(false);
   const [editItems, setEditItems] = useState(false);
+  const [isExportingDocx, setIsExportingDocx] = useState(false);
 
   const detailQuery = trpc.coaching.meetingsGet.useQuery(
-    { id: selectedMeetingId ?? 0, tenantSlug },
+    { id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode },
     { enabled: !!selectedMeetingId && !isCreating }
   );
 
   const createMutation = trpc.coaching.meetingsCreate.useMutation({
     onSuccess: async (res) => {
-      await utils.coaching.meetingsList.invalidate({ tenantSlug });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
       setIsCreating(false);
       setSelectedMeetingId(res.meeting.id);
       setEditMeta(false);
@@ -88,8 +127,8 @@ export default function CoachingClientMeeting() {
 
   const updateMutation = trpc.coaching.meetingsUpdate.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
       setEditMeta(false);
       setEditNotes(false);
     },
@@ -97,7 +136,7 @@ export default function CoachingClientMeeting() {
 
   const deleteMutation = trpc.coaching.meetingsDelete.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsList.invalidate({ tenantSlug });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
       setSelectedMeetingId(null);
       setIsCreating(false);
       setEditMeta(false);
@@ -108,16 +147,16 @@ export default function CoachingClientMeeting() {
 
   const upsertItemsMutation = trpc.coaching.meetingActionItemsUpsertBatch.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
       setEditItems(false);
     },
   });
 
   const updateItemStatusMutation = trpc.coaching.meetingActionItemsUpdateStatus.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
     },
   });
 
@@ -221,6 +260,7 @@ export default function CoachingClientMeeting() {
     if (isCreating) {
       createMutation.mutate({
         tenantSlug,
+        mode: meetingMode,
         title: title.trim(),
         meetingDate,
         meetingType,
@@ -233,6 +273,7 @@ export default function CoachingClientMeeting() {
     updateMutation.mutate({
       id: selectedMeetingId,
       tenantSlug,
+      mode: meetingMode,
       title: title.trim(),
       meetingDate,
       meetingType,
@@ -246,17 +287,107 @@ export default function CoachingClientMeeting() {
     upsertItemsMutation.mutate({
       meetingId: selectedMeetingId,
       tenantSlug,
+      mode: meetingMode,
       items: normalizeItems(items),
     });
   };
 
   const hasSelection = isCreating || !!selectedMeetingId;
 
+  const handleExportDocx = async () => {
+    if (!selectedMeetingId || isCreating) return;
+    const detail = detailQuery.data;
+    const meeting = detail?.meeting as any;
+    const actionItems = (detail?.actionItems as Array<any>) || [];
+    if (!meeting) {
+      toast.error("Meeting details are still loading. Please try again.");
+      return;
+    }
+
+    setIsExportingDocx(true);
+    try {
+      const kindLabel = mode === "checkInCalls" ? "Check-in Call" : "Client Meeting";
+      const heading = `${kindLabel}: ${String(meeting.title || "Untitled")}`;
+      const meetingDateText = fmtDate(meeting.meeting_date);
+      const meetingTypeText = String(meeting.meeting_type || "other");
+      const statusText = String(meeting.status || "completed");
+      const notesText = String(meeting.notes || "").trim() || "No meeting notes.";
+
+      const itemParagraphs = actionItems.length
+        ? actionItems.flatMap((it: any, idx: number) => {
+            const dueRaw = it?.due_date ? String(it.due_date).slice(0, 10) : null;
+            const dueText = dueRaw ? fmtDate(dueRaw) : "No due date";
+            const detailsText = String(it?.details || "").trim() || "No description.";
+            return [
+              new Paragraph({
+                spacing: { before: 120 },
+                children: [
+                  new TextRun({ text: `${idx + 1}. ${String(it?.title || "Untitled task")}`, bold: true }),
+                ],
+              }),
+              new Paragraph({ children: [new TextRun({ text: `Description: ${detailsText}` })] }),
+              new Paragraph({ children: [new TextRun({ text: `Due date: ${dueText}` })] }),
+              new Paragraph({ children: [new TextRun({ text: `Status: ${fmtItemStatus(it?.status)}` })] }),
+            ];
+          })
+        : [new Paragraph({ children: [new TextRun({ text: "No next steps have been assigned yet." })] })];
+
+      const doc = new DocxDocument({
+        sections: [
+          {
+            properties: {},
+            children: [
+              new Paragraph({
+                heading: HeadingLevel.HEADING_1,
+                children: [new TextRun({ text: heading })],
+              }),
+              new Paragraph({ children: [new TextRun({ text: `Date: ${meetingDateText}` })] }),
+              new Paragraph({ children: [new TextRun({ text: `Type: ${meetingTypeText}` })] }),
+              new Paragraph({ children: [new TextRun({ text: `Status: ${statusText}` })] }),
+              new Paragraph({ text: "" }),
+              new Paragraph({
+                heading: HeadingLevel.HEADING_2,
+                children: [new TextRun({ text: "Meeting Notes" })],
+              }),
+              new Paragraph({ children: [new TextRun({ text: notesText })] }),
+              new Paragraph({ text: "" }),
+              new Paragraph({
+                heading: HeadingLevel.HEADING_2,
+                children: [new TextRun({ text: "Next Steps" })],
+              }),
+              ...itemParagraphs,
+            ],
+          },
+        ],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const titlePart = safeExportSlug(String(meeting.title || "Meeting")) || "Meeting";
+      const datePart = exportDateStamp(meeting.meeting_date);
+      const prefix = mode === "checkInCalls" ? "Check-in-Call" : "Client-Meeting";
+      link.href = url;
+      link.download = `${prefix}-${titlePart}-${datePart}.docx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("DOCX export downloaded.");
+    } catch (error: any) {
+      toast.error(error?.message || "Unable to export DOCX. Please try again.");
+    } finally {
+      setIsExportingDocx(false);
+    }
+  };
+
+  const pageTitle = mode === "checkInCalls" ? "Check-in Calls" : "Client Meeting";
+
   return (
     <div className="p-6 space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl md:text-3xl font-semibold text-zinc-100 tracking-tight">Client Meeting</h1>
+          <h1 className="text-2xl md:text-3xl font-semibold text-zinc-100 tracking-tight">{pageTitle}</h1>
           <p className="text-sm text-zinc-400 mt-1">Manage meeting notes, client homework, and follow-up items.</p>
         </div>
         {!isClientReadOnly && (
@@ -304,6 +435,8 @@ export default function CoachingClientMeeting() {
           <div className="overflow-auto space-y-2 pr-1 max-h-[calc(72vh-130px)] xl:max-h-none xl:flex-1">
             {isMeetingsLoading ? (
               <div className="text-sm text-zinc-400 p-3">Loading meetings...</div>
+            ) : isMeetingsError ? (
+              <div className="text-sm text-red-300 p-3">Unable to load meetings. Please refresh or try again.</div>
             ) : filteredRows.length === 0 ? (
               <div className="text-sm text-zinc-400 p-3">No meetings found.</div>
             ) : (
@@ -376,39 +509,57 @@ export default function CoachingClientMeeting() {
                   )}
                 </div>
 
-                {!isClientReadOnly && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    {isCreating ? (
-                      <>
-                        <Button className="bg-emerald-500 hover:bg-emerald-400 text-black" disabled={!canSaveMeeting || createMutation.isPending} onClick={saveMeeting}>
-                          {createMutation.isPending ? "Creating..." : "Save Meeting"}
+                <div className="flex flex-wrap items-center gap-2">
+                  {!isCreating && selectedMeetingId ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="border-zinc-700 text-zinc-200">
+                          Export <ChevronDown className="w-3.5 h-3.5 ml-1" />
                         </Button>
-                        <Button variant="outline" className="border-zinc-700" onClick={() => setIsCreating(false)}>Cancel</Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button variant="outline" className="border-zinc-700" onClick={() => setEditMeta((v) => !v)}>
-                          <Pencil className="w-3.5 h-3.5 mr-1" /> {editMeta ? "Done" : "Edit Details"}
-                        </Button>
-                        <Button className="bg-emerald-500 hover:bg-emerald-400 text-black" disabled={!canSaveMeeting || !isMeetingDirty || updateMutation.isPending} onClick={saveMeeting}>
-                          {updateMutation.isPending ? "Saving..." : "Save Changes"}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="text-red-300 hover:text-red-200"
-                          disabled={deleteMutation.isPending}
-                          onClick={() => {
-                            if (!selectedMeetingId) return;
-                            if (!window.confirm("Delete this meeting? This cannot be undone.")) return;
-                            deleteMutation.mutate({ id: selectedMeetingId, tenantSlug });
-                          }}
-                        >
-                          <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                )}
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="bg-zinc-950 border-zinc-800 text-zinc-100">
+                        <DropdownMenuItem onClick={() => toast.info("Export coming soon.")}>Export as PDF</DropdownMenuItem>
+                        <DropdownMenuItem disabled={isExportingDocx} onClick={() => void handleExportDocx()}>
+                          {isExportingDocx ? "Exporting DOCX..." : "Export as DOCX"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
+
+                  {!isClientReadOnly && (
+                    <>
+                      {isCreating ? (
+                        <>
+                          <Button className="bg-emerald-500 hover:bg-emerald-400 text-black" disabled={!canSaveMeeting || createMutation.isPending} onClick={saveMeeting}>
+                            {createMutation.isPending ? "Creating..." : "Save Meeting"}
+                          </Button>
+                          <Button variant="outline" className="border-zinc-700" onClick={() => setIsCreating(false)}>Cancel</Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button variant="outline" className="border-zinc-700" onClick={() => setEditMeta((v) => !v)}>
+                            <Pencil className="w-3.5 h-3.5 mr-1" /> {editMeta ? "Done" : "Edit Details"}
+                          </Button>
+                          <Button className="bg-emerald-500 hover:bg-emerald-400 text-black" disabled={!canSaveMeeting || !isMeetingDirty || updateMutation.isPending} onClick={saveMeeting}>
+                            {updateMutation.isPending ? "Saving..." : "Save Changes"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            className="text-red-300 hover:text-red-200"
+                            disabled={deleteMutation.isPending}
+                            onClick={() => {
+                              if (!selectedMeetingId) return;
+                              if (!window.confirm("Delete this meeting? This cannot be undone.")) return;
+                              deleteMutation.mutate({ id: selectedMeetingId, tenantSlug, mode: meetingMode });
+                            }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Notes */}
@@ -513,7 +664,7 @@ export default function CoachingClientMeeting() {
                                       const nextStatus = v as "open" | "in_progress" | "completed";
                                       setItems((prev) => prev.map((row, i) => i === idx ? { ...row, status: nextStatus } : row));
                                       if (it.id) {
-                                        updateItemStatusMutation.mutate({ id: it.id, status: nextStatus, tenantSlug });
+                                        updateItemStatusMutation.mutate({ id: it.id, status: nextStatus, tenantSlug, mode: meetingMode });
                                       }
                                     }}
                                   >

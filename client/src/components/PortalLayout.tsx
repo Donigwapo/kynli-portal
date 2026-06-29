@@ -194,6 +194,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         if (isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
           return false;
         }
+        // Hide Coaching in accountant's regular (non View-as-Client) sidebar only.
+        if (user?.role === "accountant" && item.id === "coaching" && !impersonatingTenantSlug) {
+          return false;
+        }
         // Accountants access client portal via Admin/Clients -> View As Client,
         // so hide direct "Portal" nav entry in their normal sidebar only.
         // Keep it visible while impersonating (View As Client).

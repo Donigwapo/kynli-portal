@@ -3579,11 +3579,14 @@ export async function removeTenantMember(params: {
 }
 
 // ─── Client Meetings ──────────────────────────────────────────────────────────
+export type ClientMeetingMode = "client_meeting" | "check_in_call";
+
 export type ClientMeeting = {
   id: number;
   tenant_slug: string;
   title: string;
   meeting_date: string;
+  meeting_mode: ClientMeetingMode;
   meeting_type: string | null;
   notes: string | null;
   status: string;
@@ -3607,26 +3610,37 @@ export type ClientMeetingActionItem = {
   updated_at: string;
 };
 
-export async function listClientMeetings(tenantSlug: string): Promise<ClientMeeting[]> {
+export async function listClientMeetings(tenantSlug: string, meetingMode?: ClientMeetingMode): Promise<ClientMeeting[]> {
   const safeSlug = sanitizeTenantSlug(tenantSlug);
-  const { data, error } = await supabase
+  let query = supabase
     .from("client_meetings")
     .select("*")
-    .eq("tenant_slug", safeSlug)
+    .eq("tenant_slug", safeSlug);
+
+  if (meetingMode) {
+    query = query.eq("meeting_mode", meetingMode);
+  }
+
+  const { data, error } = await query
     .order("meeting_date", { ascending: false })
     .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return (data || []) as ClientMeeting[];
 }
 
-export async function getClientMeetingById(tenantSlug: string, meetingId: number): Promise<ClientMeeting | null> {
+export async function getClientMeetingById(tenantSlug: string, meetingId: number, meetingMode?: ClientMeetingMode): Promise<ClientMeeting | null> {
   const safeSlug = sanitizeTenantSlug(tenantSlug);
-  const { data, error } = await supabase
+  let query = supabase
     .from("client_meetings")
     .select("*")
     .eq("tenant_slug", safeSlug)
-    .eq("id", meetingId)
-    .maybeSingle();
+    .eq("id", meetingId);
+
+  if (meetingMode) {
+    query = query.eq("meeting_mode", meetingMode);
+  }
+
+  const { data, error } = await query.maybeSingle();
   if (error) throw new Error(error.message);
   return (data as ClientMeeting | null) ?? null;
 }
@@ -3646,6 +3660,7 @@ export async function listClientMeetingActionItems(tenantSlug: string, meetingId
 
 export async function insertClientMeeting(input: {
   tenant_slug: string;
+  meeting_mode?: ClientMeetingMode;
   title: string;
   meeting_date: string;
   meeting_type?: string | null;
@@ -3656,6 +3671,7 @@ export async function insertClientMeeting(input: {
 }): Promise<ClientMeeting> {
   const payload = {
     tenant_slug: sanitizeTenantSlug(input.tenant_slug),
+    meeting_mode: input.meeting_mode ?? "client_meeting",
     title: input.title,
     meeting_date: input.meeting_date,
     meeting_type: input.meeting_type ?? null,
@@ -3672,6 +3688,7 @@ export async function insertClientMeeting(input: {
 export async function updateClientMeeting(input: {
   tenant_slug: string;
   id: number;
+  meeting_mode?: ClientMeetingMode;
   title: string;
   meeting_date: string;
   meeting_type?: string | null;
@@ -3688,23 +3705,35 @@ export async function updateClientMeeting(input: {
     updated_by_user_id: input.updated_by_user_id ?? null,
     updated_at: new Date().toISOString(),
   };
-  const { data, error } = await supabase
+  let query = supabase
     .from("client_meetings")
     .update(payload)
     .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
-    .eq("id", input.id)
+    .eq("id", input.id);
+
+  if (input.meeting_mode) {
+    query = query.eq("meeting_mode", input.meeting_mode);
+  }
+
+  const { data, error } = await query
     .select("*")
     .single();
   if (error) throw new Error(error.message);
   return data as ClientMeeting;
 }
 
-export async function deleteClientMeeting(tenantSlug: string, meetingId: number): Promise<void> {
-  const { error } = await supabase
+export async function deleteClientMeeting(tenantSlug: string, meetingId: number, meetingMode?: ClientMeetingMode): Promise<void> {
+  let query = supabase
     .from("client_meetings")
     .delete()
     .eq("tenant_slug", sanitizeTenantSlug(tenantSlug))
     .eq("id", meetingId);
+
+  if (meetingMode) {
+    query = query.eq("meeting_mode", meetingMode);
+  }
+
+  const { error } = await query;
   if (error) throw new Error(error.message);
 }
 

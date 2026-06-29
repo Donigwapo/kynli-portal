@@ -141,6 +141,7 @@ import {
   listClientWorkspaceAccessByUserId,
   getClientWorkspaceAccessByUserAndTenant,
   upsertClientWorkspaceAccess,
+  type ClientMeetingMode,
 } from "./supabase";
 
 // ─── Invite redirect helpers ─────────────────────────────────────────────────
@@ -331,14 +332,18 @@ async function writeActivityLog(input: {
 const isInternalChatSlug = (slug?: string | null): boolean =>
   !!slug && sanitizeTenantSlug(slug) === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG);
 
-async function resolveChatTenantSlug(user: PortalUser, requestedSlug?: string): Promise<string> {
+async function resolveChatTenantSlug(
+  user: PortalUser,
+  requestedSlug?: string,
+  activeClientWorkspaceSlug?: string | null,
+): Promise<string> {
   if (isInternalChatSlug(requestedSlug)) {
     if (STAFF_PORTAL_ROLES.has(user.role) || user.role === "admin") {
       return INTERNAL_CHAT_TENANT_SLUG;
     }
     throw new TRPCError({ code: "FORBIDDEN", message: "Internal team chat is restricted." });
   }
-  return resolveTenantSlug(user, requestedSlug);
+  return resolveTenantSlug(user, requestedSlug, activeClientWorkspaceSlug);
 }
 
 async function getAssignedTenantSlugsForUser(user: PortalUser): Promise<string[]> {
@@ -428,6 +433,13 @@ const INTERNAL_NOTES_ALLOWED_ROLES = new Set<PortalUser["role"]>([
   "tax_manager",
   "accountant",
 ]);
+
+const MEETING_MODE_VALUES = ["client_meeting", "check_in_call"] as const;
+const meetingModeSchema = z.enum(MEETING_MODE_VALUES);
+
+function resolveMeetingMode(mode?: string | null): ClientMeetingMode {
+  return mode === "check_in_call" ? "check_in_call" : "client_meeting";
+}
 
 type ResolvedNotesWorkspace = {
   tenantSlug: string;
@@ -3782,11 +3794,12 @@ export const appRouter = router({
         return { success: true };
       }),
     meetingsList: protectedProcedure
-      .input(z.object({ tenantSlug: z.string().optional() }))
+      .input(z.object({ tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        const meetings = await listClientMeetings(slug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+        const meetings = await listClientMeetings(slug, mode);
         const withCounts = await Promise.all(meetings.map(async (m) => {
           const items = await listClientMeetingActionItems(slug, m.id);
           const openCount = items.filter((i) => i.status !== "completed").length;
@@ -3795,11 +3808,12 @@ export const appRouter = router({
         return withCounts;
       }),
     meetingsGet: protectedProcedure
-      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        const meeting = await getClientMeetingById(slug, input.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+        const meeting = await getClientMeetingById(slug, input.id, mode);
         if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
         const actionItems = await listClientMeetingActionItems(slug, input.id);
         return { meeting, actionItems };
@@ -3807,6 +3821,7 @@ export const appRouter = router({
     meetingsCreate: protectedProcedure
       .input(z.object({
         tenantSlug: z.string().optional(),
+        mode: meetingModeSchema.optional(),
         title: z.string().min(1),
         meetingDate: z.string().min(1),
         meetingType: z.enum(["quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"]).optional().nullable(),
@@ -3816,9 +3831,11 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create meetings." });
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
         const meeting = await insertClientMeeting({
           tenant_slug: slug,
+          meeting_mode: mode,
           title: input.title,
           meeting_date: input.meetingDate,
           meeting_type: input.meetingType ?? null,
@@ -3844,6 +3861,7 @@ export const appRouter = router({
       .input(z.object({
         id: z.number(),
         tenantSlug: z.string().optional(),
+        mode: meetingModeSchema.optional(),
         title: z.string().min(1),
         meetingDate: z.string().min(1),
         meetingType: z.enum(["quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"]).optional().nullable(),
@@ -3853,10 +3871,12 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit meetings." });
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
         const meeting = await updateClientMeeting({
           tenant_slug: slug,
           id: input.id,
+          meeting_mode: mode,
           title: input.title,
           meeting_date: input.meetingDate,
           meeting_type: input.meetingType ?? null,
@@ -3878,14 +3898,15 @@ export const appRouter = router({
         return { success: true, meeting };
       }),
     meetingsDelete: protectedProcedure
-      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete meetings." });
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        const existing = await getClientMeetingById(slug, input.id);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+        const existing = await getClientMeetingById(slug, input.id, mode);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
-        await deleteClientMeeting(slug, input.id);
+        await deleteClientMeeting(slug, input.id, mode);
         await writeActivityLog({
           req: ctx.req,
           actor: ctx.user,
@@ -3903,6 +3924,7 @@ export const appRouter = router({
       .input(z.object({
         meetingId: z.number(),
         tenantSlug: z.string().optional(),
+        mode: meetingModeSchema.optional(),
         items: z.array(z.object({
           title: z.string().min(1),
           details: z.string().optional().nullable(),
@@ -3915,8 +3937,9 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit action items." });
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        const meeting = await getClientMeetingById(slug, input.meetingId);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+        const meeting = await getClientMeetingById(slug, input.meetingId, mode);
         if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
         const existingItems = await listClientMeetingActionItems(slug, input.meetingId);
         const rows = await replaceClientMeetingActionItems({
@@ -3948,10 +3971,29 @@ export const appRouter = router({
         id: z.number(),
         status: z.enum(["open", "in_progress", "completed"]),
         tenantSlug: z.string().optional(),
+        mode: meetingModeSchema.optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+        const actionItemRow = await supabase
+          .from("client_meeting_action_items")
+          .select("id, meeting_id")
+          .eq("tenant_slug", slug)
+          .eq("id", input.id)
+          .maybeSingle();
+        if (actionItemRow.error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: actionItemRow.error.message });
+        }
+        const meetingId = Number((actionItemRow.data as any)?.meeting_id ?? 0) || 0;
+        if (!meetingId) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
+        }
+        const meeting = await getClientMeetingById(slug, meetingId, mode);
+        if (!meeting) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
+        }
         const updated = await updateClientMeetingActionItemStatus({ tenant_slug: slug, id: input.id, status: input.status });
         await writeActivityLog({
           req: ctx.req,
