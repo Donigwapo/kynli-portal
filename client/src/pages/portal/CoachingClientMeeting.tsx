@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import jsPDF from "jspdf";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
@@ -108,6 +109,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
   const [editNotes, setEditNotes] = useState(false);
   const [editItems, setEditItems] = useState(false);
   const [isExportingDocx, setIsExportingDocx] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const detailQuery = trpc.coaching.meetingsGet.useQuery(
     { id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode },
@@ -381,6 +383,89 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     }
   };
 
+  const handleExportPdf = async () => {
+    if (!selectedMeetingId || isCreating) return;
+    const detail = detailQuery.data;
+    const meeting = detail?.meeting as any;
+    const actionItems = (detail?.actionItems as Array<any>) || [];
+    if (!meeting) {
+      toast.error("Meeting details are still loading. Please try again.");
+      return;
+    }
+
+    setIsExportingPdf(true);
+    try {
+      const kindLabel = mode === "checkInCalls" ? "Check-in Call" : "Client Meeting";
+      const titleText = String(meeting.title || "Untitled");
+      const meetingDateText = fmtDate(meeting.meeting_date);
+      const meetingTypeText = String(meeting.meeting_type || "other");
+      const statusText = String(meeting.status || "completed");
+      const notesText = String(meeting.notes || "").trim() || "No meeting notes.";
+
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const margin = 48;
+      const maxWidth = pageWidth - margin * 2;
+      const lineHeight = 16;
+      let y = 56;
+
+      const ensureSpace = (needed = lineHeight) => {
+        const pageHeight = doc.internal.pageSize.getHeight();
+        if (y + needed > pageHeight - 48) {
+          doc.addPage();
+          y = 56;
+        }
+      };
+
+      const writeWrapped = (text: string, opts?: { fontSize?: number; bold?: boolean; spacingAfter?: number }) => {
+        const fontSize = opts?.fontSize ?? 11;
+        const bold = !!opts?.bold;
+        doc.setFont("helvetica", bold ? "bold" : "normal");
+        doc.setFontSize(fontSize);
+        const lines = doc.splitTextToSize(text, maxWidth) as string[];
+        for (const line of lines) {
+          ensureSpace(lineHeight);
+          doc.text(line, margin, y);
+          y += lineHeight;
+        }
+        y += opts?.spacingAfter ?? 4;
+      };
+
+      writeWrapped(`${kindLabel}: ${titleText}`, { fontSize: 16, bold: true, spacingAfter: 8 });
+      writeWrapped(`Date: ${meetingDateText}`);
+      writeWrapped(`Type: ${meetingTypeText}`);
+      writeWrapped(`Status: ${statusText}`, { spacingAfter: 10 });
+
+      writeWrapped("Meeting Notes", { fontSize: 13, bold: true, spacingAfter: 4 });
+      writeWrapped(notesText, { spacingAfter: 10 });
+
+      writeWrapped("Next Steps", { fontSize: 13, bold: true, spacingAfter: 4 });
+      if (!actionItems.length) {
+        writeWrapped("No next steps have been assigned yet.");
+      } else {
+        actionItems.forEach((it: any, idx: number) => {
+          const dueRaw = it?.due_date ? String(it.due_date).slice(0, 10) : null;
+          const dueText = dueRaw ? fmtDate(dueRaw) : "No due date";
+          const detailsText = String(it?.details || "").trim() || "No description.";
+          writeWrapped(`${idx + 1}. ${String(it?.title || "Untitled task")}`, { bold: true, spacingAfter: 2 });
+          writeWrapped(`Description: ${detailsText}`, { spacingAfter: 2 });
+          writeWrapped(`Due date: ${dueText}`, { spacingAfter: 2 });
+          writeWrapped(`Status: ${fmtItemStatus(it?.status)}`, { spacingAfter: 8 });
+        });
+      }
+
+      const titlePart = safeExportSlug(titleText) || "Meeting";
+      const datePart = exportDateStamp(meeting.meeting_date);
+      const prefix = mode === "checkInCalls" ? "Check-in-Call" : "Client-Meeting";
+      doc.save(`${prefix}-${titlePart}-${datePart}.pdf`);
+      toast.success("PDF export downloaded.");
+    } catch (error: any) {
+      toast.error(error?.message || "Unable to export PDF. Please try again.");
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   const pageTitle = mode === "checkInCalls" ? "Check-in Calls" : "Client Meeting";
 
   return (
@@ -518,7 +603,9 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="bg-zinc-950 border-zinc-800 text-zinc-100">
-                        <DropdownMenuItem onClick={() => toast.info("Export coming soon.")}>Export as PDF</DropdownMenuItem>
+                        <DropdownMenuItem disabled={isExportingPdf} onClick={() => void handleExportPdf()}>
+                          {isExportingPdf ? "Exporting PDF..." : "Export as PDF"}
+                        </DropdownMenuItem>
                         <DropdownMenuItem disabled={isExportingDocx} onClick={() => void handleExportDocx()}>
                           {isExportingDocx ? "Exporting DOCX..." : "Export as DOCX"}
                         </DropdownMenuItem>
