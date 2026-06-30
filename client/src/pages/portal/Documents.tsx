@@ -123,6 +123,7 @@ function resolveDefaultTemplateTypeForPath(path?: string | null): string {
     "Tax Returns": "Tax Returns (year folders only)",
     "Financials": "Financials (with months)",
     "Financials (Internal)": "Financials (with months)",
+    "Financials For Client": "Financials (with months)",
   };
 
   const mapped = byRoot[root];
@@ -213,7 +214,8 @@ function openButtonLabel(mimeType?: string | null, fileName?: string | null, dis
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
-];
+] as const;
+const MONTH_INDEX: Map<string, number> = new Map(MONTH_NAMES.map((m, i) => [m.toLowerCase(), i]));
 
 function formatBytes(bytes: number | null | undefined): string {
   if (!bytes) return "0 B";
@@ -939,8 +941,19 @@ export default function Documents() {
 
 
   const filteredChildFolders = useMemo(() => {
-    if (!normalizedSearch) return childFolders;
-    return childFolders.filter((f) => String(f.name ?? "").toLowerCase().includes(normalizedSearch));
+    const sorted = [...childFolders].sort((a, b) => {
+      const ai = MONTH_INDEX.get(String(a.name ?? "").toLowerCase());
+      const bi = MONTH_INDEX.get(String(b.name ?? "").toLowerCase());
+      const aIsMonth = ai != null;
+      const bIsMonth = bi != null;
+      if (aIsMonth && bIsMonth) return (ai as number) - (bi as number);
+      if (aIsMonth && !bIsMonth) return -1;
+      if (!aIsMonth && bIsMonth) return 1;
+      return String(a.name ?? "").localeCompare(String(b.name ?? ""), undefined, { sensitivity: "base", numeric: true });
+    });
+
+    if (!normalizedSearch) return sorted;
+    return sorted.filter((f) => String(f.name ?? "").toLowerCase().includes(normalizedSearch));
   }, [childFolders, normalizedSearch]);
 
   const docsForFilter = useMemo(() => {
@@ -1393,10 +1406,10 @@ export default function Documents() {
       const path = String(f.full_path || "");
       if (path.startsWith(canonicalPrefix)) {
         const seg = path.slice(canonicalPrefix.length).split("/")[0] || "";
-        if (MONTH_NAMES.includes(seg)) set.add(seg);
+        if (MONTH_INDEX.has(String(seg).toLowerCase())) set.add(seg);
       } else if (path.startsWith(legacyPrefix)) {
         const seg = path.slice(legacyPrefix.length).split("/")[0] || "";
-        if (MONTH_NAMES.includes(seg)) set.add(seg);
+        if (MONTH_INDEX.has(String(seg).toLowerCase())) set.add(seg);
       }
     }
 
@@ -1405,7 +1418,7 @@ export default function Documents() {
       let seg = "";
       if (path.startsWith(canonicalPrefix)) seg = path.slice(canonicalPrefix.length).split("/")[0] || "";
       else if (path.startsWith(legacyPrefix)) seg = path.slice(legacyPrefix.length).split("/")[0] || "";
-      if (MONTH_NAMES.includes(seg)) set.add(seg);
+      if (MONTH_INDEX.has(String(seg).toLowerCase())) set.add(seg);
     }
 
     if (!set.size) return MONTH_NAMES;
@@ -1650,10 +1663,12 @@ export default function Documents() {
   const canUseFolderTemplates =
     templateContextPath === "Bank Statements" ||
     templateContextPath === "Financials (Internal)" ||
+    templateContextPath === "Financials For Client" ||
     templateContextPath === "Payroll";
   const contextTemplateType = useMemo(() => {
     if (templateContextPath === "Bank Statements") return "Bank Statements (with months)";
     if (templateContextPath === "Financials (Internal)") return "Financials (with months)";
+    if (templateContextPath === "Financials For Client") return "Financials (with months)";
     if (templateContextPath === "Payroll") return "Payroll (with years)";
     return null;
   }, [templateContextPath]);
@@ -1668,7 +1683,9 @@ export default function Documents() {
     }
     const years = Array.from({ length: to - from + 1 }, (_, i) => from + i);
     const monthNames = templateCreateMonths && tpl.supportsMonths
-      ? (tpl.key === "Payroll (with years)" ? Array.from(PAYROLL_QUARTER_FOLDERS) : MONTH_NAMES)
+      ? (tpl.key === "Payroll (with years)"
+          ? Array.from(PAYROLL_QUARTER_FOLDERS)
+          : Array.from(MONTH_NAMES))
       : [];
     const includeYearExtras =
       tpl.key === "Bank Statements (with months)" ||
