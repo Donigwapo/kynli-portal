@@ -119,6 +119,49 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
 
+  useEffect(() => {
+    if (!user) {
+      setImpersonatingTenantSlug(null);
+      return;
+    }
+
+    const canUseViewAs = ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+    if (!canUseViewAs) return;
+
+    let canceled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/view-as-client/current", {
+          method: "GET",
+          credentials: "include",
+        });
+
+        if (!res.ok) {
+          if (!canceled && (res.status === 401 || res.status === 403)) {
+            setImpersonatingTenantSlug(null);
+          }
+          return;
+        }
+
+        const payload = await res.json().catch(() => ({} as any));
+        const slug = typeof payload?.tenantSlug === "string" && payload.tenantSlug.trim()
+          ? payload.tenantSlug.trim()
+          : null;
+
+        if (canceled) return;
+        setImpersonatingTenantSlug(slug);
+        if (slug) setEffectiveTier("cfo");
+      } catch {
+        // no-op; keep current local context on transient errors
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [user?.id, user?.role, setEffectiveTier, setImpersonatingTenantSlug]);
+
   // Determine the active tier: impersonated tenant uses effectiveTier set by admin;
   // client users use their own tenant tier; staff portfolio users get full client nav visibility.
   const activeTier: PackageTier = isAdmin

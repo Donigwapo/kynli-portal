@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
 import {
   Send,
@@ -20,6 +21,8 @@ import {
   Search,
   MessageCircleReply,
   ChevronLeft,
+  ChevronUp,
+  Minus,
   Loader2,
   CheckCircle2,
   AlertTriangle,
@@ -158,12 +161,14 @@ type MentionCandidate = {
   source: "accountant" | "internal" | "guest" | "client";
   initials?: string;
   assignmentId?: number | null;
+  isOnline?: boolean;
 };
 
 const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 
 function roleLabel(raw?: string | null) {
   if (!raw) return "Accountant";
+  if (raw === "client") return "Owner";
   return raw
     .replace(/_/g, " ")
     .replace(/\b\w/g, (m) => m.toUpperCase());
@@ -878,7 +883,7 @@ export default function Chat() {
   const { data: serverDmConversations = [] } = trpc.chat.dmConversations.useQuery(
     { tenantSlug: impersonatingTenantSlug ?? undefined },
     {
-      enabled: !!user && !isWorkspaceChatMode,
+      enabled: !!user,
       staleTime: 10_000,
       refetchInterval: 20_000,
     },
@@ -1203,6 +1208,7 @@ export default function Chat() {
   const activeAssignmentId = activeConversation?.assignmentId;
   const activeDmKey = activeConversation?.dmKey;
   const isDmConversation = !!activeDmKey || !!selectedConversationKey?.startsWith("dm:");
+
   console.log("[DM_ACTIVE_KEY]", {
     selectedConversationKey,
     activeDmKey: activeDmKey ?? null,
@@ -1220,6 +1226,22 @@ export default function Chat() {
   const [pendingMessages, setPendingMessages] = useState<Msg[]>([]);
   const [replyTarget, setReplyTarget] = useState<Msg | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [selectedWorkspaceMemberId, setSelectedWorkspaceMemberId] = useState<number | null>(null);
+  const [floatingDm, setFloatingDm] = useState<Conversation | null>(null);
+  const [floatingMember, setFloatingMember] = useState<MentionCandidate | null>(null);
+  const [isFloatingDmMinimized, setIsFloatingDmMinimized] = useState(false);
+  const [floatingReplyTarget, setFloatingReplyTarget] = useState<Msg | null>(null);
+  const [floatingPendingMessages, setFloatingPendingMessages] = useState<Msg[]>([]);
+  const [floatingSending, setFloatingSending] = useState(false);
+
+  const isFloatingDmOpen = !!floatingDm;
+  const resolvedFloatingDm = useMemo(() => {
+    if (!floatingDm) return null;
+    return floatingDm;
+  }, [floatingDm]);
+  const floatingDmTenantSlug = resolvedFloatingDm?.tenantSlug;
+  const floatingDmAssignmentId = resolvedFloatingDm?.assignmentId;
+  const floatingDmKey = resolvedFloatingDm?.dmKey;
 
   const { data: mentionCandidates = [] } = trpc.chat.mentionCandidates.useQuery(
     { tenantSlug: activeTenantSlug, assignmentId: activeAssignmentId, q: undefined },
@@ -1486,6 +1508,45 @@ export default function Chat() {
 
   const resolveDmMutation = trpc.chat.resolveDm.useMutation();
 
+  const openDirectConversation = useCallback(async (member: MentionCandidate) => {
+    const peerUserId = Number(member.id);
+    const me = Number(user?.id ?? 0);
+    if (!Number.isFinite(peerUserId) || peerUserId <= 0) return;
+    if (Number.isFinite(me) && me > 0 && peerUserId === me) return;
+
+    const dmTenantSlug = impersonatingTenantSlug || activeTenantSlug;
+    try {
+      const resolved = await resolveDmMutation.mutateAsync({ tenantSlug: dmTenantSlug, peerUserId });
+      const dmKey = String((resolved as any).dmKey || "");
+      if (!dmKey) throw new Error("Unable to open direct conversation.");
+      const laneKey = `dm:${dmKey}`;
+      const displayName = String(member.displayName || member.email || `User ${member.id}`);
+
+      const lane = {
+        key: laneKey,
+        title: displayName,
+        subtitle: "Direct message",
+        tenantSlug: dmTenantSlug || activeTenantSlug,
+        dmKey,
+        groupLabel: "DIRECT MESSAGES",
+      } as Conversation;
+
+      setConversationsOverride((prev) => {
+        const has = prev.some((c) => c.key === laneKey);
+        if (has) return prev;
+        return [...prev, lane];
+      });
+
+      setFloatingDm(lane);
+      setFloatingMember(member);
+      setIsFloatingDmMinimized(false);
+      setSelectedWorkspaceMemberId(null);
+      await utils.chat.dmConversations.invalidate();
+    } catch (e: any) {
+      toast.error(e?.message || "Unable to open direct conversation");
+    }
+  }, [user?.id, impersonatingTenantSlug, activeTenantSlug, resolveDmMutation, utils.chat.dmConversations]);
+
   const fileToBase64 = useCallback(async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
@@ -1594,6 +1655,162 @@ export default function Chat() {
     }
   }, [activeTenantSlug, activeAssignmentId, activeDmKey, chatVisibilityScope, viewAsClient, sendFileMutation, fileToBase64, user, utils.chat.list, replyTarget]);
 
+  const floatingListPayload = {
+    tenantSlug: floatingDmTenantSlug,
+    assignmentId: floatingDmAssignmentId,
+    dmKey: floatingDmKey,
+    visibilityScope: chatVisibilityScope,
+    viewAsClient,
+    limit: 200,
+  };
+
+  const { data: rawFloatingMessages = [] } = trpc.chat.list.useQuery(
+    floatingListPayload,
+    {
+      enabled: !!floatingDmKey && !!floatingDmTenantSlug && !isFloatingDmMinimized,
+      refetchInterval: 3000,
+      refetchIntervalInBackground: false,
+    },
+  );
+
+  const floatingMessages = useMemo(() => {
+    const latest = rawFloatingMessages.map(normalizeMsg);
+    if (floatingPendingMessages.length === 0) return latest;
+    const ids = new Set(latest.map((m) => m.id));
+    const visiblePending = floatingPendingMessages.filter((m) => !ids.has(m.id));
+    return [...latest, ...visiblePending];
+  }, [rawFloatingMessages, floatingPendingMessages]);
+
+  const floatingMemberResolved = floatingMember;
+
+  const markFloatingReadMutation = trpc.chat.markRead.useMutation();
+  const floatingLastMarkedMessageIdRef = useRef<number | null>(null);
+  const markFloatingReadInFlightRef = useRef(false);
+
+  const markFloatingLaneAsRead = useCallback(() => {
+    if (!floatingDmTenantSlug || !floatingDmKey) return;
+    if (!floatingMessages.length) return;
+    const latest = floatingMessages[floatingMessages.length - 1];
+    if (!latest?.id) return;
+    if (floatingLastMarkedMessageIdRef.current === latest.id) return;
+    if (markFloatingReadInFlightRef.current) return;
+
+    markFloatingReadInFlightRef.current = true;
+    void markFloatingReadMutation.mutateAsync({
+      tenantSlug: floatingDmTenantSlug,
+      dmKey: floatingDmKey,
+      visibilityScope: chatVisibilityScope,
+      viewAsClient,
+      lastReadMessageId: latest.id,
+    }).then(() => {
+      floatingLastMarkedMessageIdRef.current = latest.id;
+      void utils.chat.unreadSummary.invalidate();
+    }).finally(() => {
+      markFloatingReadInFlightRef.current = false;
+    });
+  }, [floatingDmTenantSlug, floatingDmKey, floatingMessages, markFloatingReadMutation, chatVisibilityScope, viewAsClient, utils.chat.unreadSummary]);
+
+  useEffect(() => {
+    markFloatingLaneAsRead();
+  }, [floatingMessages.length, markFloatingLaneAsRead]);
+
+  const handleFloatingSend = useCallback(async (body: string) => {
+    if (!floatingDmTenantSlug || !floatingDmKey) return;
+    setFloatingSending(true);
+    try {
+      await sendMutation.mutateAsync({
+        tenantSlug: floatingDmTenantSlug,
+        dmKey: floatingDmKey,
+        visibilityScope: chatVisibilityScope,
+        viewAsClient,
+        body,
+        replyToMessageId: floatingReplyTarget?.id,
+        replyToSenderName: floatingReplyTarget?.senderName,
+        replyToMessagePreview: floatingReplyTarget
+          ? (floatingReplyTarget.body?.slice(0, 140) || (floatingReplyTarget.fileName ? `📎 ${floatingReplyTarget.fileName}` : "Attachment"))
+          : undefined,
+      });
+      setFloatingReplyTarget(null);
+    } finally {
+      setFloatingSending(false);
+    }
+  }, [floatingDmTenantSlug, floatingDmKey, chatVisibilityScope, viewAsClient, sendMutation, floatingReplyTarget]);
+
+  const handleFloatingSendFiles = useCallback(async (
+    files: File[],
+    caption?: string,
+    onProgress?: (current: number, total: number) => void,
+  ) => {
+    if (!floatingDmTenantSlug || !floatingDmKey) return { uploaded: 0, failed: files.length, results: [] as Array<{ fileName: string; success: boolean; error?: string }> };
+    setFloatingSending(true);
+    const results: Array<{ fileName: string; success: boolean; error?: string }> = [];
+    let uploaded = 0;
+    let failed = 0;
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        onProgress?.(i + 1, files.length);
+
+        const tempId = -(Date.now() + i + 1000000);
+        const pendingBubble: Msg = {
+          id: tempId,
+          senderName: user?.name ?? user?.email ?? "You",
+          senderRole: user?.role === "admin" ? "admin" : "client",
+          senderUserId: (user as any)?.id ?? null,
+          body: i === 0 ? (caption ?? null) : null,
+          fileUrl: null,
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type || "application/octet-stream",
+          replyCount: 0,
+          threadId: null,
+          createdAt: new Date(),
+          visibilityScope: chatVisibilityScope,
+          localStatus: "sending",
+        };
+        setFloatingPendingMessages((prev) => [...prev, pendingBubble]);
+
+        try {
+          const base64 = await fileToBase64(file);
+          await sendFileMutation.mutateAsync({
+            tenantSlug: floatingDmTenantSlug,
+            dmKey: floatingDmKey,
+            visibilityScope: chatVisibilityScope,
+            viewAsClient,
+            body: i === 0 ? caption : undefined,
+            fileBase64: base64,
+            fileName: file.name,
+            mimeType: file.type || "application/octet-stream",
+            fileSize: file.size,
+            replyToMessageId: i === 0 ? (floatingReplyTarget?.id ?? undefined) : undefined,
+            replyToSenderName: i === 0 ? (floatingReplyTarget?.senderName ?? undefined) : undefined,
+            replyToMessagePreview: i === 0
+              ? (floatingReplyTarget ? (floatingReplyTarget.body?.slice(0, 140) || (floatingReplyTarget.fileName ? `📎 ${floatingReplyTarget.fileName}` : "Attachment")) : undefined)
+              : undefined,
+          });
+
+          uploaded += 1;
+          results.push({ fileName: file.name, success: true });
+          setFloatingPendingMessages((prev) => prev.filter((m) => m.id !== tempId));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Upload failed";
+          failed += 1;
+          results.push({ fileName: file.name, success: false, error: message });
+          setFloatingPendingMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, localStatus: "failed", localError: message } : m)));
+          toast.error(`Failed: ${file.name} — ${message}`);
+        }
+      }
+
+      await utils.chat.list.invalidate();
+      setFloatingPendingMessages((prev) => prev.filter((m) => m.localStatus === "failed"));
+      if (uploaded > 0) setFloatingReplyTarget(null);
+      return { uploaded, failed, results };
+    } finally {
+      setFloatingSending(false);
+    }
+  }, [floatingDmTenantSlug, floatingDmKey, chatVisibilityScope, viewAsClient, sendFileMutation, fileToBase64, user, utils.chat.list, floatingReplyTarget]);
+
   type DayGroup = { key: string; label: string; msgs: Msg[] };
   const dayGroups = useMemo<DayGroup[]>(() => {
     const groups: DayGroup[] = [];
@@ -1663,6 +1880,12 @@ export default function Chat() {
     }
     return rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [isWorkspaceChatMode, mentionCandidates]);
+
+  useEffect(() => {
+    if (selectedWorkspaceMemberId == null) return;
+    const exists = workspaceMembers.some((m) => Number(m.id) === Number(selectedWorkspaceMemberId));
+    if (!exists) setSelectedWorkspaceMemberId(null);
+  }, [workspaceMembers, selectedWorkspaceMemberId]);
 
   const dmHandle = useMemo(() => {
     const base = (activeConversation?.title || "").trim();
@@ -1851,18 +2074,54 @@ export default function Chat() {
             ) : (
               workspaceMembers.map((m) => {
                 const isMe = String(m.id) === String(user?.id);
+                const isOpen = Number(selectedWorkspaceMemberId) === Number(m.id);
                 return (
-                  <div key={`wm-${m.source}-${m.id}`} className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
-                    <div className="flex items-start gap-2">
-                      <div className="w-7 h-7 rounded-full border border-zinc-700 bg-zinc-800 text-[10px] font-semibold text-zinc-200 flex items-center justify-center">
-                        {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
+                  <Popover key={`wm-${m.source}-${m.id}`} open={isOpen} onOpenChange={(open) => setSelectedWorkspaceMemberId(open ? Number(m.id) : null)}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="w-full text-left rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 hover:border-zinc-700 hover:bg-zinc-900/80 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className="w-7 h-7 rounded-full border border-zinc-700 bg-zinc-800 text-[10px] font-semibold text-zinc-200 flex items-center justify-center">
+                            {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
+                            <p className="text-[11px] text-zinc-400">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
+                          </div>
+                          {m.isOnline ? (
+                            <span
+                              className="mt-1 ml-auto inline-block h-[10px] w-[10px] rounded-full bg-[#22C55E]"
+                              style={{ boxShadow: "0 0 8px rgba(34, 197, 94, 0.65), 0 0 2px rgba(34, 197, 94, 0.95)" }}
+                              aria-label="Online"
+                              title="Online"
+                            />
+                          ) : null}
+                        </div>
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-64 border-zinc-800 bg-[#121316] text-zinc-100">
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
+                          <p className="text-xs text-zinc-400 mt-0.5">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="w-full"
+                          disabled={isMe || resolveDmMutation.isPending}
+                          onClick={() => {
+                            if (isMe) return;
+                            void openDirectConversation(m);
+                          }}
+                        >
+                          {resolveDmMutation.isPending ? "Opening..." : "Message"}
+                        </Button>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
-                        <p className="text-[11px] text-zinc-400">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
-                      </div>
-                    </div>
-                  </div>
+                    </PopoverContent>
+                  </Popover>
                 );
               })
             )}
@@ -1871,6 +2130,99 @@ export default function Chat() {
       )}
     </div>
   );
+
+  const floatingDmWindow = isWorkspaceChatMode && resolvedFloatingDm ? (
+    <div className="fixed bottom-4 right-4 z-[70] w-[360px] max-w-[calc(100vw-2rem)]">
+      <div className="rounded-xl border border-zinc-700/80 bg-[#111215] shadow-[0_14px_40px_rgba(0,0,0,0.55)] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-zinc-800 bg-zinc-950/80 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full border border-zinc-700 bg-zinc-800 text-[11px] font-semibold text-zinc-100 flex items-center justify-center">
+            {(floatingMemberResolved?.initials || resolvedFloatingDm.title?.charAt(0) || "?").toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-zinc-100 truncate">{resolvedFloatingDm.title}</p>
+            <p className="text-[11px] text-zinc-400 truncate flex items-center gap-1.5">
+              {floatingMemberResolved?.role ? roleLabel(floatingMemberResolved.role) : "Member"}
+              {floatingMemberResolved?.isOnline ? (
+                <span
+                  className="inline-block h-[10px] w-[10px] rounded-full bg-[#22C55E]"
+                  style={{ boxShadow: "0 0 8px rgba(34, 197, 94, 0.65), 0 0 2px rgba(34, 197, 94, 0.95)" }}
+                  aria-label="Online"
+                  title="Online"
+                />
+              ) : null}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70"
+            onClick={() => setIsFloatingDmMinimized((v) => !v)}
+            title={isFloatingDmMinimized ? "Expand" : "Minimize"}
+          >
+            {isFloatingDmMinimized ? <ChevronUp className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70"
+            onClick={() => {
+              setFloatingDm(null);
+              setFloatingMember(null);
+              setFloatingReplyTarget(null);
+              setFloatingPendingMessages([]);
+              setIsFloatingDmMinimized(false);
+            }}
+            title="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {isFloatingDmMinimized ? null : (
+          <>
+            <div className="h-[360px] overflow-y-auto px-3 py-3 space-y-1 bg-zinc-950/30">
+              {floatingMessages.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-center px-4">
+                  <p className="text-xs text-zinc-400">This is the beginning of your direct conversation.</p>
+                </div>
+              ) : (
+                floatingMessages.map((msg) => {
+                  const isMine = msg.senderUserId === currentUserId;
+                  const canDelete = isMine || isAdmin;
+                  return (
+                    <MessageBubble
+                      key={`float-${msg.id}`}
+                      msg={msg}
+                      isMine={isMine}
+                      canDelete={canDelete}
+                      onReply={(m) => setFloatingReplyTarget(m)}
+                      onOpenThread={undefined}
+                      mentionLabels={mentionLabels}
+                      onDelete={(id) => {
+                        if (!floatingDmTenantSlug) return;
+                        if (confirm("Delete this message?")) {
+                          deleteMutation.mutate({ tenantSlug: floatingDmTenantSlug, dmKey: floatingDmKey, id });
+                        }
+                      }}
+                    />
+                  );
+                })
+              )}
+            </div>
+            <div className="border-t border-zinc-800 px-3 pb-3 pt-2 bg-zinc-950/70">
+              <ComposeBar
+                onSend={handleFloatingSend}
+                onSendFiles={handleFloatingSendFiles}
+                sending={floatingSending}
+                replyTo={floatingReplyTarget ? { senderName: floatingReplyTarget.senderName, preview: floatingReplyTarget.body?.slice(0, 160) || (floatingReplyTarget.fileName ? `📎 ${floatingReplyTarget.fileName}` : "Attachment") } : null}
+                onCancelReply={() => setFloatingReplyTarget(null)}
+                mentionCandidates={mentionCandidates as MentionCandidate[]}
+                mentionAssignmentId={null}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  ) : null;
 
   const conversationSidebar = (
     <aside className="border-r border-border bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
@@ -2085,16 +2437,22 @@ export default function Chat() {
 
   if (!hasConversationSidebar) {
     return (
-      <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden bg-background">
-        {mainConversationPanel}
-      </div>
+      <>
+        <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden bg-background">
+          {mainConversationPanel}
+        </div>
+        {floatingDmWindow}
+      </>
     );
   }
 
   return (
-    <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] min-h-0 overflow-hidden grid grid-cols-[320px_minmax(0,1fr)] bg-background">
-      {conversationSidebar}
-      {mainConversationPanel}
-    </div>
+    <>
+      <div className="h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] min-h-0 overflow-hidden grid grid-cols-[320px_minmax(0,1fr)] bg-background">
+        {conversationSidebar}
+        {mainConversationPanel}
+      </div>
+      {floatingDmWindow}
+    </>
   );
 }

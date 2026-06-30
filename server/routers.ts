@@ -642,6 +642,34 @@ async function canUsePeerForDm(currentUser: PortalUser, peerUserId: number, tena
   return ["admin", "accounting_manager", "tax_manager", "accountant"].includes(role);
 }
 
+async function getRecentlyOnlineUserIds(userIds: number[]): Promise<Set<number>> {
+  const uniqueIds = Array.from(new Set(userIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  if (!uniqueIds.length) return new Set<number>();
+
+  const thresholdIso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("portal_push_tokens")
+    .select("portal_user_id")
+    .in("portal_user_id", uniqueIds)
+    .eq("is_active", true)
+    .gte("last_seen_at", thresholdIso);
+
+  if (error) {
+    const message = String((error as any)?.message || "");
+    if (message.includes("code=42P01") || /relation .* does not exist/i.test(message)) {
+      return new Set<number>();
+    }
+    console.warn("[chat.presence] failed to load online users", { message });
+    return new Set<number>();
+  }
+
+  return new Set(
+    ((data || []) as Array<{ portal_user_id: number | null }>)
+      .map((row) => Number(row.portal_user_id ?? 0))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+}
+
 type MentionRecipient = {
   id: number;
   displayName: string;
@@ -4793,14 +4821,19 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           }
         }
 
+        const onlineSet = await getRecentlyOnlineUserIds(Array.from(userMap.keys()));
+
         const query = input.q?.trim().toLowerCase() ?? "";
 
         const candidates = Array.from(userMap.values())
           .map((u) => {
             const lowerRole = String(u.role || "").toLowerCase();
+            const tenantSource = String(u.source || "").toLowerCase();
             const type = ["accountant", "tax_manager", "accounting_manager", "admin"].includes(lowerRole)
               ? (lowerRole === "admin" ? "internal" : "accountant")
-              : (lowerRole === "client" ? "guest" : "internal");
+              : (lowerRole === "client"
+                ? (tenantSource === "workspace_owner" ? "client" : "guest")
+                : "internal");
 
             return {
               id: u.id,
@@ -4810,6 +4843,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
               source: type,
               initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
               assignmentId: laneByStaff.get(u.id) ?? null,
+              isOnline: onlineSet.has(Number(u.id)),
             };
           })
           .filter((c) => {
@@ -5050,13 +5084,18 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           if (!laneByStaff.has(Number(a.staff_id))) laneByStaff.set(Number(a.staff_id), Number(a.id));
         }
 
+        const onlineSet = await getRecentlyOnlineUserIds(Array.from(userMap.keys()));
+
         const query = input.q?.trim().toLowerCase() ?? "";
         return Array.from(userMap.values())
           .map((u) => {
             const lowerRole = String(u.role || "").toLowerCase();
+            const tenantSource = String(u.source || "").toLowerCase();
             const type = ["accountant", "tax_manager", "accounting_manager", "admin"].includes(lowerRole)
               ? (lowerRole === "admin" ? "internal" : "accountant")
-              : (lowerRole === "client" ? "guest" : "internal");
+              : (lowerRole === "client"
+                ? (tenantSource === "workspace_owner" ? "client" : "guest")
+                : "internal");
             return {
               id: u.id,
               displayName: (u.name || u.email || `User ${u.id}`).trim(),
@@ -5065,6 +5104,7 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
               source: type,
               initials: ((u.name || u.email || "?").trim().charAt(0) || "?").toUpperCase(),
               assignmentId: laneByStaff.get(u.id) ?? null,
+              isOnline: onlineSet.has(Number(u.id)),
             };
           })
           .filter((c) => !query || c.displayName.toLowerCase().includes(query) || (c.email?.toLowerCase().includes(query) ?? false))

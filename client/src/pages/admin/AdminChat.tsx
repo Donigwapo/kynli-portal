@@ -129,6 +129,7 @@ function isImage(mime: string | null | undefined) {
 
 const MAX_FILE_MB = 16;
 const MAX_ATTACH_FILES = 10;
+const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 
 type AttachmentStatus = "pending" | "uploading" | "uploaded" | "failed";
 type PendingAttachment = {
@@ -194,6 +195,12 @@ export default function AdminChat() {
     const params = new URLSearchParams(window.location.search);
     const value = params.get("client");
     return value && value.trim().length > 0 ? value.trim() : null;
+  }, []);
+
+  const getInternalFromUrl = useCallback((): boolean => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("scope") === "internal";
   }, []);
 
   const dmLaneStorageKey = useMemo(() => {
@@ -277,7 +284,18 @@ export default function AdminChat() {
   const setClientInUrl = useCallback((clientSlug: string) => {
     const [pathname] = location.split("?");
     const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+    params.delete("scope");
     params.set("client", clientSlug);
+    const query = params.toString();
+    const next = query ? `${pathname}?${query}` : pathname;
+    navigate(next, { replace: true });
+  }, [location, navigate]);
+
+  const setInternalInUrl = useCallback(() => {
+    const [pathname] = location.split("?");
+    const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+    params.delete("client");
+    params.set("scope", "internal");
     const query = params.toString();
     const next = query ? `${pathname}?${query}` : pathname;
     navigate(next, { replace: true });
@@ -350,9 +368,15 @@ export default function AdminChat() {
     }
   }, [getThread.data]);
 
-  // URL -> selected client sync on tenant load / refresh
+  // URL -> selected conversation sync on tenant load / refresh
   useEffect(() => {
     if (!tenants.length) return;
+
+    const isInternalScope = getInternalFromUrl();
+    if (isInternalScope) {
+      if (selectedSlug !== INTERNAL_CHAT_TENANT_SLUG) setSelectedSlug(INTERNAL_CHAT_TENANT_SLUG);
+      return;
+    }
 
     const fromUrl = getClientFromUrl();
     const existsInTenants = fromUrl ? tenants.some((t) => t.slug === fromUrl) : false;
@@ -373,7 +397,7 @@ export default function AdminChat() {
       if (selectedSlug !== fallback) setSelectedSlug(fallback);
       setClientInUrl(fallback);
     }
-  }, [tenants, selectedSlug, getClientFromUrl, setClientInUrl]);
+  }, [tenants, selectedSlug, getClientFromUrl, getInternalFromUrl, setClientInUrl]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -675,7 +699,18 @@ export default function AdminChat() {
 
   type ConversationLane = { key: string; title: string; subtitle: string; tenantSlug: string; dmKey?: string | null; groupLabel: string; packageTier?: PackageTier | null };
   const conversationLanes = useMemo<ConversationLane[]>(() => {
-    const lanes: ConversationLane[] = [];
+    const lanes: ConversationLane[] = [
+      {
+        key: `tenant:${INTERNAL_CHAT_TENANT_SLUG}`,
+        title: "Team Chat",
+        subtitle: "Internal team conversation",
+        tenantSlug: INTERNAL_CHAT_TENANT_SLUG,
+        dmKey: null,
+        groupLabel: "INTERNAL",
+        packageTier: null,
+      },
+    ];
+
     for (const t of tenants) {
       const pkgLabel = (PACKAGE_LABELS[(t.package_tier as PackageTier) ?? "legacy"] ?? "Legacy").toUpperCase();
       lanes.push({
@@ -696,7 +731,7 @@ export default function AdminChat() {
   }, [tenants, dmLanes]);
 
   const groupedConversationLanes = useMemo(() => {
-    const order = ["CFO", "GROWTH 2", "GROWTH 1", "MOMENTUM", "LEGACY", "DIRECT MESSAGES"];
+    const order = ["INTERNAL", "CFO", "GROWTH 2", "GROWTH 1", "MOMENTUM", "LEGACY", "DIRECT MESSAGES"];
     const map = new Map<string, ConversationLane[]>();
     for (const lane of conversationLanes) {
       const list = map.get(lane.groupLabel) ?? [];
@@ -864,6 +899,15 @@ export default function AdminChat() {
     if (!selectedSlug) return;
     if (selectedConversationKey) return;
     if (typeof window === "undefined") return;
+
+    const isInternalScope = getInternalFromUrl();
+    if (isInternalScope) {
+      const internalKey = `tenant:${INTERNAL_CHAT_TENANT_SLUG}`;
+      setSelectedConversationKey(internalKey);
+      setActiveDmKey(null);
+      return;
+    }
+
     const saved = window.localStorage.getItem(laneStorageKey);
     if (saved && conversationLanes.some((l) => l.key === saved)) {
       setSelectedConversationKey(saved);
@@ -877,23 +921,31 @@ export default function AdminChat() {
     }
     const def = `tenant:${selectedSlug}`;
     setSelectedConversationKey(def);
-  }, [selectedSlug, selectedConversationKey, laneStorageKey, conversationLanes, dmLanes]);
+  }, [selectedSlug, selectedConversationKey, laneStorageKey, conversationLanes, dmLanes, getInternalFromUrl]);
 
   const handleClientClick = useCallback((clientId: string) => {
 
     // Idempotent selection: clicking the same client should not clear/toggle off
     if (selectedSlug === clientId) {
-      setClientInUrl(clientId);
+      if (clientId === INTERNAL_CHAT_TENANT_SLUG) {
+        setInternalInUrl();
+      } else {
+        setClientInUrl(clientId);
+      }
       setSelectedConversationKey(`tenant:${clientId}`);
       setActiveDmKey(null);
       return;
     }
 
     setSelectedSlug(clientId);
-    setClientInUrl(clientId);
+    if (clientId === INTERNAL_CHAT_TENANT_SLUG) {
+      setInternalInUrl();
+    } else {
+      setClientInUrl(clientId);
+    }
     setActiveDmKey(null);
     setSelectedConversationKey(`tenant:${clientId}`);
-  }, [selectedSlug, setClientInUrl]);
+  }, [selectedSlug, setClientInUrl, setInternalInUrl]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -1050,7 +1102,11 @@ export default function AdminChat() {
                             key={lane.key}
                             onClick={() => {
                               setSelectedSlug(lane.tenantSlug);
-                              setClientInUrl(lane.tenantSlug);
+                              if (lane.tenantSlug === INTERNAL_CHAT_TENANT_SLUG) {
+                                setInternalInUrl();
+                              } else {
+                                setClientInUrl(lane.tenantSlug);
+                              }
                               setSelectedConversationKey(lane.key);
                               setActiveDmKey(lane.dmKey ?? null);
                             }}

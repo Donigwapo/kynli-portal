@@ -114,7 +114,7 @@ export type TenantMember = {
   tenant_slug: string | null;
   invite_sent_at?: string | null;
   invite_accepted?: boolean;
-  source: "tenant_user" | "staff_assignment" | "global_staff";
+  source: "tenant_user" | "workspace_owner" | "staff_assignment" | "global_staff";
 };
 
 export type StaffAssignment = {
@@ -3377,7 +3377,49 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
     throw new Error(`listTenantMembers.portal_users: ${usersResult.error.message}`);
   }
 
-  // 2) Staff assignments for this tenant (query IDs first to avoid FK-join dependency issues)
+  // 2) Workspace owners from client_workspace_access (supports multi-owner future)
+  const ownerAccess = await supabase
+    .from("client_workspace_access")
+    .select("portal_user_id, access_type")
+    .eq("tenant_slug", safeSlug)
+    .is("deleted_at", null)
+    .eq("access_type", "owner");
+
+  if (ownerAccess.error) {
+    throw new Error(`listTenantMembers.client_workspace_access: ${ownerAccess.error.message}`);
+  }
+
+  const ownerIds = Array.from(
+    new Set(
+      ((ownerAccess.data ?? []) as Array<{ portal_user_id: number | null }>).map((r) => Number(r.portal_user_id ?? 0)).filter((id) => id > 0)
+    )
+  );
+
+  let ownerUsers: TenantUserSelectRow[] = [];
+  if (ownerIds.length > 0) {
+    const withInviteOwners = await supabase
+      .from("portal_users")
+      .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
+      .in("id", ownerIds);
+
+    const ownersResult =
+      withInviteOwners.error &&
+      (isMissingColumnError(withInviteOwners.error, "invite_sent_at") ||
+        isMissingColumnError(withInviteOwners.error, "invite_accepted"))
+        ? await supabase
+            .from("portal_users")
+            .select("id,email,name,role,tenant_slug")
+            .in("id", ownerIds)
+        : withInviteOwners;
+
+    if (ownersResult.error) {
+      throw new Error(`listTenantMembers.workspace_owners: ${ownersResult.error.message}`);
+    }
+
+    ownerUsers = (ownersResult.data ?? []) as unknown as TenantUserSelectRow[];
+  }
+
+  // 3) Staff assignments for this tenant (query IDs first to avoid FK-join dependency issues)
   const assignments = await supabase
     .from("staff_client_assignments")
     .select("staff_id")
@@ -3417,7 +3459,7 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
     assignedStaffUsers = (staffResult.data ?? []) as unknown as TenantUserSelectRow[];
   }
 
-  // 3) Global leadership members included in every workspace group chat.
+  // 4) Global leadership members included in every workspace group chat.
   const withInviteGlobal = await supabase
     .from("portal_users")
     .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
@@ -3456,6 +3498,23 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
       source: "tenant_user",
+    });
+  }
+
+  for (const u of ownerUsers) {
+    const id = Number(u.id ?? 0);
+    if (!id) continue;
+    if (map.has(id)) continue;
+
+    map.set(id, {
+      id,
+      email: String(u.email ?? ""),
+      name: u.name ?? null,
+      role: (u.role ?? "client") as UserRole,
+      tenant_slug: safeSlug,
+      invite_sent_at: u.invite_sent_at ?? null,
+      invite_accepted: Boolean(u.invite_accepted),
+      source: "workspace_owner",
     });
   }
 
