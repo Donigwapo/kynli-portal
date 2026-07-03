@@ -41,6 +41,9 @@ export type FloatingTimerState = {
   loading: boolean;
   error: string | null;
 
+  idleReminderVisible: boolean;
+  idleReminderLastShownAtByTenant: Record<string, number>;
+
   // Draggable widget positioning
   position: TimerWidgetPosition;
   dragging: boolean;
@@ -58,6 +61,10 @@ export type FloatingTimerState = {
   setLoading: (v: boolean) => void;
   setError: (v: string | null) => void;
   resetDrafts: () => void;
+
+  showIdleReminder: () => void;
+  hideIdleReminder: () => void;
+  markIdleReminderShown: (tenantSlug: string, ts?: number) => void;
 
   setPosition: (p: TimerWidgetPosition) => void; // in-memory only
   persistPosition: (p: TimerWidgetPosition) => void; // saves to localStorage
@@ -78,6 +85,9 @@ export const useFloatingTimerStore = create<FloatingTimerState>((set) => ({
   loading: false,
   error: null,
 
+  idleReminderVisible: false,
+  idleReminderLastShownAtByTenant: {},
+
   position: loadInitialPosition(),
   dragging: false,
 
@@ -94,6 +104,17 @@ export const useFloatingTimerStore = create<FloatingTimerState>((set) => ({
   setLoading: (v) => set({ loading: v }),
   setError: (v) => set({ error: v }),
   resetDrafts: () => set({ notesDraft: "", projectId: "", taskId: "", billable: true }),
+
+  showIdleReminder: () => set({ idleReminderVisible: true }),
+  hideIdleReminder: () => set({ idleReminderVisible: false }),
+  markIdleReminderShown: (tenantSlug, ts = Date.now()) =>
+    set((state) => ({
+      idleReminderVisible: true,
+      idleReminderLastShownAtByTenant: {
+        ...state.idleReminderLastShownAtByTenant,
+        [tenantSlug]: ts,
+      },
+    })),
 
   setPosition: (p) => {
     set({ position: p });

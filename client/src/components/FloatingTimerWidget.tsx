@@ -1,4 +1,12 @@
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -128,10 +136,45 @@ export default function FloatingTimerWidget() {
   if (!visible) return null;
 
   return (
-    <div
-      className="fixed left-0 top-0 z-[90] will-change-transform"
-      style={transformStyle}
-    >
+    <>
+      <Dialog open={timer.idleReminderVisible && !timer.running}>
+        <DialogContent
+          showCloseButton={false}
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+        >
+          <DialogHeader>
+            <DialogTitle>Start time tracking?</DialogTitle>
+            <DialogDescription>
+              Do you want to start tracking time for {timer.tenantLabel}?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="border-white/15 bg-white/[0.02] hover:bg-white/[0.05]"
+              onClick={timer.dismissIdleReminder}
+            >
+              Not now
+            </Button>
+            <Button
+              onClick={async () => {
+                await timer.start();
+                timer.dismissIdleReminder();
+              }}
+              disabled={timer.loading}
+            >
+              Start timer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div
+        className="fixed left-0 top-0 z-[90] will-change-transform"
+        style={transformStyle}
+      >
       <motion.div
         animate={{ scale: timer.dragging ? 1.01 : 1 }}
         transition={timer.dragging ? { duration: 0 } : { type: "spring", stiffness: 300, damping: 28 }}
@@ -266,7 +309,11 @@ export default function FloatingTimerWidget() {
 
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Switch checked={timer.billable} onCheckedChange={timer.setBillable} />
+                    <Switch
+                      checked={timer.timerMode === "internal" ? false : timer.billable}
+                      onCheckedChange={timer.setBillable}
+                      disabled={timer.timerMode === "internal"}
+                    />
                     <span className="text-xs text-muted-foreground">Billable</span>
                   </div>
 
@@ -304,6 +351,7 @@ export default function FloatingTimerWidget() {
           )}
         </AnimatePresence>
       </motion.div>
-    </div>
+      </div>
+    </>
   );
 }

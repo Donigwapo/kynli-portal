@@ -122,6 +122,12 @@ import {
   deleteClientMeeting,
   replaceClientMeetingActionItems,
   updateClientMeetingActionItemStatus,
+  listCoachingNextSteps,
+  createCoachingNextStep,
+  updateCoachingNextStep,
+  deleteCoachingNextStep,
+  type CoachingNextStepStatus,
+  type CoachingNextStepPriority,
   type WorkspaceNote,
   type WorkspaceNoteCategory,
   type WorkspaceNoteComment,
@@ -439,6 +445,42 @@ const meetingModeSchema = z.enum(MEETING_MODE_VALUES);
 
 function resolveMeetingMode(mode?: string | null): ClientMeetingMode {
   return mode === "check_in_call" ? "check_in_call" : "client_meeting";
+}
+
+const NEXT_STEP_STATUS_VALUES = ["not_started", "in_progress", "waiting", "blocked", "completed"] as const;
+const nextStepStatusSchema = z.enum(NEXT_STEP_STATUS_VALUES);
+
+const NEXT_STEP_PRIORITY_VALUES = ["low", "medium", "high", "urgent"] as const;
+const nextStepPrioritySchema = z.enum(NEXT_STEP_PRIORITY_VALUES);
+
+function isStaffActor(user: PortalUser): boolean {
+  return user.role !== "client";
+}
+
+type TimerWorkScope = "client" | "internal";
+
+async function resolveTimerScope(
+  ctx: { user: PortalUser; viewAsClientTenantSlug: string | null; clientWorkspaceTenantSlug?: string | null },
+  requestedTenantSlug?: string,
+): Promise<{ workScope: TimerWorkScope; tenantSlug: string | null }> {
+  const rawViewAs = (ctx.viewAsClientTenantSlug || "").trim();
+  const rawWorkspace = (ctx.clientWorkspaceTenantSlug || "").trim();
+  const effectiveClientScopeSlug = rawViewAs || rawWorkspace || "";
+
+  if (effectiveClientScopeSlug) {
+    const slug = await resolveChatTenantSlug(
+      ctx.user,
+      requestedTenantSlug || effectiveClientScopeSlug,
+      ctx.clientWorkspaceTenantSlug,
+    );
+    return { workScope: "client", tenantSlug: slug };
+  }
+
+  if (!isStaffActor(ctx.user)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Internal time tracking is restricted to staff." });
+  }
+
+  return { workScope: "internal", tenantSlug: null };
 }
 
 type ResolvedNotesWorkspace = {
@@ -3821,6 +3863,122 @@ export const appRouter = router({
         await upsertCoachingNote(slug, input.year, input.quarter, input.content);
         return { success: true };
       }),
+    nextStepsList: protectedProcedure
+      .input(z.object({ year: z.number().int().min(2000).max(2100), quarter: z.number().int().min(1).max(4), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        return listCoachingNextSteps(slug, input.year, input.quarter);
+      }),
+    nextStepsCreate: protectedProcedure
+      .input(z.object({
+        year: z.number().int().min(2000).max(2100),
+        quarter: z.number().int().min(1).max(4),
+        tenantSlug: z.string().optional(),
+        title: z.string().min(1),
+        description: z.string().optional().nullable(),
+        status: nextStepStatusSchema.optional(),
+        priority: nextStepPrioritySchema.optional(),
+        assignedTo: z.number().int().optional().nullable(),
+        dueDate: z.string().optional().nullable(),
+        sortOrder: z.number().int().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create next steps." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const row = await createCoachingNextStep({
+          tenant_slug: slug,
+          year: input.year,
+          quarter: input.quarter,
+          title: input.title,
+          description: input.description ?? null,
+          status: input.status as CoachingNextStepStatus | undefined,
+          priority: input.priority as CoachingNextStepPriority | undefined,
+          assigned_to: input.assignedTo ?? null,
+          due_date: input.dueDate ?? null,
+          sort_order: input.sortOrder,
+          created_by: ctx.user.id,
+        });
+        return { success: true, item: row };
+      }),
+    nextStepsUpdate: protectedProcedure
+      .input(z.object({
+        id: z.number().int(),
+        tenantSlug: z.string().optional(),
+        title: z.string().min(1).optional(),
+        description: z.string().optional().nullable(),
+        status: nextStepStatusSchema.optional(),
+        priority: nextStepPrioritySchema.optional(),
+        assignedTo: z.number().int().optional().nullable(),
+        dueDate: z.string().optional().nullable(),
+        sortOrder: z.number().int().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+
+        const isStaff = isStaffActor(ctx.user);
+        if (!isStaff) {
+          const hasRestrictedPatch =
+            input.title !== undefined ||
+            input.description !== undefined ||
+            input.priority !== undefined ||
+            input.assignedTo !== undefined ||
+            input.dueDate !== undefined ||
+            input.sortOrder !== undefined;
+          if (hasRestrictedPatch) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Clients can only update status." });
+          }
+          if (input.status === undefined) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Status is required." });
+          }
+        }
+
+        const row = await updateCoachingNextStep({
+          tenant_slug: slug,
+          id: input.id,
+          title: input.title,
+          description: input.description,
+          status: input.status as CoachingNextStepStatus | undefined,
+          priority: input.priority as CoachingNextStepPriority | undefined,
+          assigned_to: input.assignedTo,
+          due_date: input.dueDate,
+          sort_order: input.sortOrder,
+          completed_by: input.status === undefined ? undefined : (input.status === "completed" ? ctx.user.id : null),
+        });
+        return { success: true, item: row };
+      }),
+    nextStepsDelete: protectedProcedure
+      .input(z.object({ id: z.number().int(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete next steps." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        await deleteCoachingNextStep(slug, input.id);
+        return { success: true };
+      }),
+    nextStepsReorder: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        itemIds: z.array(z.number().int()).min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot reorder next steps." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const updates = input.itemIds.map((id, idx) =>
+          updateCoachingNextStep({ tenant_slug: slug, id, sort_order: idx }),
+        );
+        await Promise.all(updates);
+        return { success: true };
+      }),
     meetingsList: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .query(async ({ ctx, input }) => {
@@ -4061,6 +4219,193 @@ export const appRouter = router({
   }),
 
   time: router({
+    timerRunning: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await assertTierAccess(ctx.user, "time_intelligence");
+        const scope = await resolveTimerScope(ctx, input?.tenantSlug);
+
+        let query = supabase
+          .from("time_entries")
+          .select("*")
+          .eq("staff_user_id", Number(ctx.user.id))
+          .eq("work_scope", scope.workScope)
+          .eq("status", "running")
+          .order("started_at", { ascending: false })
+          .limit(1);
+
+        query = scope.workScope === "client"
+          ? query.eq("tenant_slug", scope.tenantSlug)
+          : query.is("tenant_slug", null);
+
+        const { data, error } = await query.maybeSingle();
+
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        return data ?? null;
+      }),
+    timerTodayTracked: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await assertTierAccess(ctx.user, "time_intelligence");
+        const scope = await resolveTimerScope(ctx, input?.tenantSlug);
+
+        const now = new Date();
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString();
+        const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0).toISOString();
+
+        let query = supabase
+          .from("time_entries")
+          .select("started_at, ended_at, duration_seconds, status")
+          .eq("staff_user_id", Number(ctx.user.id))
+          .eq("work_scope", scope.workScope)
+          .gte("started_at", start)
+          .lt("started_at", end);
+
+        query = scope.workScope === "client"
+          ? query.eq("tenant_slug", scope.tenantSlug)
+          : query.is("tenant_slug", null);
+
+        const { data, error } = await query;
+
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+
+        const nowMs = Date.now();
+        const total = (data || []).reduce((sum: number, row: any) => {
+          const stored = Number(row.duration_seconds ?? 0);
+          if (stored > 0) return sum + stored;
+
+          if (row.status === "running" && row.started_at) {
+            const startedMs = new Date(row.started_at).getTime();
+            return sum + Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+          }
+
+          if (row.started_at && row.ended_at) {
+            const startedMs = new Date(row.started_at).getTime();
+            const endedMs = new Date(row.ended_at).getTime();
+            return sum + Math.max(0, Math.floor((endedMs - startedMs) / 1000));
+          }
+
+          return sum;
+        }, 0);
+
+        return { seconds: total };
+      }),
+    timerStart: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        projectId: z.string().nullable().optional(),
+        taskId: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
+        billable: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await assertTierAccess(ctx.user, "time_intelligence");
+        const scope = await resolveTimerScope(ctx, input.tenantSlug);
+
+        let existingQuery = supabase
+          .from("time_entries")
+          .select("*")
+          .eq("staff_user_id", Number(ctx.user.id))
+          .eq("work_scope", scope.workScope)
+          .eq("status", "running")
+          .order("started_at", { ascending: false })
+          .limit(1);
+
+        existingQuery = scope.workScope === "client"
+          ? existingQuery.eq("tenant_slug", scope.tenantSlug)
+          : existingQuery.is("tenant_slug", null);
+
+        const { data: existing, error: existingError } = await existingQuery.maybeSingle();
+
+        if (existingError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: existingError.message });
+        if (existing) return { entry: existing, resumed: true as const };
+
+        const payload = {
+          work_scope: scope.workScope,
+          tenant_slug: scope.tenantSlug,
+          organization_id: null,
+          staff_user_id: Number(ctx.user.id),
+          project_id: input.projectId ?? null,
+          task_id: input.taskId ?? null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+          notes: input.notes ?? null,
+          status: "running",
+          billable: scope.workScope === "internal" ? false : (input.billable ?? true),
+        };
+
+        const { data, error } = await supabase
+          .from("time_entries")
+          .insert(payload)
+          .select("*")
+          .single();
+
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        return { entry: data, resumed: false as const };
+      }),
+    timerStop: protectedProcedure
+      .input(z.object({
+        entryId: z.string(),
+        tenantSlug: z.string().optional(),
+        projectId: z.string().nullable().optional(),
+        taskId: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
+        billable: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await assertTierAccess(ctx.user, "time_intelligence");
+        const scope = await resolveTimerScope(ctx, input.tenantSlug);
+
+        let existingQuery = supabase
+          .from("time_entries")
+          .select("id, started_at, staff_user_id, tenant_slug, work_scope, status")
+          .eq("id", input.entryId)
+          .eq("staff_user_id", Number(ctx.user.id))
+          .eq("work_scope", scope.workScope)
+          .eq("status", "running");
+
+        existingQuery = scope.workScope === "client"
+          ? existingQuery.eq("tenant_slug", scope.tenantSlug)
+          : existingQuery.is("tenant_slug", null);
+
+        const { data: existing, error: existingError } = await existingQuery.maybeSingle();
+
+        if (existingError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: existingError.message });
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Running timer entry not found." });
+
+        const endedAt = new Date();
+
+        let updateQuery = supabase
+          .from("time_entries")
+          .update({
+            ended_at: endedAt.toISOString(),
+            status: "stopped",
+            notes: input.notes ?? null,
+            project_id: input.projectId ?? null,
+            task_id: input.taskId ?? null,
+            billable: scope.workScope === "internal" ? false : (input.billable ?? true),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", input.entryId)
+          .eq("staff_user_id", Number(ctx.user.id))
+          .eq("work_scope", scope.workScope)
+          .eq("status", "running");
+
+        updateQuery = scope.workScope === "client"
+          ? updateQuery.eq("tenant_slug", scope.tenantSlug)
+          : updateQuery.is("tenant_slug", null);
+
+        const { data, error } = await updateQuery
+          .select("*")
+          .single();
+
+        if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        return data;
+      }),
     get: protectedProcedure
       .input(z.object({ year: z.number(), month: z.number() }))
       .query(async ({ ctx, input }) => {

@@ -2972,6 +2972,28 @@ export type CoachingNote = {
   updated_at?: string;
 };
 
+export type CoachingNextStepStatus = "not_started" | "in_progress" | "waiting" | "blocked" | "completed";
+export type CoachingNextStepPriority = "low" | "medium" | "high" | "urgent";
+
+export type CoachingNextStep = {
+  id: number;
+  tenant_slug: string;
+  quarter: number;
+  year: number;
+  title: string;
+  description: string | null;
+  status: CoachingNextStepStatus;
+  priority: CoachingNextStepPriority;
+  assigned_to: number | null;
+  due_date: string | null;
+  completed_at: string | null;
+  completed_by: number | null;
+  sort_order: number;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export async function getCoachingNote(slug: string, year: number, quarter: number): Promise<CoachingNote | null> {
   const { data, error } = await supabase
     .from(`${slug}_coaching_notes`)
@@ -2987,6 +3009,108 @@ export async function upsertCoachingNote(slug: string, year: number, quarter: nu
   const { error } = await supabase
     .from(`${slug}_coaching_notes`)
     .upsert({ year, quarter, content, updated_at: new Date().toISOString() }, { onConflict: "year,quarter" });
+  if (error) throw new Error(error.message);
+}
+
+// ─── Coaching Next Steps ──────────────────────────────────────────────────────
+
+export async function listCoachingNextSteps(tenantSlug: string, year: number, quarter: number): Promise<CoachingNextStep[]> {
+  const { data, error } = await supabase
+    .from("coaching_next_steps")
+    .select("*")
+    .eq("tenant_slug", tenantSlug)
+    .eq("year", year)
+    .eq("quarter", quarter)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []) as CoachingNextStep[];
+}
+
+export async function createCoachingNextStep(input: {
+  tenant_slug: string;
+  quarter: number;
+  year: number;
+  title: string;
+  description?: string | null;
+  status?: CoachingNextStepStatus;
+  priority?: CoachingNextStepPriority;
+  assigned_to?: number | null;
+  due_date?: string | null;
+  sort_order?: number;
+  created_by?: number | null;
+}): Promise<CoachingNextStep> {
+  const payload = {
+    tenant_slug: input.tenant_slug,
+    quarter: input.quarter,
+    year: input.year,
+    title: input.title,
+    description: input.description ?? null,
+    status: input.status ?? "not_started",
+    priority: input.priority ?? "medium",
+    assigned_to: input.assigned_to ?? null,
+    due_date: input.due_date ?? null,
+    sort_order: input.sort_order ?? 0,
+    created_by: input.created_by ?? null,
+  };
+
+  const { data, error } = await supabase
+    .from("coaching_next_steps")
+    .insert(payload)
+    .select("*")
+    .single();
+  if (error || !data) throw new Error(error?.message || "Failed to create coaching next step");
+  return data as CoachingNextStep;
+}
+
+export async function updateCoachingNextStep(input: {
+  tenant_slug: string;
+  id: number;
+  title?: string;
+  description?: string | null;
+  status?: CoachingNextStepStatus;
+  priority?: CoachingNextStepPriority;
+  assigned_to?: number | null;
+  due_date?: string | null;
+  sort_order?: number;
+  completed_by?: number | null;
+}): Promise<CoachingNextStep> {
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.description !== undefined) patch.description = input.description;
+  if (input.priority !== undefined) patch.priority = input.priority;
+  if (input.assigned_to !== undefined) patch.assigned_to = input.assigned_to;
+  if (input.due_date !== undefined) patch.due_date = input.due_date;
+  if (input.sort_order !== undefined) patch.sort_order = input.sort_order;
+  if (input.status !== undefined) {
+    patch.status = input.status;
+    if (input.status === "completed") {
+      patch.completed_at = new Date().toISOString();
+      patch.completed_by = input.completed_by ?? null;
+    } else {
+      patch.completed_at = null;
+      patch.completed_by = null;
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("coaching_next_steps")
+    .update(patch)
+    .eq("tenant_slug", input.tenant_slug)
+    .eq("id", input.id)
+    .select("*")
+    .single();
+  if (error || !data) throw new Error(error?.message || "Failed to update coaching next step");
+  return data as CoachingNextStep;
+}
+
+export async function deleteCoachingNextStep(tenantSlug: string, id: number): Promise<void> {
+  const { error } = await supabase
+    .from("coaching_next_steps")
+    .delete()
+    .eq("tenant_slug", tenantSlug)
+    .eq("id", id);
   if (error) throw new Error(error.message);
 }
 
@@ -3141,22 +3265,8 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
         CREATE INDEX IF NOT EXISTS idx_${slug}_sales_tracker_year_month ON ${slug}_sales_tracker(year, month);
       `,
     },
-    {
-      name: `${slug}_time_intelligence`,
-      sql: `
-        CREATE TABLE IF NOT EXISTS ${slug}_time_intelligence (
-          id          BIGSERIAL PRIMARY KEY,
-          year        INTEGER NOT NULL,
-          month       INTEGER NOT NULL,
-          category    TEXT NOT NULL,
-          hours       NUMERIC(8,2) NOT NULL DEFAULT 0,
-          label       TEXT,
-          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_${slug}_time_intelligence_year_month ON ${slug}_time_intelligence(year, month);
-      `,
-    },
+    // Legacy `${slug}_time_intelligence` table creation removed.
+    // Time tracking now uses global tables (`time_logs` / `time_entries`) with tenant scoping.
     {
       name: `${slug}_ai_summaries`,
       sql: `

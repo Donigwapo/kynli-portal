@@ -26,6 +26,14 @@ import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import FloatingTimerWidget from "./FloatingTimerWidget";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 import { toast } from "sonner";
 
 interface NavItem {
@@ -118,6 +126,27 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   });
 
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [exitViewConfirmOpen, setExitViewConfirmOpen] = useState(false);
+  const [exitViewLoading, setExitViewLoading] = useState(false);
+  const [pendingExitTimerEntryId, setPendingExitTimerEntryId] = useState<string | null>(null);
+
+  const [switchTimerConfirmOpen, setSwitchTimerConfirmOpen] = useState(false);
+  const [switchTimerLoading, setSwitchTimerLoading] = useState(false);
+  const [pendingSwitchTargetSlug, setPendingSwitchTargetSlug] = useState<string | null>(null);
+  const [pendingSwitchCurrentName, setPendingSwitchCurrentName] = useState<string | null>(null);
+  const [pendingSwitchTargetName, setPendingSwitchTargetName] = useState<string | null>(null);
+  const [pendingSwitchTimerEntryId, setPendingSwitchTimerEntryId] = useState<string | null>(null);
+
+  const runningTimerQuery = trpc.time.timerRunning.useQuery(
+    impersonatingTenantSlug ? { tenantSlug: impersonatingTenantSlug } : undefined,
+    {
+      enabled: !!impersonatingTenantSlug,
+      staleTime: 5_000,
+      refetchInterval: 10_000,
+    }
+  );
+
+  const stopTimerMutation = trpc.time.timerStop.useMutation();
 
   useEffect(() => {
     if (!user) {
@@ -268,6 +297,129 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
       .toUpperCase()
       .slice(0, 2);
 
+  async function performExitViewCleanup() {
+    try {
+      await fetch("/api/auth/view-as-client/stop", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // no-op: local state reset still proceeds
+    }
+    setImpersonatingTenantSlug(null);
+    setEffectiveTier("cfo");
+    if (user?.role === "admin") {
+      navigate("/admin/clients");
+    }
+  }
+
+  async function handleExitViewClick() {
+    if (!impersonatingTenantSlug) {
+      await performExitViewCleanup();
+      return;
+    }
+
+    const running = runningTimerQuery.data as any;
+    const hasRunningClientTimer = !!running?.id && String(running?.status || "") === "running";
+
+    if (!hasRunningClientTimer) {
+      await performExitViewCleanup();
+      return;
+    }
+
+    setPendingExitTimerEntryId(String(running.id));
+    setExitViewConfirmOpen(true);
+  }
+
+  async function handleConfirmStopTimerAndExit() {
+    if (!impersonatingTenantSlug || !pendingExitTimerEntryId) {
+      setExitViewConfirmOpen(false);
+      return;
+    }
+
+    setExitViewLoading(true);
+    try {
+      await stopTimerMutation.mutateAsync({
+        entryId: pendingExitTimerEntryId,
+        tenantSlug: impersonatingTenantSlug,
+      });
+
+      setExitViewConfirmOpen(false);
+      setPendingExitTimerEntryId(null);
+      await runningTimerQuery.refetch();
+      await performExitViewCleanup();
+    } catch (e: any) {
+      toast.error(e?.message || "Couldn’t stop timer. Please try again.");
+      setExitViewConfirmOpen(false);
+      // Stay in current client context and keep timer running.
+    } finally {
+      setExitViewLoading(false);
+    }
+  }
+
+  async function performStaffWorkspaceSwitch(targetSlug: string) {
+    const res = await fetch("/api/auth/view-as-client/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ tenantSlug: targetSlug }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload?.error || "Unable to switch workspace");
+
+    setImpersonatingTenantSlug(targetSlug);
+    setEffectiveTier("cfo");
+
+    await Promise.all([
+      utils.tenant.me.invalidate(),
+      utils.tenant.list.invalidate(),
+      utils.roster?.list?.invalidate?.() ?? Promise.resolve(),
+      utils.documents?.list?.invalidate?.() ?? Promise.resolve(),
+      utils.documents?.dashboard?.invalidate?.() ?? Promise.resolve(),
+      utils.documents?.listFolders?.invalidate?.() ?? Promise.resolve(),
+      utils.chat?.list?.invalidate?.() ?? Promise.resolve(),
+      utils.chat?.unreadSummary?.invalidate?.() ?? Promise.resolve(),
+      utils.coaching?.meetingsList?.invalidate?.() ?? Promise.resolve(),
+      utils.coaching?.meetingsGet?.invalidate?.() ?? Promise.resolve(),
+      utils.notes?.list?.invalidate?.() ?? Promise.resolve(),
+      utils.time?.timerRunning?.invalidate?.() ?? Promise.resolve(),
+      utils.time?.timerTodayTracked?.invalidate?.() ?? Promise.resolve(),
+    ]);
+
+    toast.success(`Switched to ${payload?.workspace?.companyName || targetSlug}`);
+    if (!location.startsWith("/portal/")) navigate("/portal");
+  }
+
+  async function handleConfirmStopTimerAndSwitch() {
+    if (!impersonatingTenantSlug || !pendingSwitchTargetSlug || !pendingSwitchTimerEntryId) {
+      setSwitchTimerConfirmOpen(false);
+      return;
+    }
+
+    setSwitchTimerLoading(true);
+    try {
+      await stopTimerMutation.mutateAsync({
+        entryId: pendingSwitchTimerEntryId,
+        tenantSlug: impersonatingTenantSlug,
+      });
+
+      await runningTimerQuery.refetch();
+      await performStaffWorkspaceSwitch(pendingSwitchTargetSlug);
+
+      setSwitchTimerConfirmOpen(false);
+      setPendingSwitchTargetSlug(null);
+      setPendingSwitchCurrentName(null);
+      setPendingSwitchTargetName(null);
+      setPendingSwitchTimerEntryId(null);
+    } catch (e: any) {
+      toast.error(e?.message || "Couldn’t stop timer. Workspace was not switched.");
+      // Stay in current workspace and keep current timer running.
+    } finally {
+      setSwitchTimerLoading(false);
+      setWorkspacePickerOpen(false);
+    }
+  }
+
   async function handleWorkspaceSwitch(targetSlug: string) {
     if (!targetSlug || targetSlug === activeWorkspaceSlug) {
       setWorkspacePickerOpen(false);
@@ -282,34 +434,23 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
     if (isStaffOrAdmin) {
       try {
-        const res = await fetch("/api/auth/view-as-client/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ tenantSlug: targetSlug }),
-        });
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(payload?.error || "Unable to switch workspace");
+        if (impersonatingTenantSlug) {
+          const runningResult = await runningTimerQuery.refetch();
+          const running = runningResult.data as any;
+          const hasRunningClientTimer = !!running?.id && String(running?.status || "") === "running";
 
-        setImpersonatingTenantSlug(targetSlug);
-        setEffectiveTier("cfo");
+          if (hasRunningClientTimer) {
+            const targetCompanyName = workspaceOptions.find((w) => w.slug === targetSlug)?.companyName ?? targetSlug;
+            setPendingSwitchTargetSlug(targetSlug);
+            setPendingSwitchCurrentName(activeWorkspaceName ?? impersonatingTenantSlug);
+            setPendingSwitchTargetName(targetCompanyName);
+            setPendingSwitchTimerEntryId(String(running.id));
+            setSwitchTimerConfirmOpen(true);
+            return;
+          }
+        }
 
-        await Promise.all([
-          utils.tenant.me.invalidate(),
-          utils.tenant.list.invalidate(),
-          utils.roster?.list?.invalidate?.() ?? Promise.resolve(),
-          utils.documents?.list?.invalidate?.() ?? Promise.resolve(),
-          utils.documents?.dashboard?.invalidate?.() ?? Promise.resolve(),
-          utils.documents?.listFolders?.invalidate?.() ?? Promise.resolve(),
-          utils.chat?.list?.invalidate?.() ?? Promise.resolve(),
-          utils.chat?.unreadSummary?.invalidate?.() ?? Promise.resolve(),
-          utils.coaching?.meetingsList?.invalidate?.() ?? Promise.resolve(),
-          utils.coaching?.meetingsGet?.invalidate?.() ?? Promise.resolve(),
-          utils.notes?.list?.invalidate?.() ?? Promise.resolve(),
-        ]);
-
-        toast.success(`Switched to ${payload?.workspace?.companyName || targetSlug}`);
-        if (!location.startsWith("/portal/")) navigate("/portal");
+        await performStaffWorkspaceSwitch(targetSlug);
       } catch (e: any) {
         toast.error(e?.message || "Unable to switch workspace");
       } finally {
@@ -412,20 +553,8 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           <div className="mx-3 mt-2 px-2 py-1.5 rounded" style={{ backgroundColor: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
             <p className="text-xs font-medium leading-tight" style={{ color: "#f59e0b" }}>Viewing as client</p>
             <button
-              onClick={async () => {
-                try {
-                  await fetch("/api/auth/view-as-client/stop", {
-                    method: "POST",
-                    credentials: "include",
-                  });
-                } catch {
-                  // no-op: local state reset still proceeds
-                }
-                setImpersonatingTenantSlug(null);
-                setEffectiveTier("cfo");
-                if (user?.role === "admin") {
-                  navigate("/admin/clients");
-                }
+              onClick={() => {
+                void handleExitViewClick();
               }}
               className="text-xs underline mt-0.5 hover:opacity-80 transition-opacity"
               style={{ color: "rgba(245,158,11,0.7)" }}
@@ -566,6 +695,85 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           </button>
         </div>
       </aside>
+
+      {/* Exit View confirmation */}
+      <Dialog open={exitViewConfirmOpen}>
+        <DialogContent
+          showCloseButton={false}
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+        >
+          <DialogHeader>
+            <DialogTitle>Stop timer and exit client view?</DialogTitle>
+            <DialogDescription>
+              You’re currently tracking time for {activeWorkspaceName ?? impersonatingTenantSlug ?? "this client"}. Exiting client view will stop this timer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => {
+                if (exitViewLoading) return;
+                setExitViewConfirmOpen(false);
+                setPendingExitTimerEntryId(null);
+              }}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-white/15 bg-white/[0.02] px-3 text-sm hover:bg-white/[0.05]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={exitViewLoading}
+              onClick={() => void handleConfirmStopTimerAndExit()}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-teal-500 px-3 text-sm text-black hover:bg-teal-400 disabled:opacity-60"
+            >
+              {exitViewLoading ? "Stopping..." : "Stop Timer & Exit"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Workspace switch + timer confirmation */}
+      <Dialog open={switchTimerConfirmOpen}>
+        <DialogContent
+          showCloseButton={false}
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+        >
+          <DialogHeader>
+            <DialogTitle>Switch workspace and stop timer?</DialogTitle>
+            <DialogDescription>
+              You’re currently tracking time for {pendingSwitchCurrentName ?? "this client"}. Switching to {pendingSwitchTargetName ?? "the selected client"} will stop the current timer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => {
+                if (switchTimerLoading) return;
+                setSwitchTimerConfirmOpen(false);
+                setPendingSwitchTargetSlug(null);
+                setPendingSwitchCurrentName(null);
+                setPendingSwitchTargetName(null);
+                setPendingSwitchTimerEntryId(null);
+              }}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-white/15 bg-white/[0.02] px-3 text-sm hover:bg-white/[0.05]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={switchTimerLoading}
+              onClick={() => void handleConfirmStopTimerAndSwitch()}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-teal-500 px-3 text-sm text-black hover:bg-teal-400 disabled:opacity-60"
+            >
+              {switchTimerLoading ? "Stopping..." : "Stop Timer & Switch"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Change Password Dialog */}
       <ChangePasswordDialog

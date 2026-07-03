@@ -2,16 +2,12 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import {
-  getRunningTimerForStaff,
-  getTodayTrackedSeconds,
-  startOrResumeTimer,
-  stopTimer,
-  type TimeEntryRow,
-} from "@/lib/timerService";
+import { useTimerApi, type TimeEntryRow } from "@/lib/timerService";
 import { useFloatingTimerStore } from "@/store/floatingTimerStore";
 
-const STAFF_ROLES = new Set(["accounting_manager", "tax_manager", "accountant"]);
+const STAFF_ROLES = new Set(["admin", "accounting_manager", "tax_manager", "accountant"]);
+const IDLE_REMINDER_DELAY_MS = 10_000;
+const IDLE_REMINDER_COOLDOWN_MS = 5 * 60_000;
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -56,10 +52,16 @@ export function useFloatingTimer() {
   const setPosition = useFloatingTimerStore((s) => s.setPosition);
   const persistPosition = useFloatingTimerStore((s) => s.persistPosition);
   const setDragging = useFloatingTimerStore((s) => s.setDragging);
+  const idleReminderVisible = useFloatingTimerStore((s) => s.idleReminderVisible);
+  const idleReminderLastShownAtByTenant = useFloatingTimerStore((s) => s.idleReminderLastShownAtByTenant);
+  const hideIdleReminder = useFloatingTimerStore((s) => s.hideIdleReminder);
+  const markIdleReminderShown = useFloatingTimerStore((s) => s.markIdleReminderShown);
 
   const isStaff = !!user && STAFF_ROLES.has(user.role);
   const canShow = isStaff;
   const activeTenantSlug = impersonatingTenantSlug ?? null;
+  const isViewAsTimerContext = !!activeTenantSlug;
+  const timerMode: "client" | "internal" = isViewAsTimerContext ? "client" : "internal";
 
   const { data: tenants = [] } = trpc.tenant.list.useQuery(undefined, {
     enabled: !!user && isStaff,
@@ -67,13 +69,15 @@ export function useFloatingTimer() {
   });
 
   const tenantLabel = useMemo(() => {
-    if (!activeTenantSlug) return "No client selected";
+    if (!activeTenantSlug) return "Internal Work";
     const found = tenants.find((t: any) => t.slug === activeTenantSlug);
     return found?.company_name ?? activeTenantSlug;
   }, [activeTenantSlug, tenants]);
 
   const tickerRef = useRef<number | null>(null);
   const restoreGuardRef = useRef<string | null>(null);
+  const idleReminderTimerRef = useRef<number | null>(null);
+  const timerApi = useTimerApi();
 
   const hydrate = useCallback(async () => {
     // Non-blocking fail-safe: never throw outside.
@@ -83,19 +87,7 @@ export function useFloatingTimer() {
         return;
       }
 
-      // Defensive guard requested: skip restore if no impersonation context.
-      // Timer remains usable, but we avoid restore queries in neutral mode.
-      if (!activeTenantSlug) {
-        console.log("[FloatingTimerHydrate] skipped (no impersonation)", {
-          userId: user.id,
-          role: user.role,
-        });
-        setRunningEntry(null);
-        setTickingSeconds(0);
-        setTodayTrackedSeconds(0);
-        setMounted(true);
-        return;
-      }
+      // Internal mode (no View-as tenant) is valid for staff/admin time tracking.
 
       // Prevent repeated restore calls for same user+tenant scope.
       const restoreKey = `${user.id}:${activeTenantSlug}`;
@@ -113,7 +105,7 @@ export function useFloatingTimer() {
         tenantSlug: activeTenantSlug,
       });
 
-      const running = await getRunningTimerForStaff(user.id);
+      const running = await timerApi.getRunningTimerForTenant(activeTenantSlug ?? undefined);
       console.log("[FloatingTimerRestore] running lookup", {
         userId: user.id,
         tenantSlug: activeTenantSlug,
@@ -121,8 +113,8 @@ export function useFloatingTimer() {
         runningTenantSlug: running?.tenant_slug ?? null,
       });
 
-      // Only auto-restore when running entry matches current impersonated tenant.
-      const scopedRunning = running && running.tenant_slug === activeTenantSlug ? running : null;
+      // Server query is already tenant-scoped.
+      const scopedRunning = running;
       setRunningEntry(scopedRunning);
 
       if (scopedRunning?.started_at) {
@@ -133,7 +125,7 @@ export function useFloatingTimer() {
         setTickingSeconds(0);
       }
 
-      const tracked = await getTodayTrackedSeconds(user.id, activeTenantSlug);
+      const tracked = await timerApi.getTodayTrackedSecondsForTenant(activeTenantSlug ?? undefined);
       setTodayTrackedSeconds(tracked);
     } catch (e) {
       console.error("[FloatingTimerHydrate] error", e);
@@ -165,6 +157,58 @@ export function useFloatingTimer() {
   }, [tenantLabel, setTenantLabel]);
 
   useEffect(() => {
+    if (idleReminderTimerRef.current) {
+      window.clearTimeout(idleReminderTimerRef.current);
+      idleReminderTimerRef.current = null;
+    }
+
+    // Only remind staff/admin while actively viewing as client, once hydration is done.
+    if (!user || !isStaff || !isViewAsTimerContext || loading) {
+      hideIdleReminder();
+      return;
+    }
+
+    // Do not remind when timer is already running.
+    if (runningEntry?.id) {
+      hideIdleReminder();
+      return;
+    }
+
+    // Respect per-tenant cooldown. If already visible, keep it visible.
+    const reminderTenantKey = activeTenantSlug;
+    const lastShownAt = Number(idleReminderLastShownAtByTenant[reminderTenantKey] ?? 0);
+    const now = Date.now();
+    if (lastShownAt > 0 && now - lastShownAt < IDLE_REMINDER_COOLDOWN_MS) {
+      if (!idleReminderVisible) {
+        hideIdleReminder();
+      }
+      return;
+    }
+
+    idleReminderTimerRef.current = window.setTimeout(() => {
+      markIdleReminderShown(reminderTenantKey, Date.now());
+    }, IDLE_REMINDER_DELAY_MS);
+
+    return () => {
+      if (idleReminderTimerRef.current) {
+        window.clearTimeout(idleReminderTimerRef.current);
+        idleReminderTimerRef.current = null;
+      }
+    };
+  }, [
+    user?.id,
+    isStaff,
+    isViewAsTimerContext,
+    activeTenantSlug,
+    runningEntry?.id,
+    loading,
+    idleReminderVisible,
+    idleReminderLastShownAtByTenant,
+    hideIdleReminder,
+    markIdleReminderShown,
+  ]);
+
+  useEffect(() => {
     if (tickerRef.current) {
       window.clearInterval(tickerRef.current);
       tickerRef.current = null;
@@ -190,34 +234,27 @@ export function useFloatingTimer() {
 
   const start = useCallback(async () => {
     if (!user || !isStaff) return;
-    if (!activeTenantSlug) {
-      setError("Select a client with View as before starting timer.");
-      return;
-    }
 
     setLoading(true);
     setError(null);
     try {
-      const tenant = tenants.find((t: any) => t.slug === activeTenantSlug);
-
       console.log("[FloatingTimerStart]", {
         userId: user.id,
         tenantSlug: activeTenantSlug,
+        mode: timerMode,
       });
 
-      const { entry } = await startOrResumeTimer({
-        staffUserId: user.id,
-        tenantSlug: activeTenantSlug,
-        organizationId: tenant?.id != null ? String(tenant.id) : null,
+      const { entry } = await timerApi.startOrResumeTimer({
+        tenantSlug: activeTenantSlug ?? undefined,
         notes: notesDraft || null,
         projectId: projectId || null,
         taskId: taskId || null,
-        billable,
+        billable: timerMode === "internal" ? false : billable,
       });
 
       setRunningEntry(entry as TimeEntryRow);
       setExpanded(false);
-      const tracked = await getTodayTrackedSeconds(user.id, activeTenantSlug);
+      const tracked = await timerApi.getTodayTrackedSecondsForTenant(activeTenantSlug ?? undefined);
       setTodayTrackedSeconds(tracked);
     } catch (e) {
       console.error("[FloatingTimerStart] error", e);
@@ -229,7 +266,7 @@ export function useFloatingTimer() {
     user,
     isStaff,
     activeTenantSlug,
-    tenants,
+    timerMode,
     notesDraft,
     projectId,
     taskId,
@@ -251,22 +288,22 @@ export function useFloatingTimer() {
       console.log("[FloatingTimerStop]", {
         userId: user.id,
         tenantSlug: activeTenantSlug,
+        mode: timerMode,
         entryId: runningEntry.id,
       });
 
-      await stopTimer({
+      await timerApi.stopTimer({
         entryId: String(runningEntry.id),
-        staffUserId: user.id,
-        startedAt: runningEntry.started_at,
+        tenantSlug: activeTenantSlug ?? undefined,
         notes: notesDraft || null,
         projectId: projectId || null,
         taskId: taskId || null,
-        billable,
+        billable: timerMode === "internal" ? false : billable,
       });
 
       setRunningEntry(null);
       setTickingSeconds(0);
-      const tracked = await getTodayTrackedSeconds(user.id, activeTenantSlug);
+      const tracked = await timerApi.getTodayTrackedSecondsForTenant(activeTenantSlug ?? undefined);
       setTodayTrackedSeconds(tracked);
       resetDrafts();
     } catch (e) {
@@ -281,6 +318,7 @@ export function useFloatingTimer() {
     runningEntry?.id,
     runningEntry?.started_at,
     activeTenantSlug,
+    timerMode,
     notesDraft,
     projectId,
     taskId,
@@ -297,6 +335,7 @@ export function useFloatingTimer() {
     canShow,
     isStaff,
     isImpersonating: !!activeTenantSlug,
+    timerMode,
     activeTenantSlug,
     tenantLabel,
     running: !!runningEntry,
@@ -325,6 +364,8 @@ export function useFloatingTimer() {
 
     start,
     stop,
+    dismissIdleReminder: hideIdleReminder,
+    idleReminderVisible,
     refresh: hydrate,
   };
 }
