@@ -186,9 +186,26 @@ export default function AdminChat() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dmReadArmedRef = useRef(false);
+  const dmMarkReadInFlightRef = useRef(false);
+  const lastMarkedDmMessageIdByKeyRef = useRef<Map<string, number>>(new Map());
+  const teamReadArmedRef = useRef(false);
+  const teamMarkReadInFlightRef = useRef(false);
+  const lastMarkedTeamMessageIdRef = useRef<number | null>(null);
 
   // Tenant list for sidebar
   const { data: tenants = [] } = trpc.tenant.list.useQuery();
+  const dmConversationsQuery = trpc.chat.dmConversations.useQuery(
+    { tenantSlug: undefined },
+    {
+      enabled: !!user,
+      staleTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+      refetchInterval: 8_000,
+    },
+  );
+  const serverDmConversations = dmConversationsQuery.data ?? [];
 
   const getClientFromUrl = useCallback((): string | null => {
     if (typeof window === "undefined") return null;
@@ -320,6 +337,7 @@ export default function AdminChat() {
   const sendMsg = trpc.chat.send.useMutation();
   const sendFile = trpc.chat.sendFile.useMutation();
   const sendReply = trpc.chat.sendReply.useMutation();
+  const markReadMutation = trpc.chat.markRead.useMutation();
   const resolveDmMutation = trpc.chat.resolveDm.useMutation();
   const peopleSearchQuery = useMemo(() => {
     const raw = searchQuery.trim();
@@ -333,6 +351,24 @@ export default function AdminChat() {
   const { data: mentionCandidates = [] } = trpc.chat.mentionCandidates.useQuery(
     { tenantSlug: selectedSlug ?? "", q: undefined },
     { enabled: !!selectedSlug, staleTime: 20_000 },
+  );
+  const teamChatLaneKey = `tenant:${INTERNAL_CHAT_TENANT_SLUG}`;
+  const { data: unreadSummary = {} } = trpc.chat.unreadSummary.useQuery(
+    {
+      lanes: [
+        {
+          key: teamChatLaneKey,
+          tenantSlug: INTERNAL_CHAT_TENANT_SLUG,
+          assignmentId: null,
+          dmKey: null,
+        },
+      ],
+    },
+    {
+      enabled: !!user,
+      staleTime: 10_000,
+      refetchInterval: 20_000,
+    },
   );
   const mentionLabels = useMemo(
     () => buildMentionLabels(mentionCandidates as MentionCandidate[]),
@@ -368,6 +404,66 @@ export default function AdminChat() {
     }
   }, [getThread.data]);
 
+  useEffect(() => {
+    if (!activeDmKey) return;
+    if (!selectedSlug) return;
+    if (!dmReadArmedRef.current) return;
+    if (!messages.length) return;
+    if (dmMarkReadInFlightRef.current) return;
+
+    const latest = messages[messages.length - 1];
+    const latestId = Number(latest?.id ?? 0);
+    if (!Number.isFinite(latestId) || latestId <= 0) return;
+
+    const prevMarked = lastMarkedDmMessageIdByKeyRef.current.get(activeDmKey);
+    if (prevMarked === latestId) return;
+
+    dmMarkReadInFlightRef.current = true;
+    void markReadMutation.mutateAsync({
+      tenantSlug: selectedSlug ?? undefined,
+      dmKey: activeDmKey,
+      lastReadMessageId: latestId,
+    }).then(() => {
+      lastMarkedDmMessageIdByKeyRef.current.set(activeDmKey, latestId);
+      void dmConversationsQuery.refetch();
+    }).catch(() => {
+      // best-effort
+    }).finally(() => {
+      dmMarkReadInFlightRef.current = false;
+    });
+  }, [activeDmKey, selectedSlug, messages, markReadMutation, dmConversationsQuery]);
+
+  useEffect(() => {
+    const teamKey = `tenant:${INTERNAL_CHAT_TENANT_SLUG}`;
+    if (selectedConversationKey !== teamKey) return;
+    if (selectedSlug !== INTERNAL_CHAT_TENANT_SLUG) return;
+    if (activeDmKey) return;
+    if (!teamReadArmedRef.current) return;
+    if (!messages.length) return;
+    if (teamMarkReadInFlightRef.current) return;
+
+    const latest = messages[messages.length - 1];
+    const latestId = Number(latest?.id ?? 0);
+    if (!Number.isFinite(latestId) || latestId <= 0) return;
+    if (lastMarkedTeamMessageIdRef.current === latestId) return;
+
+    teamMarkReadInFlightRef.current = true;
+    void markReadMutation.mutateAsync({
+      tenantSlug: INTERNAL_CHAT_TENANT_SLUG,
+      dmKey: undefined,
+      assignmentId: undefined,
+      lastReadMessageId: latestId,
+    }).then(() => {
+      lastMarkedTeamMessageIdRef.current = latestId;
+      teamReadArmedRef.current = false;
+      void utils.chat.unreadSummary.invalidate();
+    }).catch(() => {
+      // best-effort
+    }).finally(() => {
+      teamMarkReadInFlightRef.current = false;
+    });
+  }, [selectedConversationKey, selectedSlug, activeDmKey, messages, markReadMutation, utils.chat.unreadSummary]);
+
   // URL -> selected conversation sync on tenant load / refresh
   useEffect(() => {
     if (!tenants.length) return;
@@ -387,11 +483,6 @@ export default function AdminChat() {
     }
 
     const fallback = tenants[0]?.slug ?? null;
-    if (!selectedSlug && fallback) {
-      setSelectedSlug(fallback);
-      setClientInUrl(fallback);
-      return;
-    }
 
     if (fromUrl && !existsInTenants && fallback) {
       if (selectedSlug !== fallback) setSelectedSlug(fallback);
@@ -698,6 +789,48 @@ export default function AdminChat() {
   const selectedTenantName = tenants.find((t) => t.slug === selectedSlug)?.company_name ?? selectedSlug ?? "client";
 
   type ConversationLane = { key: string; title: string; subtitle: string; tenantSlug: string; dmKey?: string | null; groupLabel: string; packageTier?: PackageTier | null };
+
+  const mergedDmLanes = useMemo(() => {
+    const map = new Map<string, { key: string; dmKey: string; title: string; tenantSlug: string; subtitle: string; groupLabel: string }>();
+
+    for (const dm of serverDmConversations as any[]) {
+      const dmKey = String(dm?.dmKey || "").trim();
+      const tenantSlug = String(dm?.tenantSlug || "").trim();
+      if (!dmKey || !tenantSlug) continue;
+      const key = `dm:${dmKey}`;
+      map.set(key, {
+        key,
+        dmKey,
+        title: String(dm?.peerDisplayName || `User ${dm?.peerUserId ?? ""}` || "Direct message"),
+        tenantSlug,
+        subtitle: "Direct message",
+        groupLabel: "DIRECT MESSAGES",
+      });
+    }
+
+    for (const d of dmLanes) {
+      if (!d || !d.key?.startsWith("dm:")) continue;
+      if (!map.has(d.key)) map.set(d.key, d);
+    }
+
+    return Array.from(map.values());
+  }, [serverDmConversations, dmLanes]);
+
+
+  const dmMetaByKey = useMemo(() => {
+    const map = new Map<string, { unreadCount: number; lastMessageAt: string | null }>();
+    for (const dm of serverDmConversations as any[]) {
+      const dmKey = String(dm?.dmKey || "").trim();
+      if (!dmKey) continue;
+      const key = `dm:${dmKey}`;
+      map.set(key, {
+        unreadCount: Number(dm?.unreadCount ?? 0),
+        lastMessageAt: dm?.lastMessageAt ? String(dm.lastMessageAt) : null,
+      });
+    }
+    return map;
+  }, [serverDmConversations]);
+
   const conversationLanes = useMemo<ConversationLane[]>(() => {
     const lanes: ConversationLane[] = [
       {
@@ -723,12 +856,23 @@ export default function AdminChat() {
         packageTier: (t.package_tier as PackageTier) ?? null,
       });
     }
-    const filteredDm = dmLanes;
-    for (const d of filteredDm) {
-      lanes.push({ key: d.key, title: d.title, subtitle: d.subtitle, tenantSlug: d.tenantSlug, dmKey: d.dmKey, groupLabel: "DIRECT MESSAGES" });
+
+    for (const d of mergedDmLanes) {
+      const isDm = d.key.startsWith("dm:") || !!d.dmKey;
+      const unreadCount = Number(dmMetaByKey.get(d.key)?.unreadCount ?? 0);
+      const groupLabel = isDm && unreadCount > 0 ? "INTERNAL" : "DIRECT MESSAGES";
+      lanes.push({
+        key: d.key,
+        title: d.title,
+        subtitle: d.subtitle,
+        tenantSlug: d.tenantSlug,
+        dmKey: d.dmKey,
+        groupLabel,
+      });
     }
+
     return lanes;
-  }, [tenants, dmLanes]);
+  }, [tenants, mergedDmLanes, dmMetaByKey]);
 
   const groupedConversationLanes = useMemo(() => {
     const order = ["INTERNAL", "CFO", "GROWTH 2", "GROWTH 1", "MOMENTUM", "LEGACY", "DIRECT MESSAGES"];
@@ -738,6 +882,30 @@ export default function AdminChat() {
       list.push(lane);
       map.set(lane.groupLabel, list);
     }
+
+    const internal = map.get("INTERNAL") ?? [];
+    if (internal.length > 0) {
+      const teamKey = `tenant:${INTERNAL_CHAT_TENANT_SLUG}`;
+      internal.sort((a, b) => {
+        if (a.key === teamKey) return -1;
+        if (b.key === teamKey) return 1;
+        const aTs = new Date(dmMetaByKey.get(a.key)?.lastMessageAt ?? 0).getTime();
+        const bTs = new Date(dmMetaByKey.get(b.key)?.lastMessageAt ?? 0).getTime();
+        return bTs - aTs;
+      });
+      map.set("INTERNAL", internal);
+    }
+
+    const direct = map.get("DIRECT MESSAGES") ?? [];
+    if (direct.length > 0) {
+      direct.sort((a, b) => {
+        const aTs = new Date(dmMetaByKey.get(a.key)?.lastMessageAt ?? 0).getTime();
+        const bTs = new Date(dmMetaByKey.get(b.key)?.lastMessageAt ?? 0).getTime();
+        return bTs - aTs;
+      });
+      map.set("DIRECT MESSAGES", direct);
+    }
+
     const groups = Array.from(map.entries())
       .filter(([, items]) => items.length > 0)
       .sort(([a], [b]) => {
@@ -749,7 +917,7 @@ export default function AdminChat() {
         return ia - ib;
       });
     return groups;
-  }, [conversationLanes]);
+  }, [conversationLanes, dmMetaByKey]);
 
   useEffect(() => {
     if (collapsePrefsHydrated) return;
@@ -869,6 +1037,40 @@ export default function AdminChat() {
     return groups;
   }, [groupedConversationLanes, starredItems]);
 
+  // Keep local DM cache as a convenience, but fold in server-authoritative DM discovery.
+  useEffect(() => {
+    if (!mergedDmLanes.length) return;
+    setDmLanes((prev) => {
+      const byKey = new Map(prev.map((d) => [d.key, d] as const));
+      let changed = false;
+      for (const lane of mergedDmLanes) {
+        const existing = byKey.get(lane.key);
+        if (!existing) {
+          byKey.set(lane.key, lane);
+          changed = true;
+          continue;
+        }
+        if (
+          existing.dmKey !== lane.dmKey ||
+          existing.tenantSlug !== lane.tenantSlug ||
+          existing.title !== lane.title ||
+          existing.subtitle !== lane.subtitle
+        ) {
+          byKey.set(lane.key, lane);
+          changed = true;
+        }
+      }
+      return changed ? Array.from(byKey.values()) : prev;
+    });
+  }, [mergedDmLanes]);
+
+  useEffect(() => {
+    if (!dmConversationsQuery.isSuccess) return;
+    // immediate sync after fresh DM payload arrives
+    void dmConversationsQuery.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
   useEffect(() => {
     let cancelled = false;
     async function loadPreviews() {
@@ -892,8 +1094,8 @@ export default function AdminChat() {
 
   const activeDmLane = useMemo(() => {
     if (!activeDmKey) return null;
-    return dmLanes.find((d) => d.dmKey === activeDmKey) ?? null;
-  }, [dmLanes, activeDmKey]);
+    return mergedDmLanes.find((d) => d.dmKey === activeDmKey) ?? null;
+  }, [mergedDmLanes, activeDmKey]);
 
   useEffect(() => {
     if (!selectedSlug) return;
@@ -912,7 +1114,7 @@ export default function AdminChat() {
     if (saved && conversationLanes.some((l) => l.key === saved)) {
       setSelectedConversationKey(saved);
       if (saved.startsWith("dm:")) {
-        const dm = dmLanes.find((d) => d.key === saved);
+        const dm = mergedDmLanes.find((d) => d.key === saved);
         setActiveDmKey(dm?.dmKey ?? null);
       } else {
         setActiveDmKey(null);
@@ -921,7 +1123,7 @@ export default function AdminChat() {
     }
     const def = `tenant:${selectedSlug}`;
     setSelectedConversationKey(def);
-  }, [selectedSlug, selectedConversationKey, laneStorageKey, conversationLanes, dmLanes, getInternalFromUrl]);
+  }, [selectedSlug, selectedConversationKey, laneStorageKey, conversationLanes, mergedDmLanes, getInternalFromUrl]);
 
   const handleClientClick = useCallback((clientId: string) => {
 
@@ -948,9 +1150,9 @@ export default function AdminChat() {
   }, [selectedSlug, setClientInUrl, setInternalInUrl]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {/* Client Sidebar */}
-      <div className="w-72 border-r border-border flex flex-col bg-[#0f1012] shrink-0">
+      <div className="w-72 border-r border-border flex flex-col bg-[#0f1012] shrink-0 min-h-0 overflow-hidden">
         <div className="px-3 py-3 border-b border-border space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Conversations</p>
           <div className="relative">
@@ -1000,6 +1202,7 @@ export default function AdminChat() {
                         if (has) return prev;
                         return [...prev, { key: laneKey, dmKey, title, tenantSlug: selectedSlug ?? "", subtitle: "Direct message", groupLabel: "DIRECT MESSAGES" }];
                       });
+                      dmReadArmedRef.current = true;
                       setSelectedConversationKey(laneKey);
                       setActiveDmKey(dmKey);
                     } catch (err: any) {
@@ -1040,6 +1243,7 @@ export default function AdminChat() {
                               if (has) return prev;
                               return [...prev, { key: laneKey, dmKey, title, tenantSlug: selectedSlug ?? "", subtitle: "Direct message", groupLabel: "DIRECT MESSAGES" }];
                             });
+                            dmReadArmedRef.current = true;
                             setSelectedConversationKey(laneKey);
                             setActiveDmKey(dmKey);
                           } catch (err: any) {
@@ -1069,10 +1273,14 @@ export default function AdminChat() {
             )}
           </div>
         </div>
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           <div className="px-2 py-2 space-y-3">
             {groupedConversationLanesWithStarred.map(([group, items]) => {
-              const isCollapsed = collapsedGroups.has(group);
+              const teamChatUnreadCount = Number((unreadSummary as Record<string, number>)[teamChatLaneKey] ?? 0);
+              const hasUnreadInternalDm = items.some((l) => !!l.dmKey && Number(dmMetaByKey.get(l.key)?.unreadCount ?? 0) > 0);
+              const hasUnreadInternal = group === "INTERNAL" && (teamChatUnreadCount > 0 || hasUnreadInternalDm);
+              const savedCollapsed = collapsedGroups.has(group);
+              const isCollapsed = group === "INTERNAL" ? (hasUnreadInternal ? false : savedCollapsed) : savedCollapsed;
               const starredInGroup = items.filter((l) => starredConversations.has(l.key)).length;
               return (
                 <div key={group} className="space-y-1.5">
@@ -1097,16 +1305,34 @@ export default function AdminChat() {
                       {items.map((lane) => {
                         const active = lane.key === selectedConversationKey;
                         const pv = previews[lane.key] ?? {};
+                        const unread = Number(dmMetaByKey.get(lane.key)?.unreadCount ?? 0);
+                        const isTeamChatLane = lane.key === teamChatLaneKey;
+                        const teamUnread = isTeamChatLane ? Number((unreadSummary as Record<string, number>)[teamChatLaneKey] ?? 0) : 0;
+                        const hasUnread = isTeamChatLane ? teamUnread > 0 : (!!lane.dmKey && unread > 0);
                         return (
                           <button
                             key={lane.key}
                             onClick={() => {
+                              if (lane.dmKey) {
+                                setSelectedSlug(lane.tenantSlug);
+                                dmReadArmedRef.current = true;
+                                teamReadArmedRef.current = false;
+                                setSelectedConversationKey(lane.key);
+                                setActiveDmKey(lane.dmKey ?? null);
+                                const [pathname] = location.split("?");
+                                navigate(pathname, { replace: true });
+                                return;
+                              }
+
                               setSelectedSlug(lane.tenantSlug);
                               if (lane.tenantSlug === INTERNAL_CHAT_TENANT_SLUG) {
+                                teamReadArmedRef.current = true;
                                 setInternalInUrl();
                               } else {
+                                teamReadArmedRef.current = false;
                                 setClientInUrl(lane.tenantSlug);
                               }
+                              dmReadArmedRef.current = false;
                               setSelectedConversationKey(lane.key);
                               setActiveDmKey(lane.dmKey ?? null);
                             }}
@@ -1123,7 +1349,7 @@ export default function AdminChat() {
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-medium text-foreground truncate">{lane.title}</p>
+                                  <p className={cn("text-xs text-foreground truncate", hasUnread ? "font-semibold" : "font-medium")}>{lane.title}</p>
                                   <div className="flex items-center gap-1.5 shrink-0">
                                     <span
                                       role="button"
@@ -1158,6 +1384,11 @@ export default function AdminChat() {
                                         className={starredConversations.has(lane.key) ? "text-yellow-400 fill-yellow-400" : "text-zinc-500"}
                                       />
                                     </span>
+                                    {hasUnread && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
+                                        {(isTeamChatLane ? teamUnread : unread) > 9 ? "9+" : (isTeamChatLane ? teamUnread : unread)}
+                                      </span>
+                                    )}
                                     <span className="text-[10px] text-muted-foreground">{pv.createdAt ? formatTime(new Date(pv.createdAt)) : ""}</span>
                                   </div>
                                 </div>

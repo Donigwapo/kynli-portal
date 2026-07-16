@@ -58,7 +58,11 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
     }
 
     const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
-    if (isStaffPortfolioUser && (location === "/portal/sales" || location === "/portal/financials")) {
+    if (
+      isStaffPortfolioUser &&
+      !impersonatingTenantSlug &&
+      (location === "/portal/sales" || location === "/portal/financials")
+    ) {
       navigate("/portal/clients");
       return;
     }

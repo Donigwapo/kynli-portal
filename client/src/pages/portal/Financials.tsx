@@ -1,15 +1,17 @@
-import { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from "recharts";
+import { useState, useMemo, useRef } from "react";
+import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X } from "lucide-react";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
-const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const TEAL = "oklch(0.75 0.15 192)";
 const GREEN = "oklch(0.68 0.18 145)";
 const RED = "oklch(0.62 0.22 25)";
-const MUTED = "oklch(0.50 0.008 240)";
 
 function fmtD(val: number | string | null | undefined) {
   const n = typeof val === "number" ? val : parseFloat(String(val ?? "0"));
@@ -33,6 +35,18 @@ function varianceExpense(actual: number, budget: number) {
   const v = actual - budget;
   const pct = budget !== 0 ? ((actual / budget) * 100 - 100) : 0;
   return { v, pct, isGood: v <= 0 };
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function VarianceBadge({ v, pct, isGood }: { v: number; pct: number; isGood: boolean }) {
@@ -266,8 +280,57 @@ export default function Financials() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [expandedMonth, setExpandedMonth] = useState<number | null>(now.getMonth() + 1);
+  const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
   const tslug = impersonatingTenantSlug ?? undefined;
+  const canImportPeriod = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role) && !!impersonatingTenantSlug;
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState<string>("");
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [selectedImportMonth, setSelectedImportMonth] = useState<number>(now.getMonth() + 1);
+  const [selectedImportYear, setSelectedImportYear] = useState<number>(year || now.getFullYear());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const validateAndSetPdfFile = (files: FileList | File[] | null | undefined) => {
+    setUploadError("");
+    if (!files || files.length === 0) return;
+    if (files.length > 1) {
+      setUploadError("Please select only one PDF file.");
+      return;
+    }
+
+    const file = files[0];
+    const isPdfType = file.type === "application/pdf";
+    const isPdfName = file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdfType && !isPdfName) {
+      setUploadError("Only PDF files are allowed.");
+      return;
+    }
+
+    setSelectedPdfFile(file);
+  };
+
+  const clearSelectedPdfFile = () => {
+    setSelectedPdfFile(null);
+    setUploadError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const resetImportDialogState = () => {
+    setSelectedPdfFile(null);
+    setUploadError("");
+    setIsDragActive(false);
+    setSelectedImportMonth(now.getMonth() + 1);
+    setSelectedImportYear(year || now.getFullYear());
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleAnalyzePlaceholder = () => {
+    if (!selectedPdfFile) return;
+    if (!selectedImportMonth || !selectedImportYear) return;
+    toast.info("PDF upload processing will be connected next.");
+  };
 
   const { data: financials = [], isLoading } = trpc.financials.get.useQuery({ year, tenantSlug: tslug });
   const { data: lineItems = [] } = trpc.financials.lineItems.useQuery(
@@ -276,23 +339,6 @@ export default function Financials() {
   );
 
   const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
-
-  // Chart data for the year
-  const chartData = MONTHS_SHORT.map((month, i) => {
-    const rec = financials.find(f => f.month === i + 1);
-    return {
-      month,
-      Revenue: fmtN(rec?.revenue),
-      Budget: fmtN(rec?.budget_revenue),
-      Expenses: fmtN(rec?.expenses),
-    };
-  });
-
-  // YTD summary
-  const ytdRevenue = useMemo(() => financials.reduce((s, f) => s + fmtN(f.revenue), 0), [financials]);
-  const ytdExpenses = useMemo(() => financials.reduce((s, f) => s + fmtN(f.expenses), 0), [financials]);
-  const ytdProfit = ytdRevenue - ytdExpenses;
-  const ytdMargin = ytdRevenue > 0 ? (ytdProfit / ytdRevenue) * 100 : 0;
 
   // Periods sorted newest first
   const periods = useMemo(() => [...financials].sort((a, b) => b.month - a.month), [financials]);
@@ -309,6 +355,18 @@ export default function Financials() {
             <p className="text-sm text-muted-foreground mt-0.5">Year: {year}</p>
           </div>
           <div className="flex items-center gap-2">
+            {canImportPeriod && (
+              <button
+                type="button"
+                onClick={() => {
+                  resetImportDialogState();
+                  setImportDialogOpen(true);
+                }}
+                className="bg-card border border-border text-foreground text-sm rounded-lg px-3 py-1.5 hover:bg-muted/20 transition-colors"
+              >
+                Import Period
+              </button>
+            )}
             <select
               value={year}
               onChange={e => setYear(Number(e.target.value))}
@@ -317,45 +375,6 @@ export default function Financials() {
               {years.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
-        </div>
-
-        {/* YTD Summary Cards */}
-        <div className="grid grid-cols-4 gap-4">
-          {[
-            { label: "Revenue YTD", value: fmtD(ytdRevenue), icon: <DollarSign size={14} />, color: TEAL },
-            { label: "Expenses YTD", value: fmtD(ytdExpenses), icon: <TrendingDown size={14} />, color: RED },
-            { label: "Net Profit YTD", value: fmtD(ytdProfit), icon: <TrendingUp size={14} />, color: ytdProfit >= 0 ? GREEN : RED },
-            { label: "Avg Net Margin", value: `${ytdMargin.toFixed(1)}%`, icon: <Percent size={14} />, color: ytdMargin >= 35 ? GREEN : RED },
-          ].map(card => (
-            <div key={card.label} className="bg-card border border-border rounded-xl p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{card.label}</span>
-                <span className="text-muted-foreground">{card.icon}</span>
-              </div>
-              <div className="text-2xl font-bold" style={{ color: card.color }}>{card.value}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Revenue vs Budget vs Expenses Chart */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h2 className="text-sm font-semibold text-foreground mb-4">{year} — Revenue vs Budget vs Expenses</h2>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: MUTED, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: MUTED, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v / 1000}k`} />
-              <Tooltip
-                contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
-                labelStyle={{ color: "var(--foreground)" }}
-                formatter={(v: number) => [fmtD(v)]}
-              />
-              <Legend wrapperStyle={{ fontSize: 11, color: MUTED }} />
-              <Bar dataKey="Revenue" fill={TEAL} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="Budget" fill={GREEN} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="Expenses" fill={RED} radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
         </div>
 
         {/* Period History — collapsible rows */}
@@ -415,6 +434,150 @@ export default function Financials() {
             </div>
           )}
         </div>
+        <Dialog
+          open={importDialogOpen}
+          onOpenChange={(open) => {
+            setImportDialogOpen(open);
+            if (!open) {
+              resetImportDialogState();
+            }
+          }}
+        >
+          <DialogContent className="bg-card border-border max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Import Financial Period</DialogTitle>
+              <DialogDescription>
+                Upload a monthly financial PDF. The file will be analyzed to extract income sources and expenses.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3">
+              <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                <p className="text-sm font-medium text-foreground">Financial Period</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="import-month" className="block text-xs text-muted-foreground mb-1">Month</label>
+                    <select
+                      id="import-month"
+                      value={selectedImportMonth}
+                      onChange={(e) => setSelectedImportMonth(Number(e.target.value))}
+                      className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {MONTHS_LONG.map((monthName, idx) => (
+                        <option key={monthName} value={idx + 1}>{monthName}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="import-year" className="block text-xs text-muted-foreground mb-1">Year</label>
+                    <select
+                      id="import-year"
+                      value={selectedImportYear}
+                      onChange={(e) => setSelectedImportYear(Number(e.target.value))}
+                      className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {years.map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Selected period: {MONTHS_LONG[Math.max(0, (selectedImportMonth || 1) - 1)]} {selectedImportYear}
+                </p>
+              </div>
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(false);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(false);
+                  validateAndSetPdfFile(e.dataTransfer?.files ?? null);
+                }}
+                className={
+                  `rounded-lg border-2 border-dashed p-5 text-center transition-colors ` +
+                  (isDragActive
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-primary/50")
+                }
+              >
+                <div className="flex flex-col items-center gap-2">
+                  <Upload className="w-5 h-5 text-muted-foreground" />
+                  <p className="text-sm text-foreground">Drag and drop a PDF here, or</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    Browse File
+                  </Button>
+                  <p className="text-xs text-muted-foreground">PDF only • One file</p>
+                </div>
+                <Input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  onChange={(e) => validateAndSetPdfFile(e.target.files)}
+                />
+              </div>
+
+              {uploadError && (
+                <p className="text-sm text-red-400">{uploadError}</p>
+              )}
+
+              {selectedPdfFile && (
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm text-foreground truncate">{selectedPdfFile.name}</p>
+                    <p className="text-xs text-muted-foreground">{formatFileSize(selectedPdfFile.size)}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={clearSelectedPdfFile}
+                    aria-label="Remove selected file"
+                    title="Remove"
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setImportDialogOpen(false);
+                  resetImportDialogState();
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleAnalyzePlaceholder}
+                disabled={!selectedPdfFile || !selectedImportMonth || !selectedImportYear}
+              >
+                Upload &amp; Analyze
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </>
   );

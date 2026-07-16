@@ -5490,17 +5490,25 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
         const userId = normalizeUserId(ctx.user.id);
         const wantedTenant = input?.tenantSlug ? sanitizeTenantSlug(input.tenantSlug) : undefined;
 
-        // Resolve which tenant scopes this user can access for DM discovery.
-        const allowedTenantSlugs = isInternalChatSlug(wantedTenant)
-          ? [sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)]
-          : await resolveTenantSlugsForUser(ctx.user, wantedTenant, ctx.clientWorkspaceTenantSlug);
+        let rows: any[] = [];
 
-        const chunks = await Promise.all(
-          allowedTenantSlugs.map((slug) => listDmConversationsForUser({ userId, tenantSlug: slug }))
-        );
+        if (ctx.user.role === "admin" && !wantedTenant) {
+          // Admin DM discovery without explicit tenant context should be global (dm_key scoped).
+          rows = await listDmConversationsForUser({ userId });
+        } else {
+          // Resolve which tenant scopes this user can access for DM discovery.
+          const allowedTenantSlugs = isInternalChatSlug(wantedTenant)
+            ? [sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)]
+            : await resolveTenantSlugsForUser(ctx.user, wantedTenant, ctx.clientWorkspaceTenantSlug);
+
+          const chunks = await Promise.all(
+            allowedTenantSlugs.map((slug) => listDmConversationsForUser({ userId, tenantSlug: slug }))
+          );
+          rows = chunks.flat();
+        }
 
         const merged = new Map<string, any>();
-        for (const row of chunks.flat()) {
+        for (const row of rows) {
           if (!row?.dmKey) continue;
           const existing = merged.get(row.dmKey);
           if (!existing) {

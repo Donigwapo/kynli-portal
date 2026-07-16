@@ -1351,6 +1351,7 @@ export default function Chat() {
     shouldStickToBottomRef.current = true;
     markReadInFlightRef.current = false;
     lastMarkedMessageIdRef.current = null;
+    dmReadArmedRef.current = !!activeConversation?.key && !String(activeConversation.key).startsWith("dm:");
     setReplyTarget(null);
     setThreadMsg(null);
   }, [activeConversation?.key]);
@@ -1387,6 +1388,7 @@ export default function Chat() {
   const shouldStickToBottomRef = useRef(true);
   const markReadInFlightRef = useRef(false);
   const lastMarkedMessageIdRef = useRef<number | null>(null);
+  const dmReadArmedRef = useRef(false);
 
   const listPayload = {
     tenantSlug: activeTenantSlug,
@@ -1444,6 +1446,7 @@ export default function Chat() {
   const markLaneAsRead = useCallback(() => {
     if (!activeTenantSlug) return;
     if (!messages.length) return;
+    if (isDmConversation && !dmReadArmedRef.current) return;
     const latest = messages[messages.length - 1];
     if (!latest?.id) return;
 
@@ -1472,13 +1475,14 @@ export default function Chat() {
   const handleMessagesScroll = useCallback(() => {
     const el = messagesScrollRef.current;
     if (!el) return;
+    if (isDmConversation) dmReadArmedRef.current = true;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     // If user scrolled up, don't auto-jump to bottom on polling updates.
     shouldStickToBottomRef.current = distanceFromBottom < 80;
     if (distanceFromBottom < 80) {
       markLaneAsRead();
     }
-  }, [markLaneAsRead]);
+  }, [markLaneAsRead, isDmConversation]);
   useEffect(() => {
     if (!messages.length) return;
     if (debouncedSearch) return;
@@ -1974,7 +1978,14 @@ export default function Chat() {
           )}
         </div>
 
-        <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 scroll-smooth overscroll-contain">
+        <div
+          ref={messagesScrollRef}
+          onScroll={handleMessagesScroll}
+          onPointerDown={() => {
+            if (isDmConversation) dmReadArmedRef.current = true;
+          }}
+          className="flex-1 min-h-0 overflow-y-auto px-6 py-4 scroll-smooth overscroll-contain"
+        >
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-16">
               <div className="w-16 h-16 rounded-2xl bg-muted/30 border border-border flex items-center justify-center mb-4">
@@ -2290,6 +2301,7 @@ export default function Chat() {
                     console.log("[DM_LANE_ADDED]", lane);
                     return [...prev, lane];
                   });
+                  dmReadArmedRef.current = true;
                   setSelectedConversationKey(laneKey);
                   console.log("[DM_SELECTED_KEY]", laneKey);
                 } catch (e: any) {
@@ -2340,6 +2352,7 @@ export default function Chat() {
                             console.log("[DM_LANE_ADDED]", lane);
                             return [...prev, lane];
                           });
+                          dmReadArmedRef.current = true;
                           setSelectedConversationKey(laneKey);
                           console.log("[DM_SELECTED_KEY]", laneKey);
                         } catch (e: any) {
@@ -2383,7 +2396,10 @@ export default function Chat() {
                 return (
                   <button
                     key={conv.key}
-                    onClick={() => setSelectedConversationKey(conv.key)}
+                    onClick={() => {
+                      if (String(conv.key).startsWith("dm:")) dmReadArmedRef.current = true;
+                      setSelectedConversationKey(conv.key);
+                    }}
                     className={
                       `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
                       (active

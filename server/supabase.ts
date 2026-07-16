@@ -2008,19 +2008,34 @@ export async function getChatReadState(input: {
   dmKey?: string | null;
 }): Promise<{ lastReadMessageId: number | null; lastReadAt: string | null } | null> {
   const safeSlug = sanitizeTenantSlug(input.tenantSlug);
+
   let query = supabase
     .from(CHAT_READS_TABLE)
     .select("last_read_message_id,last_read_at")
-    .eq("user_id", Number(input.userId))
-    .eq("tenant_slug", safeSlug)
-    .limit(1);
+    .eq("user_id", Number(input.userId));
 
   if (input.dmKey) {
-    query = query.eq("dm_key", input.dmKey).is("assignment_id", null);
+    // DM read state is keyed by user + dm_key (tenant-agnostic).
+    // If multiple tenant-scoped legacy rows exist, use the most recent cursor.
+    query = query
+      .eq("dm_key", input.dmKey)
+      .is("assignment_id", null)
+      .order("last_read_at", { ascending: false, nullsFirst: false })
+      .order("last_read_message_id", { ascending: false, nullsFirst: false })
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .limit(1);
   } else if (input.assignmentId != null) {
-    query = query.eq("assignment_id", Number(input.assignmentId)).is("dm_key", null);
+    query = query
+      .eq("tenant_slug", safeSlug)
+      .eq("assignment_id", Number(input.assignmentId))
+      .is("dm_key", null)
+      .limit(1);
   } else {
-    query = query.is("assignment_id", null).is("dm_key", null);
+    query = query
+      .eq("tenant_slug", safeSlug)
+      .is("assignment_id", null)
+      .is("dm_key", null)
+      .limit(1);
   }
 
   const { data, error } = await query.maybeSingle();
@@ -2236,6 +2251,7 @@ export async function getChatUnreadCount(input: {
     .eq("visibility_scope", visibilityScope);
 
   if (input.dmKey) {
+    // DM unread is keyed by dm_key (tenant-agnostic).
     query = query.eq("dm_key", input.dmKey);
   } else {
     query = query.eq("tenant_slug", safeSlug).is("dm_key", null);

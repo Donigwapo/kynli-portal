@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { Streamdown } from "streamdown";
 
 type NoteCategory = "general" | "bookkeeping" | "tax" | "payroll" | "urgent" | "follow_up";
 
@@ -21,6 +22,33 @@ const CATEGORY_OPTIONS: Array<{ value: NoteCategory; label: string }> = [
   { value: "urgent", label: "Urgent" },
   { value: "follow_up", label: "Follow-up" },
 ];
+
+const NOTE_SHORTCODE_MAP: Record<string, string> = {
+  ":pushpin:": "📌",
+  ":warning:": "⚠️",
+  ":white_check_mark:": "✅",
+  ":bulb:": "💡",
+  ":date:": "📅",
+};
+
+function convertNoteShortcodes(content: string): string {
+  if (!content) return content;
+
+  const tokens = Object.keys(NOTE_SHORTCODE_MAP)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+
+  if (!tokens) return content;
+
+  const shortcodeRegex = new RegExp(
+    `(^|\\s|[([{"'])(${tokens})(?=$|\\s|[.,!?;:)\\]}"'])`,
+    "g",
+  );
+
+  return content.replace(shortcodeRegex, (_match, prefix: string, token: string) => {
+    return `${prefix}${NOTE_SHORTCODE_MAP[token] ?? token}`;
+  });
+}
 
 function formatDate(value: string) {
   const d = new Date(value);
@@ -381,7 +409,9 @@ export default function Notes() {
                         </span>
                       )}
                     </div>
-                    <p className="text-sm text-zinc-300/95 leading-7">{note.content}</p>
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-300/95 leading-7 prose-p:my-2 prose-headings:my-2 prose-headings:text-zinc-100 prose-strong:text-zinc-100 prose-ul:my-2 prose-ol:my-2 prose-ul:list-disc prose-ol:list-decimal prose-li:my-0.5 prose-li:marker:text-zinc-500 prose-a:text-emerald-300 prose-a:underline prose-a:decoration-emerald-500/50 hover:prose-a:text-emerald-200 prose-pre:bg-zinc-900/70 prose-pre:border prose-pre:border-zinc-800 prose-code:text-zinc-200">
+                      <Streamdown>{convertNoteShortcodes(String(note.content ?? ""))}</Streamdown>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1">
