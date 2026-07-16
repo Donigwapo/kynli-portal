@@ -290,6 +290,24 @@ export default function Financials() {
   const [isDragActive, setIsDragActive] = useState(false);
   const [selectedImportMonth, setSelectedImportMonth] = useState<number>(now.getMonth() + 1);
   const [selectedImportYear, setSelectedImportYear] = useState<number>(year || now.getFullYear());
+  const [isUploadingImport, setIsUploadingImport] = useState(false);
+  const [isDispatchingAnalysis, setIsDispatchingAnalysis] = useState(false);
+  const [uploadedFinancialPdfResult, setUploadedFinancialPdfResult] = useState<{
+    documentId: string;
+    fileKey: string;
+    fileName: string;
+    tenantSlug: string | null;
+    selectedMonth: number;
+    selectedYear: number;
+  } | null>(null);
+  const [analysisDispatchResult, setAnalysisDispatchResult] = useState<{
+    importId: string;
+    documentId: string;
+    selectedMonth: number;
+    selectedYear: number;
+    status: "processing";
+    fileName: string;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const validateAndSetPdfFile = (files: FileList | File[] | null | undefined) => {
@@ -317,19 +335,134 @@ export default function Financials() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const uploadMutation = trpc.documents.upload.useMutation();
+  const analyzeUploadedPdfMutation = trpc.financials.analyzeUploadedPdf.useMutation();
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error ?? new Error("Unable to read file"));
+      reader.readAsDataURL(file);
+    });
+
   const resetImportDialogState = () => {
     setSelectedPdfFile(null);
     setUploadError("");
     setIsDragActive(false);
     setSelectedImportMonth(now.getMonth() + 1);
     setSelectedImportYear(year || now.getFullYear());
+    setUploadedFinancialPdfResult(null);
+    setAnalysisDispatchResult(null);
+    setIsUploadingImport(false);
+    setIsDispatchingAnalysis(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleAnalyzePlaceholder = () => {
-    if (!selectedPdfFile) return;
-    if (!selectedImportMonth || !selectedImportYear) return;
-    toast.info("PDF upload processing will be connected next.");
+  const startAnalysisDispatch = async (args: { documentId: string; month: number; year: number; tenantSlug: string; fileName: string }) => {
+    setIsDispatchingAnalysis(true);
+    try {
+      const analysis = await analyzeUploadedPdfMutation.mutateAsync({
+        documentId: args.documentId,
+        month: Number(args.month),
+        year: Number(args.year),
+        tenantSlug: args.tenantSlug,
+      });
+
+      if (!analysis?.success || !analysis?.importId || analysis?.status !== "processing") {
+        throw new Error("Analysis dispatch did not return a valid processing response.");
+      }
+
+      setAnalysisDispatchResult({
+        importId: String(analysis.importId),
+        documentId: String(analysis.documentId),
+        selectedMonth: Number(args.month),
+        selectedYear: Number(args.year),
+        status: "processing",
+        fileName: args.fileName,
+      });
+
+      toast.success("Financial PDF uploaded and sent for analysis.");
+    } catch {
+      toast.error("The PDF was uploaded, but analysis could not be started. Please try again.");
+    } finally {
+      setIsDispatchingAnalysis(false);
+    }
+  };
+
+  const handleAnalyzePlaceholder = async () => {
+    if (isUploadingImport || isDispatchingAnalysis) return;
+    if (!selectedPdfFile || !selectedImportMonth || !selectedImportYear) return;
+
+    const isStaffImportRole = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+    if (!isStaffImportRole) {
+      toast.error("You do not have permission to import financial PDFs.");
+      return;
+    }
+
+    if (!impersonatingTenantSlug) {
+      toast.error("Please select a client workspace before importing financial data.");
+      return;
+    }
+
+    setIsUploadingImport(true);
+    try {
+      const base64 = await fileToBase64(selectedPdfFile);
+      const result = await uploadMutation.mutateAsync({
+        name: selectedPdfFile.name.replace(/\.[^.]+$/, "") || selectedPdfFile.name,
+        fileBase64: base64,
+        mimeType: "application/pdf",
+        fileName: selectedPdfFile.name,
+        fileSize: selectedPdfFile.size,
+        docType: "Financials",
+        year: Number(selectedImportYear),
+        month: Number(selectedImportMonth),
+        tenantSlug: impersonatingTenantSlug,
+      });
+
+      const documentId = result && typeof (result as any).documentId === "string"
+        ? String((result as any).documentId)
+        : "";
+      const fileKey = result && typeof (result as any).fileKey === "string"
+        ? String((result as any).fileKey)
+        : "";
+      const fileName = result && typeof (result as any).fileName === "string"
+        ? String((result as any).fileName)
+        : selectedPdfFile.name;
+      const tenantSlug = result && typeof (result as any).tenantSlug === "string"
+        ? String((result as any).tenantSlug)
+        : impersonatingTenantSlug;
+
+      if (!documentId || !fileKey) {
+        throw new Error("Upload completed but required file metadata was not returned.");
+      }
+
+      setUploadedFinancialPdfResult({
+        documentId,
+        fileKey,
+        fileName,
+        tenantSlug,
+        selectedMonth: Number(selectedImportMonth),
+        selectedYear: Number(selectedImportYear),
+      });
+
+      await startAnalysisDispatch({
+        documentId,
+        month: Number(selectedImportMonth),
+        year: Number(selectedImportYear),
+        tenantSlug: impersonatingTenantSlug,
+        fileName,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to upload financial PDF.";
+      toast.error(message || "Failed to upload financial PDF.");
+    } finally {
+      setIsUploadingImport(false);
+    }
   };
 
   const { data: financials = [], isLoading } = trpc.financials.get.useQuery({ year, tenantSlug: tslug });
@@ -451,131 +584,181 @@ export default function Financials() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-3">
-              <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
-                <p className="text-sm font-medium text-foreground">Financial Period</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label htmlFor="import-month" className="block text-xs text-muted-foreground mb-1">Month</label>
-                    <select
-                      id="import-month"
-                      value={selectedImportMonth}
-                      onChange={(e) => setSelectedImportMonth(Number(e.target.value))}
-                      className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      {MONTHS_LONG.map((monthName, idx) => (
-                        <option key={monthName} value={idx + 1}>{monthName}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label htmlFor="import-year" className="block text-xs text-muted-foreground mb-1">Year</label>
-                    <select
-                      id="import-year"
-                      value={selectedImportYear}
-                      onChange={(e) => setSelectedImportYear(Number(e.target.value))}
-                      className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      {years.map((y) => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
+            {analysisDispatchResult?.status === "processing" ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border bg-muted/20 p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-1">Analyzing financial data</h3>
+                  <p className="text-sm text-muted-foreground">
+                    We’re extracting income sources and expenses from {analysisDispatchResult.fileName}. This may take a moment.
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-1">
+                  <p className="text-sm text-foreground">Selected period: {MONTHS_LONG[Math.max(0, analysisDispatchResult.selectedMonth - 1)]} {analysisDispatchResult.selectedYear}</p>
+                  <p className="text-sm text-foreground">File: {analysisDispatchResult.fileName}</p>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                    Processing…
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Selected period: {MONTHS_LONG[Math.max(0, (selectedImportMonth || 1) - 1)]} {selectedImportYear}
-                </p>
               </div>
+            ) : (
+              <>
+                {uploadedFinancialPdfResult && !analysisDispatchResult && (
+                  <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-200 flex items-center justify-between gap-3">
+                    <span>
+                      The PDF was uploaded, but analysis could not be started. Please try again.
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (!uploadedFinancialPdfResult?.documentId || !uploadedFinancialPdfResult?.tenantSlug) {
+                          toast.error("Unable to retry analysis for this file.");
+                          return;
+                        }
+                        void startAnalysisDispatch({
+                          documentId: uploadedFinancialPdfResult.documentId,
+                          month: uploadedFinancialPdfResult.selectedMonth,
+                          year: uploadedFinancialPdfResult.selectedYear,
+                          tenantSlug: uploadedFinancialPdfResult.tenantSlug,
+                          fileName: uploadedFinancialPdfResult.fileName,
+                        });
+                      }}
+                      disabled={isUploadingImport || isDispatchingAnalysis}
+                    >
+                      {isDispatchingAnalysis ? "Starting analysis…" : "Retry Analysis"}
+                    </Button>
+                  </div>
+                )}
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                    <p className="text-sm font-medium text-foreground">Financial Period</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label htmlFor="import-month" className="block text-xs text-muted-foreground mb-1">Month</label>
+                        <select
+                          id="import-month"
+                          value={selectedImportMonth}
+                          onChange={(e) => setSelectedImportMonth(Number(e.target.value))}
+                          className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                        >
+                          {MONTHS_LONG.map((monthName, idx) => (
+                            <option key={monthName} value={idx + 1}>{monthName}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="import-year" className="block text-xs text-muted-foreground mb-1">Year</label>
+                        <select
+                          id="import-year"
+                          value={selectedImportYear}
+                          onChange={(e) => setSelectedImportYear(Number(e.target.value))}
+                          className="w-full bg-card border border-border text-foreground text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                        >
+                          {years.map((y) => (
+                            <option key={y} value={y}>{y}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Selected period: {MONTHS_LONG[Math.max(0, (selectedImportMonth || 1) - 1)]} {selectedImportYear}
+                    </p>
+                  </div>
 
-              <div
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsDragActive(true);
-                }}
-                onDragLeave={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsDragActive(false);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsDragActive(false);
-                  validateAndSetPdfFile(e.dataTransfer?.files ?? null);
-                }}
-                className={
-                  `rounded-lg border-2 border-dashed p-5 text-center transition-colors ` +
-                  (isDragActive
-                    ? "border-primary bg-primary/10"
-                    : "border-border hover:border-primary/50")
-                }
-              >
-                <div className="flex flex-col items-center gap-2">
-                  <Upload className="w-5 h-5 text-muted-foreground" />
-                  <p className="text-sm text-foreground">Drag and drop a PDF here, or</p>
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsDragActive(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsDragActive(false);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsDragActive(false);
+                      validateAndSetPdfFile(e.dataTransfer?.files ?? null);
+                    }}
+                    className={
+                      `rounded-lg border-2 border-dashed p-5 text-center transition-colors ` +
+                      (isDragActive
+                        ? "border-primary bg-primary/10"
+                        : "border-border hover:border-primary/50")
+                    }
+                  >
+                    <div className="flex flex-col items-center gap-2">
+                      <Upload className="w-5 h-5 text-muted-foreground" />
+                      <p className="text-sm text-foreground">Drag and drop a PDF here, or</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        Browse File
+                      </Button>
+                      <p className="text-xs text-muted-foreground">PDF only • One file</p>
+                    </div>
+                    <Input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      className="hidden"
+                      onChange={(e) => validateAndSetPdfFile(e.target.files)}
+                    />
+                  </div>
+
+                  {uploadError && (
+                    <p className="text-sm text-red-400">{uploadError}</p>
+                  )}
+
+                  {selectedPdfFile && (
+                    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm text-foreground truncate">{selectedPdfFile.name}</p>
+                        <p className="text-xs text-muted-foreground">{formatFileSize(selectedPdfFile.size)}</p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={clearSelectedPdfFile}
+                        aria-label="Remove selected file"
+                        title="Remove"
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter>
                   <Button
                     type="button"
                     variant="outline"
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => {
+                      setImportDialogOpen(false);
+                      resetImportDialogState();
+                    }}
+                    disabled={isUploadingImport || isDispatchingAnalysis}
                   >
-                    Browse File
+                    Cancel
                   </Button>
-                  <p className="text-xs text-muted-foreground">PDF only • One file</p>
-                </div>
-                <Input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  className="hidden"
-                  onChange={(e) => validateAndSetPdfFile(e.target.files)}
-                />
-              </div>
-
-              {uploadError && (
-                <p className="text-sm text-red-400">{uploadError}</p>
-              )}
-
-              {selectedPdfFile && (
-                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm text-foreground truncate">{selectedPdfFile.name}</p>
-                    <p className="text-xs text-muted-foreground">{formatFileSize(selectedPdfFile.size)}</p>
-                  </div>
                   <Button
                     type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={clearSelectedPdfFile}
-                    aria-label="Remove selected file"
-                    title="Remove"
+                    onClick={handleAnalyzePlaceholder}
+                    disabled={isUploadingImport || isDispatchingAnalysis || !selectedPdfFile || !selectedImportMonth || !selectedImportYear}
                   >
-                    <X className="w-4 h-4" />
+                    {isUploadingImport ? "Uploading…" : isDispatchingAnalysis ? "Starting analysis…" : "Upload & Analyze"}
                   </Button>
-                </div>
-              )}
-            </div>
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setImportDialogOpen(false);
-                  resetImportDialogState();
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={handleAnalyzePlaceholder}
-                disabled={!selectedPdfFile || !selectedImportMonth || !selectedImportYear}
-              >
-                Upload &amp; Analyze
-              </Button>
-            </DialogFooter>
+                </DialogFooter>
+              </>
+            )}
           </DialogContent>
         </Dialog>
       </div>

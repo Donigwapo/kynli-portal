@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { CLIENT_WORKSPACE_COOKIE } from "./auth";
@@ -169,6 +170,20 @@ function getInviteRedirectTo(portalOrigin?: string): string {
   return `${origin.replace(/\/$/, "")}/auth/callback`;
 }
 
+function getPortalPublicBaseUrl(): string {
+  const envOrigin = (
+    process.env.PORTAL_PUBLIC_URL ||
+    process.env.PORTAL_ORIGIN ||
+    process.env.PUBLIC_PORTAL_ORIGIN ||
+    process.env.APP_URL ||
+    ""
+  ).trim();
+
+  if (envOrigin) return envOrigin.replace(/\/$/, "");
+
+  return "http://localhost:3000";
+}
+
 function sanitizeStorageFileName(rawName: string | undefined, fallbackExt: string): string {
   const raw = (rawName && rawName.trim()) || `document.${fallbackExt}`;
 
@@ -265,6 +280,8 @@ const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
 const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATION_WEBHOOK_URL?.trim() || "";
 const N8N_DOCUMENT_MOVED_WEBHOOK_URL = process.env.N8N_DOCUMENT_MOVED_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/movedfile";
+const N8N_FINANCIAL_IMPORT_WEBHOOK_URL = process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_URL?.trim() || "";
+const N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET = process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET?.trim() || "";
 const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "documents";
 const MAX_VIDEO_UPLOAD_BYTES = 250 * 1024 * 1024;
 const ALLOWED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
@@ -2309,6 +2326,170 @@ export const appRouter = router({
         });
         return { success: true };
       }),
+    analyzeUploadedPdf: protectedProcedure
+      .input(z.object({
+        documentId: z.string().min(1),
+        month: z.number().int().min(1).max(12),
+        year: z.number().int().min(2000).max(2100),
+        tenantSlug: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to analyze financial PDFs." });
+        }
+
+        const normalizedTenant = sanitizeTenantSlug(input.tenantSlug);
+        const allowedSlugs = await resolveTenantSlugsForUser(ctx.user, normalizedTenant, ctx.clientWorkspaceTenantSlug);
+        if (!allowedSlugs.includes(normalizedTenant)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You are not authorized for this client workspace." });
+        }
+
+        const { data: doc, error: docError } = await supabase
+          .from("documents_metadata")
+          .select("id, tenant_slug, doc_type, file_key, file_name, name, year, month, mime_type, uploaded_by_user_id")
+          .eq("id", String(input.documentId))
+          .maybeSingle();
+
+        if (docError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load document metadata: ${docError.message}` });
+        }
+        if (!doc) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Uploaded financial PDF was not found." });
+        }
+
+        const docTenant = sanitizeTenantSlug(String(doc.tenant_slug || ""));
+        if (!docTenant || docTenant !== normalizedTenant) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Document tenant does not match selected client workspace." });
+        }
+
+        const docType = String(doc.doc_type || "").trim().toLowerCase();
+        if (docType !== "financials") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document is not a Financials import file." });
+        }
+
+        const mimeType = String(doc.mime_type || "").trim().toLowerCase();
+        const fileName = String(doc.file_name || doc.name || "").trim();
+        const isPdf = mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf");
+        if (!isPdf) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document must be a PDF file." });
+        }
+
+        if (Number(doc.year) !== Number(input.year) || Number(doc.month) !== Number(input.month)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document period does not match the selected month and year." });
+        }
+
+        const trustedFileKey = String(doc.file_key || "").trim();
+        if (!trustedFileKey) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Document file key is missing." });
+        }
+
+        const signedUrlExpiresIn = 1800;
+        const signed = await supabase.storage
+          .from(SUPABASE_STORAGE_BUCKET)
+          .createSignedUrl(trustedFileKey, signedUrlExpiresIn);
+
+        if (signed.error || !signed.data?.signedUrl) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: signed.error?.message || "Unable to generate secure file URL for analysis.",
+          });
+        }
+
+        if (!N8N_FINANCIAL_IMPORT_WEBHOOK_URL) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Financial import webhook is not configured." });
+        }
+        if (!N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Financial import webhook secret is not configured." });
+        }
+
+        const importId = randomUUID();
+
+        const { error: insertJobError } = await supabase
+          .from("financial_import_jobs")
+          .insert({
+            import_id: importId,
+            document_id: String(doc.id),
+            tenant_slug: docTenant,
+            month: Number(input.month),
+            year: Number(input.year),
+            status: "processing",
+            file_name: fileName,
+            uploaded_by_user_id: String(ctx.user.id),
+            extracted_data: null,
+            error_message: null,
+          });
+
+        if (insertJobError) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to create financial import job: ${insertJobError.message}`,
+          });
+        }
+
+        const callbackUrl = `${getPortalPublicBaseUrl()}/api/financials/import-result`;
+        const payload = {
+          import_id: importId,
+          file_id: String(doc.id),
+          file_name: fileName,
+          file_key: trustedFileKey,
+          file_url: String(signed.data.signedUrl),
+          business_slug: docTenant,
+          month: Number(input.month),
+          year: Number(input.year),
+          callback_url: callbackUrl,
+        };
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+
+        try {
+          const response = await fetch(N8N_FINANCIAL_IMPORT_WEBHOOK_URL, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "X-Kynli-Webhook-Secret": N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET,
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            const responseText = await response.text().catch(() => "");
+            const safeErr = `Financial analysis dispatch failed (HTTP ${response.status})${responseText ? `: ${responseText.slice(0, 300)}` : ""}`;
+            await supabase
+              .from("financial_import_jobs")
+              .update({
+                status: "failed",
+                error_message: safeErr.slice(0, 1000),
+                updated_at: new Date().toISOString(),
+              })
+              .eq("import_id", importId);
+            throw new TRPCError({ code: "BAD_GATEWAY", message: safeErr });
+          }
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          await supabase
+            .from("financial_import_jobs")
+            .update({
+              status: "failed",
+              error_message: String(`Financial analysis dispatch failed: ${message}`).slice(0, 1000),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("import_id", importId);
+          throw new TRPCError({ code: "BAD_GATEWAY", message: `Financial analysis dispatch failed: ${message}` });
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        return {
+          success: true,
+          importId,
+          documentId: String(doc.id),
+          status: "processing" as const,
+        };
+      }),
   }),
 
   documents: router({
@@ -3367,7 +3548,13 @@ export const appRouter = router({
           status: "success",
         });
 
-        return { success: true, url: fileUrl };
+        return {
+          success: true,
+          documentId: insertedDoc?.id ? String(insertedDoc.id) : null,
+          fileKey,
+          fileName: input.fileName || input.name,
+          tenantSlug,
+        };
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.union([z.string(), z.number()]), tenantSlug: z.string().optional() }))
