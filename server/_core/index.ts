@@ -165,11 +165,50 @@ async function startServer() {
         return res.status(400).json({ received: false });
       }
 
+      const hasFinancialSummaryField = Object.prototype.hasOwnProperty.call(body, "financial_summary");
+      const financialSummaryRaw = body.financial_summary;
+      const financialSummaryType = financialSummaryRaw === null ? "null" : typeof financialSummaryRaw;
+      const financialSummary =
+        financialSummaryRaw == null
+          ? ""
+          : typeof financialSummaryRaw === "string"
+            ? financialSummaryRaw.trim()
+            : undefined;
+      if (financialSummary === undefined) {
+        console.info("[financials.import-result] invalid financial_summary", {
+          importId,
+          status,
+          hasFinancialSummaryField,
+          financialSummaryType,
+          normalizedFinancialSummaryLength: null,
+        });
+        return res.status(400).json({ received: false });
+      }
+      if (financialSummary.length > 10_000) {
+        console.info("[financials.import-result] financial_summary too long", {
+          importId,
+          status,
+          hasFinancialSummaryField,
+          financialSummaryType,
+          normalizedFinancialSummaryLength: financialSummary.length,
+        });
+        return res.status(400).json({ received: false });
+      }
+
       const normalized = {
         incomeSources,
         expenses,
-        notes: notes ?? "",
+        financialSummary,
+        notes: (notes ?? "").trim(),
       };
+
+      console.info("[financials.import-result] normalized payload", {
+        importId,
+        status,
+        hasFinancialSummaryField,
+        financialSummaryType,
+        normalizedFinancialSummaryLength: financialSummary.length,
+      });
 
       const now = new Date().toISOString();
       const { error: updateError } = await supabase

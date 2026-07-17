@@ -62,6 +62,7 @@ import {
   deleteClientRosterEntry,
   insertCoachingItem,
   insertLineItem,
+  replaceLineItemsForPeriod,
   insertTimeLog,
   supabase,
   toggleCoachingItem,
@@ -2326,6 +2327,167 @@ export const appRouter = router({
         });
         return { success: true };
       }),
+    saveReviewedPeriod: protectedProcedure
+      .input(z.object({
+        importId: z.string().uuid(),
+        tenantSlug: z.string().min(1),
+        month: z.number().int().min(1).max(12),
+        year: z.number().int().min(2000).max(2100),
+        incomeSources: z.array(z.object({
+          category: z.string().trim().min(1),
+          actual: z.number().finite(),
+          budget: z.number().finite().nullable(),
+        })),
+        expenses: z.array(z.object({
+          category: z.string().trim().min(1),
+          actual: z.number().finite(),
+          budget: z.number().finite().nullable(),
+        })),
+        financialSummary: z.string().max(10000),
+        notes: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to save financial periods." });
+        }
+
+        const requestedTenantRaw = String(input.tenantSlug || "");
+        const requestedTenant = sanitizeTenantSlug(requestedTenantRaw);
+        if (!requestedTenant) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required." });
+        }
+
+        const activeWorkspaceRaw = String(ctx.clientWorkspaceTenantSlug || "");
+        const activeViewAsRaw = String(ctx.viewAsClientTenantSlug || "");
+        const activeWorkspaceTenant = sanitizeTenantSlug(activeWorkspaceRaw);
+        const activeViewAsTenant = sanitizeTenantSlug(activeViewAsRaw);
+        const activeTenant = activeViewAsTenant || activeWorkspaceTenant;
+
+
+        if (activeTenant && requestedTenant !== activeTenant) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Requested tenant does not match active client workspace." });
+        }
+
+        if (ctx.user.role !== "admin") {
+          const assigned = await getAssignedTenantSlugsForUser(ctx.user);
+          if (!assigned.includes(requestedTenant)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You are not assigned to this tenant." });
+          }
+        }
+
+        const { data: job, error: jobError } = await supabase
+          .from("financial_import_jobs")
+          .select("import_id, document_id, tenant_slug, month, year, status, extracted_data")
+          .eq("import_id", input.importId)
+          .maybeSingle();
+
+        if (jobError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load import job: ${jobError.message}` });
+        }
+        if (!job) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Import job not found." });
+        }
+
+        const jobTenant = sanitizeTenantSlug(String(job.tenant_slug || ""));
+
+        if (jobTenant !== requestedTenant) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Import job tenant does not match requested tenant." });
+        }
+        if (Number(job.month) !== input.month || Number(job.year) !== input.year) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import period does not match requested period." });
+        }
+        if (String(job.status).trim().toLowerCase() !== "ready_for_review") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import job is not ready for review." });
+        }
+
+        const cleanIncome = input.incomeSources.map((row) => ({
+          category: row.category.trim(),
+          actual: Number(row.actual),
+          budget: row.budget == null ? null : Number(row.budget),
+        }));
+        const cleanExpenses = input.expenses.map((row) => ({
+          category: row.category.trim(),
+          actual: Number(row.actual),
+          budget: row.budget == null ? null : Number(row.budget),
+        }));
+
+        for (const row of [...cleanIncome, ...cleanExpenses]) {
+          if (!row.category) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Category is required for all rows." });
+          }
+          if (!Number.isFinite(row.actual)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Actual values must be finite numbers." });
+          }
+          if (row.budget != null && !Number.isFinite(row.budget)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Budget values must be finite numbers or null." });
+          }
+        }
+
+        const revenue = cleanIncome.reduce((sum, row) => sum + row.actual, 0);
+        const expenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
+        const netProfit = revenue - expenses;
+        const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+
+        const budgetRevenue = cleanIncome.reduce((sum, row) => sum + (row.budget ?? 0), 0);
+        const budgetExpenses = cleanExpenses.reduce((sum, row) => sum + (row.budget ?? 0), 0);
+        const financialSummary = String(input.financialSummary ?? "").trim();
+        const notes = String(input.notes ?? "").trim();
+
+        await upsertFinancial(requestedTenant, {
+          year: input.year,
+          month: input.month,
+          revenue,
+          budget_revenue: budgetRevenue,
+          expenses,
+          budget_expenses: budgetExpenses,
+          net_profit: netProfit,
+          net_profit_margin: margin,
+          summary: financialSummary || null,
+        });
+
+        const replacementRows = [
+          ...cleanIncome.map((row) => ({ type: "income" as const, label: row.category, amount: row.actual, budget_amount: row.budget })),
+          ...cleanExpenses.map((row) => ({ type: "expense" as const, label: row.category, amount: row.actual, budget_amount: row.budget })),
+        ];
+
+        await replaceLineItemsForPeriod(requestedTenant, input.year, input.month, replacementRows);
+
+        const extracted = (job.extracted_data && typeof job.extracted_data === "object")
+          ? (job.extracted_data as Record<string, unknown>)
+          : {};
+        const mergedExtracted = {
+          ...extracted,
+          incomeSources: cleanIncome,
+          expenses: cleanExpenses,
+          financialSummary,
+          notes,
+        };
+
+        await supabase
+          .from("financial_import_jobs")
+          .update({
+            extracted_data: mergedExtracted,
+            saved_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("import_id", input.importId);
+
+        const periodRows = await getFinancials(requestedTenant, input.year, input.month);
+        const period = periodRows[0];
+
+        return {
+          success: true,
+          periodId: period ? String(period.id) : `${requestedTenant}:${input.year}:${input.month}`,
+          tenantSlug: requestedTenant,
+          month: input.month,
+          year: input.year,
+          revenue,
+          expenses,
+          netProfit,
+          margin,
+        };
+      }),
     getImportStatus: protectedProcedure
       .input(z.object({ importId: z.string().uuid() }))
       .query(async ({ ctx, input }) => {
@@ -2336,7 +2498,7 @@ export const appRouter = router({
 
         const { data: job, error } = await supabase
           .from("financial_import_jobs")
-          .select("import_id, document_id, tenant_slug, month, year, status, extracted_data, error_message, uploaded_by_user_id")
+          .select("import_id, document_id, tenant_slug, month, year, status, file_name, extracted_data, error_message, uploaded_by_user_id")
           .eq("import_id", input.importId)
           .maybeSingle();
 
@@ -2395,7 +2557,19 @@ export const appRouter = router({
             : normalizedStatus === "failed"
               ? "failed"
               : "processing";
-        const extractedData = (job.extracted_data as any) ?? null;
+
+        const rawExtracted = (job.extracted_data as any) ?? null;
+        const normalizedExtracted = rawExtracted && typeof rawExtracted === "object"
+          ? {
+              incomeSources: Array.isArray(rawExtracted.incomeSources) ? rawExtracted.incomeSources : [],
+              expenses: Array.isArray(rawExtracted.expenses) ? rawExtracted.expenses : [],
+              financialSummary:
+                typeof rawExtracted.financialSummary === "string"
+                  ? rawExtracted.financialSummary
+                  : "",
+              notes: typeof rawExtracted.notes === "string" ? rawExtracted.notes : "",
+            }
+          : null;
 
         console.info("[financials.getImportStatus] success", {
           importId: input.importId,
@@ -2407,10 +2581,10 @@ export const appRouter = router({
           tenantAuthorized,
           rawStatus: String(job.status || ""),
           status,
-          extractedDataPresent: extractedData != null,
+          extractedDataPresent: normalizedExtracted != null,
           extractedDataValidShape:
-            extractedData == null ||
-            (Array.isArray((extractedData as any).incomeSources) && Array.isArray((extractedData as any).expenses)),
+            normalizedExtracted == null ||
+            (Array.isArray(normalizedExtracted.incomeSources) && Array.isArray(normalizedExtracted.expenses)),
         });
 
         return {
@@ -2419,8 +2593,9 @@ export const appRouter = router({
           tenantSlug,
           month: Number(job.month),
           year: Number(job.year),
+          fileName: job.file_name ? String(job.file_name) : "",
           status,
-          extractedData,
+          extractedData: normalizedExtracted,
           errorMessage: job.error_message ? String(job.error_message) : null,
         };
       }),

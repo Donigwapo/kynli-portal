@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X, Trash2 } from "lucide-react";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const TEAL = "oklch(0.75 0.15 192)";
@@ -101,7 +102,7 @@ function PeriodRow({
   const rev = fmtN(period.revenue);
   const exp = fmtN(period.expenses);
   const profit = fmtN(period.net_profit);
-  const margin = fmtN(period.net_profit_margin) * 100;
+  const margin = fmtN(period.net_profit_margin);
   const budRev = fmtN(period.budget_revenue);
   const budExp = fmtN(period.budget_expenses);
   const revVar = variance(rev, budRev);
@@ -161,7 +162,7 @@ function ExpandedPeriodDetail({
   const totalRev = fmtN(period.revenue);
   const totalExp = fmtN(period.expenses);
   const profit = fmtN(period.net_profit);
-  const margin = fmtN(period.net_profit_margin) * 100;
+  const margin = fmtN(period.net_profit_margin);
   const budRev = fmtN(period.budget_revenue);
   const budExp = fmtN(period.budget_expenses);
 
@@ -292,6 +293,7 @@ export default function Financials() {
   const [selectedImportYear, setSelectedImportYear] = useState<number>(year || now.getFullYear());
   const [isUploadingImport, setIsUploadingImport] = useState(false);
   const [isDispatchingAnalysis, setIsDispatchingAnalysis] = useState(false);
+  const [isSavingReviewedPeriod, setIsSavingReviewedPeriod] = useState(false);
   const [uploadedFinancialPdfResult, setUploadedFinancialPdfResult] = useState<{
     documentId: string;
     fileKey: string;
@@ -311,17 +313,12 @@ export default function Financials() {
   const [importFailureMessage, setImportFailureMessage] = useState<string | null>(null);
   const [reviewIncomeRows, setReviewIncomeRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
   const [reviewExpenseRows, setReviewExpenseRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
+  const [cameronSummary, setCameronSummary] = useState("");
   const [reviewNotes, setReviewNotes] = useState("");
   const [statusCheckError, setStatusCheckError] = useState<string | null>(null);
   const [statusPollingEnabled, setStatusPollingEnabled] = useState(true);
-  const [lastStatusCheckAt, setLastStatusCheckAt] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const importDebugEnabled = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    const params = new URLSearchParams(window.location.search);
-    return params.get("debugFinancialImport") === "1" || window.localStorage.getItem("debugFinancialImport") === "1";
-  }, []);
+  const reviewContentScrollRef = useRef<HTMLDivElement | null>(null);
 
   const validateAndSetPdfFile = (files: FileList | File[] | null | undefined) => {
     setUploadError("");
@@ -348,8 +345,10 @@ export default function Financials() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const trpcUtils = trpc.useUtils();
   const uploadMutation = trpc.documents.upload.useMutation();
   const analyzeUploadedPdfMutation = trpc.financials.analyzeUploadedPdf.useMutation();
+  const saveReviewedPeriodMutation = trpc.financials.saveReviewedPeriod.useMutation();
   const pollingEnabled = !!analysisDispatchResult?.importId && analysisDispatchResult.status === "processing" && importDialogOpen && statusPollingEnabled;
 
   const importStatusQuery = trpc.financials.getImportStatus.useQuery(
@@ -362,36 +361,6 @@ export default function Financials() {
     },
   );
 
-  useEffect(() => {
-    if (!importDebugEnabled) return;
-    console.info("[Financials.polling.conditions]", {
-      importDialogOpen,
-      hasAnalysisDispatchResult: !!analysisDispatchResult,
-      hasImportId: !!analysisDispatchResult?.importId,
-      localStatus: analysisDispatchResult?.status ?? null,
-      isProcessing: analysisDispatchResult?.status === "processing",
-      statusCheckError: statusCheckError ?? null,
-      statusPollingEnabled,
-      pollingEnabled,
-      queryWillUseImportId: analysisDispatchResult?.importId ?? "",
-      isFetching: importStatusQuery.isFetching,
-      isError: importStatusQuery.isError,
-      errorMessage: importStatusQuery.error?.message ?? null,
-      apiStatus: importStatusQuery.data?.status ?? "no response",
-      hasExtractedData: !!importStatusQuery.data?.extractedData,
-    });
-  }, [
-    importDebugEnabled,
-    importDialogOpen,
-    analysisDispatchResult,
-    statusCheckError,
-    statusPollingEnabled,
-    pollingEnabled,
-    importStatusQuery.isFetching,
-    importStatusQuery.isError,
-    importStatusQuery.error,
-    importStatusQuery.data,
-  ]);
 
   const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -416,11 +385,13 @@ export default function Financials() {
     setImportFailureMessage(null);
     setReviewIncomeRows([]);
     setReviewExpenseRows([]);
+    setCameronSummary("");
     setReviewNotes("");
     setStatusCheckError(null);
     setStatusPollingEnabled(true);
     setIsUploadingImport(false);
     setIsDispatchingAnalysis(false);
+    setIsSavingReviewedPeriod(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -434,14 +405,6 @@ export default function Financials() {
         tenantSlug: args.tenantSlug,
       });
 
-      if (importDebugEnabled) {
-        console.info("[Financials.analyzeUploadedPdf.response]", {
-          hasSuccess: !!analysis?.success,
-          hasImportId: !!analysis?.importId,
-          hasDocumentId: !!analysis?.documentId,
-          status: analysis?.status ?? null,
-        });
-      }
 
       if (!analysis?.success || !analysis?.importId || analysis?.status !== "processing") {
         throw new Error("Analysis dispatch did not return a valid processing response.");
@@ -457,14 +420,6 @@ export default function Financials() {
       };
       setAnalysisDispatchResult(nextDispatch);
 
-      if (importDebugEnabled) {
-        console.info("[Financials.analysisDispatchResult.set]", {
-          importId: nextDispatch.importId,
-          importIdSuffix: nextDispatch.importId.slice(-8),
-          status: nextDispatch.status,
-          documentId: nextDispatch.documentId,
-        });
-      }
       setImportFailureMessage(null);
       setStatusCheckError(null);
       setStatusPollingEnabled(true);
@@ -559,44 +514,79 @@ export default function Financials() {
     return String(parsed);
   };
 
+  const handleSaveReviewedPeriod = async () => {
+    if (!analysisDispatchResult?.importId) return;
+    if (!impersonatingTenantSlug) {
+      toast.error("Please select a client workspace before saving financial data.");
+      return;
+    }
+    if (analysisDispatchResult.status !== "ready_for_review") {
+      toast.error("Financial analysis is not ready for saving yet.");
+      return;
+    }
+
+
+    const normalizedIncome = reviewIncomeRows.map((row) => ({
+      category: row.category.trim(),
+      actual: row.actual === "" ? NaN : Number(row.actual),
+      budget: row.budget === "" ? null : Number(row.budget),
+    }));
+    const normalizedExpenses = reviewExpenseRows.map((row) => ({
+      category: row.category.trim(),
+      actual: row.actual === "" ? NaN : Number(row.actual),
+      budget: row.budget === "" ? null : Number(row.budget),
+    }));
+
+    const badCategory = [...normalizedIncome, ...normalizedExpenses].some((r) => !r.category);
+    if (badCategory) {
+      toast.error("Each row must have a category.");
+      return;
+    }
+
+    const badNumbers = [...normalizedIncome, ...normalizedExpenses].some(
+      (r) => !Number.isFinite(r.actual) || (r.budget != null && !Number.isFinite(r.budget)),
+    );
+    if (badNumbers) {
+      toast.error("Actual and budget values must be valid numbers.");
+      return;
+    }
+
+    setIsSavingReviewedPeriod(true);
+    try {
+      const result = await saveReviewedPeriodMutation.mutateAsync({
+        importId: analysisDispatchResult.importId,
+        tenantSlug: impersonatingTenantSlug,
+        month: analysisDispatchResult.selectedMonth,
+        year: analysisDispatchResult.selectedYear,
+        incomeSources: normalizedIncome,
+        expenses: normalizedExpenses,
+        financialSummary: cameronSummary,
+        notes: reviewNotes,
+      });
+
+      if (!result?.success) {
+        throw new Error("Save did not complete successfully.");
+      }
+
+      toast.success("Financial period saved successfully.");
+      await Promise.all([
+        trpcUtils.financials.get.invalidate({ year, tenantSlug: tslug }),
+        trpcUtils.financials.lineItemsByYear.invalidate({ year, tenantSlug: tslug }),
+      ]);
+
+      setImportDialogOpen(false);
+      resetImportDialogState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to save financial period.";
+      toast.error(message || "Failed to save financial period.");
+    } finally {
+      setIsSavingReviewedPeriod(false);
+    }
+  };
+
   useEffect(() => {
     if (!importDialogOpen || !analysisDispatchResult?.importId || analysisDispatchResult.status !== "processing") return;
 
-    setLastStatusCheckAt(new Date().toISOString());
-
-    if (importDebugEnabled) {
-      const safeNetworkShape = importStatusQuery.data ? {
-        importId: importStatusQuery.data.importId,
-        status: importStatusQuery.data.status,
-        month: importStatusQuery.data.month,
-        year: importStatusQuery.data.year,
-        fileName: analysisDispatchResult?.fileName ?? null,
-        hasExtractedData: !!importStatusQuery.data.extractedData,
-        errorMessage: importStatusQuery.data.errorMessage ?? null,
-      } : null;
-
-      console.info("[Financials.importStatus.debug]", {
-        importId: analysisDispatchResult?.importId ?? null,
-        importIdSuffix: analysisDispatchResult?.importId ? analysisDispatchResult.importId.slice(-8) : null,
-        dialogOpen: importDialogOpen,
-        pollingEnabled,
-        enabledConditions: {
-          hasImportId: !!analysisDispatchResult?.importId,
-          localProcessing: analysisDispatchResult?.status === "processing",
-          dialogOpen: importDialogOpen,
-          statusPollingEnabled,
-        },
-        query: {
-          isFetching: importStatusQuery.isFetching,
-          isError: importStatusQuery.isError,
-          errorMessage: importStatusQuery.error?.message ?? null,
-          status: importStatusQuery.data?.status ?? "no response",
-          hasExtractedData: !!importStatusQuery.data?.extractedData,
-          lastCheckedAt: new Date().toISOString(),
-        },
-        responseShape: safeNetworkShape,
-      });
-    }
 
     if (importStatusQuery.error) {
       setStatusCheckError("We couldn’t retrieve the financial analysis status. Please try again.");
@@ -615,9 +605,13 @@ export default function Financials() {
     }
 
     if (latest.status === "ready_for_review") {
+      if (reviewContentScrollRef.current) {
+        reviewContentScrollRef.current.scrollTop = 0;
+      }
       const extracted = (latest.extractedData || {}) as any;
       const incomeSources = Array.isArray(extracted.incomeSources) ? extracted.incomeSources : [];
       const expenses = Array.isArray(extracted.expenses) ? extracted.expenses : [];
+      const financialSummary = typeof extracted.financialSummary === "string" ? extracted.financialSummary : "";
       const notes = typeof extracted.notes === "string" ? extracted.notes : "";
 
       setReviewIncomeRows(
@@ -638,6 +632,7 @@ export default function Financials() {
         })),
       );
 
+      setCameronSummary(financialSummary);
       setReviewNotes(notes);
       setAnalysisDispatchResult((prev) => prev ? { ...prev, status: "ready_for_review" } : prev);
       setImportFailureMessage(null);
@@ -675,6 +670,7 @@ export default function Financials() {
   const periods = useMemo(() => [...financials].sort((a, b) => b.month - a.month), [financials]);
 
   const expandedPeriod = expandedMonth != null ? financials.find(f => f.month === expandedMonth) : null;
+  const isReviewState = analysisDispatchResult?.status === "ready_for_review";
 
   return (
     <>
@@ -721,7 +717,7 @@ export default function Financials() {
             </div>
           ) : (
             <div className="space-y-2">
-              {periods.map(period => (
+              {periods.map((period: any) => (
                 <div key={period.month}>
                   <PeriodRow
                     period={{
@@ -774,51 +770,44 @@ export default function Financials() {
             }
           }}
         >
-          <DialogContent className="bg-card border-border max-w-xl">
-            <DialogHeader>
-              <DialogTitle>Import Financial Period</DialogTitle>
-              <DialogDescription>
-                Upload a monthly financial PDF. The file will be analyzed to extract income sources and expenses.
-              </DialogDescription>
-            </DialogHeader>
+          <DialogContent
+            className={[
+              "bg-card border-border w-[95vw] max-w-[calc(100vw-2rem)] max-h-[90vh] overflow-hidden p-0 flex flex-col",
+              isReviewState ? "sm:max-w-[1480px]" : "sm:max-w-[760px]",
+            ].join(" ")}
+          >
+            <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4 flex items-start justify-between gap-4">
+              <div>
+                <DialogTitle>Review Financial Data</DialogTitle>
+                <DialogDescription className="mt-1">
+                  {analysisDispatchResult
+                    ? `${MONTHS_LONG[Math.max(0, analysisDispatchResult.selectedMonth - 1)]} ${analysisDispatchResult.selectedYear} • Uploaded PDF analysis`
+                    : "Upload a monthly financial PDF. The file will be analyzed to extract income sources and expenses."}
+                </DialogDescription>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                onClick={() => {
+                  setImportDialogOpen(false);
+                  resetImportDialogState();
+                }}
+                disabled={isUploadingImport || isDispatchingAnalysis}
+                aria-label="Close import dialog"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
 
+            <div ref={reviewContentScrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
             {analysisDispatchResult?.status === "processing" && statusCheckError ? (
               <div className="space-y-4">
                 <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
                   <h3 className="text-sm font-semibold text-yellow-200 mb-1">Unable to check analysis status</h3>
                   <p className="text-sm text-yellow-100">We couldn’t retrieve the financial analysis status. Please try again.</p>
                 </div>
-                <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setStatusCheckError(null);
-                      setStatusPollingEnabled(true);
-                      void importStatusQuery.refetch();
-                    }}
-                  >
-                    Retry Status Check
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      setAnalysisDispatchResult(null);
-                      setUploadedFinancialPdfResult(null);
-                      setImportFailureMessage(null);
-                      setStatusCheckError(null);
-                      setStatusPollingEnabled(true);
-                      setReviewIncomeRows([]);
-                      setReviewExpenseRows([]);
-                      setReviewNotes("");
-                      setSelectedPdfFile(null);
-                      setUploadError("");
-                      if (fileInputRef.current) fileInputRef.current.value = "";
-                    }}
-                  >
-                    Choose Another PDF
-                  </Button>
-                </DialogFooter>
               </div>
             ) : analysisDispatchResult?.status === "processing" ? (
               <div className="space-y-4">
@@ -835,21 +824,41 @@ export default function Financials() {
                     <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                     Processing…
                   </div>
-                  {importDebugEnabled && (
-                    <div className="mt-2 rounded border border-border p-2 text-xs text-muted-foreground space-y-1">
-                      <p>Import ID: {analysisDispatchResult.importId.slice(-8)}</p>
-                      <p>API status: {importStatusQuery.isError ? "error" : (importStatusQuery.data?.status ?? "no response")}</p>
-                      <p>Polling: {pollingEnabled ? "active" : "stopped"}</p>
-                      <p>Last checked: {lastStatusCheckAt ? new Date(lastStatusCheckAt).toLocaleTimeString() : "—"}</p>
-                    </div>
-                  )}
                 </div>
               </div>
             ) : analysisDispatchResult?.status === "ready_for_review" ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-border bg-muted/20 p-4">
-                  <h3 className="text-sm font-semibold text-foreground mb-1">Review extracted financial data</h3>
-                  <p className="text-sm text-muted-foreground">Selected period: {MONTHS_LONG[Math.max(0, analysisDispatchResult.selectedMonth - 1)]} {analysisDispatchResult.selectedYear}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                    <p className="text-xs text-muted-foreground">Revenue</p>
+                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewRevenue)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                    <p className="text-xs text-muted-foreground">Expenses</p>
+                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewExpenses)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                    <p className="text-xs text-muted-foreground">Net Profit</p>
+                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewNetProfit)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                    <p className="text-xs text-muted-foreground">Margin</p>
+                    <p className="text-base font-semibold text-foreground mt-1">{reviewMargin.toFixed(2)}%</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border p-4 space-y-2 bg-muted/10">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-foreground">Cameron’s Financial Summary</h4>
+                    <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">Draft</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Review and edit this summary before saving.</p>
+                  <Textarea
+                    value={cameronSummary}
+                    onChange={(e) => setCameronSummary(e.target.value)}
+                    className="w-full min-h-[160px]"
+                    placeholder="Cameron's financial summary"
+                  />
                 </div>
 
                 <div className="rounded-lg border border-border p-3 space-y-3">
@@ -864,16 +873,32 @@ export default function Financials() {
                       Add Income Row
                     </Button>
                   </div>
+                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1">
+                    <div className="col-span-12 sm:col-span-6">Category</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Actual</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Budget</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Actions</div>
+                  </div>
                   {reviewIncomeRows.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No income sources were extracted.</p>
                   ) : (
                     <div className="space-y-2">
                       {reviewIncomeRows.map((row) => (
-                        <div key={row.localId} className="grid grid-cols-12 gap-2">
-                          <Input className="col-span-5" placeholder="Category" value={row.category} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
-                          <Input className="col-span-3" placeholder="Actual" value={row.actual} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
-                          <Input className="col-span-3" placeholder="Budget" value={row.budget} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
-                          <Button type="button" variant="outline" className="col-span-1" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>×</Button>
+                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/60 rounded-md p-2">
+                          <Input className="col-span-12 sm:col-span-6" placeholder="Category" value={row.category} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
+                          <div className="col-span-4 sm:col-span-2 relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
+                          </div>
+                          <div className="col-span-4 sm:col-span-2 relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
+                          </div>
+                          <div className="col-span-4 sm:col-span-2 flex justify-end">
+                            <Button type="button" variant="ghost" size="icon" className="hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -892,46 +917,47 @@ export default function Financials() {
                       Add Expense Row
                     </Button>
                   </div>
+                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1">
+                    <div className="col-span-12 sm:col-span-6">Category</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Actual</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Budget</div>
+                    <div className="col-span-4 sm:col-span-2 text-right">Actions</div>
+                  </div>
                   {reviewExpenseRows.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No expenses were extracted.</p>
                   ) : (
                     <div className="space-y-2">
                       {reviewExpenseRows.map((row) => (
-                        <div key={row.localId} className="grid grid-cols-12 gap-2">
-                          <Input className="col-span-5" placeholder="Category" value={row.category} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
-                          <Input className="col-span-3" placeholder="Actual" value={row.actual} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
-                          <Input className="col-span-3" placeholder="Budget" value={row.budget} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
-                          <Button type="button" variant="outline" className="col-span-1" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>×</Button>
+                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/60 rounded-md p-2">
+                          <Input className="col-span-12 sm:col-span-6" placeholder="Category" value={row.category} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
+                          <div className="col-span-4 sm:col-span-2 relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
+                          </div>
+                          <div className="col-span-4 sm:col-span-2 relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
+                          </div>
+                          <div className="col-span-4 sm:col-span-2 flex justify-end">
+                            <Button type="button" variant="ghost" size="icon" className="hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
-                <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-1 text-sm">
-                  <p className="text-foreground">Revenue: {fmtD(reviewRevenue)}</p>
-                  <p className="text-foreground">Expenses: {fmtD(reviewExpenses)}</p>
-                  <p className="text-foreground">Net Profit: {fmtD(reviewNetProfit)}</p>
-                  <p className="text-foreground">Margin: {reviewMargin.toFixed(2)}%</p>
-                </div>
-
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">Notes</label>
-                  <textarea
+                  <Textarea
                     value={reviewNotes}
                     onChange={(e) => setReviewNotes(e.target.value)}
-                    className="w-full min-h-[100px] bg-card border border-border rounded-md px-3 py-2 text-sm text-foreground"
+                    className="w-full min-h-[120px]"
                     placeholder="Add notes"
                   />
                 </div>
-
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => {
-                    setImportDialogOpen(false);
-                    resetImportDialogState();
-                  }}>Cancel</Button>
-                  <Button type="button" onClick={() => toast.info("Saving the financial period will be connected next.")}>Save Financial Period</Button>
-                </DialogFooter>
               </div>
             ) : analysisDispatchResult?.status === "failed" ? (
               <div className="space-y-4">
@@ -939,29 +965,6 @@ export default function Financials() {
                   <h3 className="text-sm font-semibold text-red-300 mb-1">Financial analysis failed.</h3>
                   <p className="text-sm text-red-200">{importFailureMessage || "Unable to extract financial data."}</p>
                 </div>
-                <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      if (!uploadedFinancialPdfResult?.documentId || !uploadedFinancialPdfResult?.tenantSlug) {
-                        toast.error("Unable to retry analysis for this file.");
-                        return;
-                      }
-                      void startAnalysisDispatch({
-                        documentId: uploadedFinancialPdfResult.documentId,
-                        month: uploadedFinancialPdfResult.selectedMonth,
-                        year: uploadedFinancialPdfResult.selectedYear,
-                        tenantSlug: uploadedFinancialPdfResult.tenantSlug,
-                        fileName: uploadedFinancialPdfResult.fileName,
-                      });
-                    }}
-                    disabled={isDispatchingAnalysis}
-                  >
-                    {isDispatchingAnalysis ? "Starting analysis…" : "Retry Analysis"}
-                  </Button>
-                  <Button type="button" onClick={resetImportDialogState}>Choose Another PDF</Button>
-                </DialogFooter>
               </div>
             ) : (
               <>
@@ -1099,7 +1102,91 @@ export default function Financials() {
                   )}
                 </div>
 
-                <DialogFooter>
+              </>
+            )}
+            </div>
+
+            <div className="sticky bottom-0 z-10 border-t border-border bg-card px-6 py-4">
+              {analysisDispatchResult?.status === "processing" && statusCheckError ? (
+                <DialogFooter className="m-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setStatusCheckError(null);
+                      setStatusPollingEnabled(true);
+                      void importStatusQuery.refetch();
+                    }}
+                  >
+                    Retry Status Check
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setAnalysisDispatchResult(null);
+                      setUploadedFinancialPdfResult(null);
+                      setImportFailureMessage(null);
+                      setStatusCheckError(null);
+                      setStatusPollingEnabled(true);
+                      setReviewIncomeRows([]);
+                      setReviewExpenseRows([]);
+                      setCameronSummary("");
+                      setReviewNotes("");
+                      setSelectedPdfFile(null);
+                      setUploadError("");
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                  >
+                    Choose Another PDF
+                  </Button>
+                </DialogFooter>
+              ) : analysisDispatchResult?.status === "failed" ? (
+                <DialogFooter className="m-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (!uploadedFinancialPdfResult?.documentId || !uploadedFinancialPdfResult?.tenantSlug) {
+                        toast.error("Unable to retry analysis for this file.");
+                        return;
+                      }
+                      void startAnalysisDispatch({
+                        documentId: uploadedFinancialPdfResult.documentId,
+                        month: uploadedFinancialPdfResult.selectedMonth,
+                        year: uploadedFinancialPdfResult.selectedYear,
+                        tenantSlug: uploadedFinancialPdfResult.tenantSlug,
+                        fileName: uploadedFinancialPdfResult.fileName,
+                      });
+                    }}
+                    disabled={isDispatchingAnalysis}
+                  >
+                    {isDispatchingAnalysis ? "Starting analysis…" : "Retry Analysis"}
+                  </Button>
+                  <Button type="button" onClick={resetImportDialogState}>Choose Another PDF</Button>
+                </DialogFooter>
+              ) : analysisDispatchResult?.status === "ready_for_review" ? (
+                <DialogFooter className="m-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setImportDialogOpen(false);
+                      resetImportDialogState();
+                    }}
+                    disabled={isSavingReviewedPeriod}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleSaveReviewedPeriod}
+                    disabled={isSavingReviewedPeriod}
+                  >
+                    {isSavingReviewedPeriod ? "Saving…" : "Save Financial Period"}
+                  </Button>
+                </DialogFooter>
+              ) : (
+                <DialogFooter className="m-0">
                   <Button
                     type="button"
                     variant="outline"
@@ -1119,8 +1206,8 @@ export default function Financials() {
                     {isUploadingImport ? "Uploading…" : isDispatchingAnalysis ? "Starting analysis…" : "Upload & Analyze"}
                   </Button>
                 </DialogFooter>
-              </>
-            )}
+              )}
+            </div>
           </DialogContent>
         </Dialog>
       </div>

@@ -858,6 +858,52 @@ export async function insertLineItem(slug: string, item: Omit<LineItem, "id" | "
   if (error) throw new Error(error.message);
 }
 
+export async function replaceLineItemsForPeriod(
+  slug: string,
+  year: number,
+  month: number,
+  items: Array<{ type: "income" | "expense"; label: string; amount: number; budget_amount: number | null }>,
+): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error("Invalid tenant slug for line item replacement.");
+  }
+
+  await supabase.rpc("exec_sql", {
+    sql: `
+      ALTER TABLE IF EXISTS ${slug}_line_items
+        ADD COLUMN IF NOT EXISTS budget_amount NUMERIC(15,2);
+      ALTER TABLE IF EXISTS ${slug}_line_items
+        ADD COLUMN IF NOT EXISTS category TEXT;
+    `,
+  });
+
+  const table = `${slug}_line_items`;
+
+  const { error: deleteError } = await supabase
+    .from(table)
+    .delete()
+    .eq("year", year)
+    .eq("month", month);
+  if (deleteError) throw new Error(deleteError.message);
+
+  if (!items.length) return;
+
+  const rows = items.map((item) => ({
+    year,
+    month,
+    type: item.type,
+    label: item.label,
+    category: item.label,
+    amount: item.amount,
+    budget_amount: item.budget_amount,
+  }));
+
+  const { error: insertError } = await supabase
+    .from(table)
+    .insert(rows);
+  if (insertError) throw new Error(insertError.message);
+}
+
 // ─── Documents ────────────────────────────────────────────────────────────────
 
 const DOCUMENTS_METADATA_TABLE = "documents_metadata";
