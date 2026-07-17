@@ -223,6 +223,31 @@ async function startServer() {
         .eq("import_id", importId);
 
       if (updateError) return res.status(500).json({ received: false });
+
+      const initialSummary = financialSummary;
+      if (initialSummary) {
+        const { data: existingVersion } = await supabase
+          .from("financial_summary_versions")
+          .select("id")
+          .eq("import_id", importId)
+          .limit(1)
+          .maybeSingle();
+
+        if (!existingVersion) {
+          await supabase
+            .from("financial_summary_versions")
+            .insert({
+              import_id: importId,
+              tenant_slug: String(job.tenant_slug || "").trim(),
+              version_number: 1,
+              summary: initialSummary,
+              change_source: "initial_extraction",
+              created_by_user_id: null,
+              created_by_role: "system",
+            });
+        }
+      }
+
       return res.status(200).json({ received: true });
     } catch {
       return res.status(500).json({ received: false });

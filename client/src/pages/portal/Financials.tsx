@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X, Trash2, Sparkles, History } from "lucide-react";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -60,34 +60,55 @@ function VarianceBadge({ v, pct, isGood }: { v: number; pct: number; isGood: boo
   );
 }
 
-function MonthlySummaryPanel({ summary, month, year }: { summary?: string | null; month: number; year: number }) {
-  const [open, setOpen] = useState(false);
+function MonthlySummaryPanel({
+  summary,
+  month,
+  year,
+  summaryExpanded,
+  onToggleSummaryExpanded,
+  summaryId,
+}: {
+  summary?: string | null;
+  month: number;
+  year: number;
+  summaryExpanded: boolean;
+  onToggleSummaryExpanded: () => void;
+  summaryId: string;
+}) {
+  const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
+  if (!normalizedSummary) return null;
+  const shouldClamp = normalizedSummary.length > 500;
+
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-5 py-3.5 text-sm hover:bg-muted/20 transition-colors"
-      >
-        <div className="flex items-center gap-2 text-foreground font-medium">
-          <FileText className="w-4 h-4 text-primary" />
-          {MONTHS_LONG[month - 1]} {year} — Monthly Summary
-        </div>
-        <div className="flex items-center gap-2">
-          {!summary && <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">No summary yet</span>}
-          {open ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
-        </div>
-      </button>
-      {open && (
-        <div className="px-5 pb-5 pt-1 border-t border-border">
-          {summary ? (
-            <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">{summary}</p>
-          ) : (
-            <p className="text-sm text-muted-foreground italic py-2">
-              Your KynLi advisor hasn't added a summary for this month yet. Check back after your next review session.
-            </p>
-          )}
-        </div>
-      )}
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-foreground font-medium text-sm">
+        <FileText className="w-4 h-4 text-primary" />
+        {MONTHS_LONG[month - 1]} {year} — Monthly Summary
+      </div>
+      <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3">
+        <div className="text-xs font-semibold text-primary mb-2">Cameron’s Financial Summary</div>
+        <p
+          id={summaryId}
+          className={[
+            "text-sm text-foreground/90 leading-6 whitespace-pre-wrap break-words",
+            shouldClamp && !summaryExpanded ? "line-clamp-5" : "",
+          ].join(" ")}
+        >
+          {normalizedSummary}
+        </p>
+        {shouldClamp && (
+          <button
+            type="button"
+            className="mt-2 text-xs text-primary hover:underline"
+            aria-expanded={summaryExpanded}
+            aria-controls={summaryId}
+            aria-label={`${summaryExpanded ? "Collapse" : "Show full"} Cameron’s Financial Summary for ${MONTHS_LONG[month - 1]} ${year}`}
+            onClick={onToggleSummaryExpanded}
+          >
+            {summaryExpanded ? "Show less" : "Show more"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -152,10 +173,15 @@ function PeriodRow({
 }
 
 function ExpandedPeriodDetail({
-  period, lineItems,
+  period,
+  lineItems,
+  summaryExpanded,
+  onToggleSummaryExpanded,
 }: {
-  period: { year: number; month: number; revenue: number; expenses: number; net_profit: number; net_profit_margin: number; budget_revenue: number; budget_expenses: number; summary?: string | null };
+  period: { year: number; month: number; revenue: number; expenses: number; net_profit: number; net_profit_margin: number; budget_revenue: number; budget_expenses: number; summary?: string | null; id?: string | number };
   lineItems: { id: number; label: string; type: string; amount: number; budget_amount?: number | null }[];
+  summaryExpanded: boolean;
+  onToggleSummaryExpanded: () => void;
 }) {
   const income = lineItems.filter(i => i.type === "income");
   const expenses = lineItems.filter(i => i.type === "expense");
@@ -169,7 +195,14 @@ function ExpandedPeriodDetail({
   return (
     <div className="border border-t-0 border-border rounded-b-xl bg-background px-5 py-5 space-y-5">
       {/* Summary */}
-      <MonthlySummaryPanel summary={period.summary} month={period.month} year={period.year} />
+      <MonthlySummaryPanel
+        summary={period.summary}
+        month={period.month}
+        year={period.year}
+        summaryExpanded={summaryExpanded}
+        onToggleSummaryExpanded={onToggleSummaryExpanded}
+        summaryId={`saved-summary-${period.id ?? `${period.year}-${period.month}`}`}
+      />
 
       {/* KPI row */}
       <div className="grid grid-cols-4 gap-3">
@@ -281,6 +314,7 @@ export default function Financials() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [expandedMonth, setExpandedMonth] = useState<number | null>(now.getMonth() + 1);
+  const [expandedSavedSummaries, setExpandedSavedSummaries] = useState<Record<string, boolean>>({});
   const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
   const tslug = impersonatingTenantSlug ?? undefined;
@@ -314,9 +348,22 @@ export default function Financials() {
   const [reviewIncomeRows, setReviewIncomeRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
   const [reviewExpenseRows, setReviewExpenseRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
   const [cameronSummary, setCameronSummary] = useState("");
+  const [aiAssistOpen, setAiAssistOpen] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiSuggestedSummary, setAiSuggestedSummary] = useState("");
+  const [aiRevisionError, setAiRevisionError] = useState<string | null>(null);
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  const [historyViewVersion, setHistoryViewVersion] = useState<any | null>(null);
+  const [historyRestoreVersion, setHistoryRestoreVersion] = useState<any | null>(null);
+  const [historyWarning, setHistoryWarning] = useState<string | null>(null);
+  const [lastPersistedSummary, setLastPersistedSummary] = useState("");
+  const [undoSummaryStack, setUndoSummaryStack] = useState<string[]>([]);
   const [reviewNotes, setReviewNotes] = useState("");
   const [statusCheckError, setStatusCheckError] = useState<string | null>(null);
   const [statusPollingEnabled, setStatusPollingEnabled] = useState(true);
+  const [initialReviewSnapshot, setInitialReviewSnapshot] = useState<string | null>(null);
+  const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+  const [confirmCloseMode, setConfirmCloseMode] = useState<"discard_review" | "cancel_import" | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const reviewContentScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -349,6 +396,17 @@ export default function Financials() {
   const uploadMutation = trpc.documents.upload.useMutation();
   const analyzeUploadedPdfMutation = trpc.financials.analyzeUploadedPdf.useMutation();
   const saveReviewedPeriodMutation = trpc.financials.saveReviewedPeriod.useMutation();
+  const rewriteSummaryWithAiMutation = trpc.financials.rewriteSummaryWithAi.useMutation();
+  const createSummaryVersionMutation = trpc.financials.createSummaryVersion.useMutation();
+  const restoreSummaryVersionMutation = trpc.financials.restoreSummaryVersion.useMutation();
+
+  const summaryHistoryQuery = trpc.financials.getSummaryHistory.useQuery(
+    { importId: analysisDispatchResult?.importId ?? "" },
+    {
+      enabled: !!analysisDispatchResult?.importId && analysisDispatchResult.status === "ready_for_review" && importDialogOpen && historyPanelOpen,
+      refetchOnWindowFocus: false,
+    },
+  );
   const pollingEnabled = !!analysisDispatchResult?.importId && analysisDispatchResult.status === "processing" && importDialogOpen && statusPollingEnabled;
 
   const importStatusQuery = trpc.financials.getImportStatus.useQuery(
@@ -386,13 +444,52 @@ export default function Financials() {
     setReviewIncomeRows([]);
     setReviewExpenseRows([]);
     setCameronSummary("");
+    setAiAssistOpen(false);
+    setAiInstruction("");
+    setAiSuggestedSummary("");
+    setAiRevisionError(null);
+    setHistoryPanelOpen(false);
+    setHistoryViewVersion(null);
+    setHistoryRestoreVersion(null);
+    setHistoryWarning(null);
+    setLastPersistedSummary("");
+    setUndoSummaryStack([]);
     setReviewNotes("");
+    setInitialReviewSnapshot(null);
     setStatusCheckError(null);
     setStatusPollingEnabled(true);
     setIsUploadingImport(false);
     setIsDispatchingAnalysis(false);
     setIsSavingReviewedPeriod(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const requestCloseImportDialog = () => {
+    const isActiveBusy = isUploadingImport || isDispatchingAnalysis || isSavingReviewedPeriod || analysisDispatchResult?.status === "processing";
+    if (isActiveBusy) {
+      setConfirmCloseMode("cancel_import");
+      setConfirmCloseOpen(true);
+      return;
+    }
+    if (analysisDispatchResult?.status === "ready_for_review" && hasUnsavedReviewChanges) {
+      setConfirmCloseMode("discard_review");
+      setConfirmCloseOpen(true);
+      return;
+    }
+    if (analysisDispatchResult?.status === "ready_for_review" || hasInProgressImport) {
+      setConfirmCloseMode("cancel_import");
+      setConfirmCloseOpen(true);
+      return;
+    }
+    setImportDialogOpen(false);
+    resetImportDialogState();
+  };
+
+  const handleDiscardAndClose = () => {
+    setConfirmCloseOpen(false);
+    setConfirmCloseMode(null);
+    setImportDialogOpen(false);
+    resetImportDialogState();
   };
 
   const startAnalysisDispatch = async (args: { documentId: string; month: number; year: number; tenantSlug: string; fileName: string }) => {
@@ -514,6 +611,98 @@ export default function Financials() {
     return String(parsed);
   };
 
+  const persistSummaryVersion = async (args: {
+    summary: string;
+    changeSource: "manual_edit" | "ai_revision" | "restored_version" | "final_approved";
+    restoredFromVersionId?: string;
+  }) => {
+    if (!analysisDispatchResult?.importId) return null;
+    const summaryTrimmed = args.summary.trim();
+    if (!summaryTrimmed) return null;
+    const latestPersisted = lastPersistedSummary.trim();
+    if (latestPersisted === summaryTrimmed && args.changeSource !== "final_approved") {
+      return null;
+    }
+    const created = await createSummaryVersionMutation.mutateAsync({
+      importId: analysisDispatchResult.importId,
+      summary: summaryTrimmed,
+      changeSource: args.changeSource,
+      restoredFromVersionId: args.restoredFromVersionId,
+    });
+    setLastPersistedSummary(summaryTrimmed);
+    void summaryHistoryQuery.refetch();
+    return created;
+  };
+
+  const handleSummaryBlurSnapshot = async () => {
+    if (analysisDispatchResult?.status !== "ready_for_review") return;
+    if (rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending) return;
+    try {
+      await persistSummaryVersion({ summary: cameronSummary, changeSource: "manual_edit" });
+      setHistoryWarning(null);
+    } catch {
+      setHistoryWarning("Could not save this edit to summary history yet.");
+    }
+  };
+
+  const handleGenerateAiRevision = async () => {
+    if (!analysisDispatchResult?.importId) {
+      toast.error("Unable to generate revision right now.");
+      return;
+    }
+
+    const instruction = aiInstruction.trim();
+    if (!instruction) {
+      setAiRevisionError("Please add an instruction for AI Assist.");
+      return;
+    }
+
+    setAiRevisionError(null);
+    try {
+      const result = await rewriteSummaryWithAiMutation.mutateAsync({
+        importId: analysisDispatchResult.importId,
+        instruction,
+        currentSummary: cameronSummary,
+        incomeSources: reviewIncomeRows.map((r) => ({
+          id: r.localId,
+          category: r.category,
+          actual: Number.isFinite(Number(r.actual)) ? Number(r.actual) : 0,
+          budget: r.budget === "" ? null : Number.isFinite(Number(r.budget)) ? Number(r.budget) : null,
+        })),
+        expenses: reviewExpenseRows.map((r) => ({
+          id: r.localId,
+          category: r.category,
+          actual: Number.isFinite(Number(r.actual)) ? Number(r.actual) : 0,
+          budget: r.budget === "" ? null : Number.isFinite(Number(r.budget)) ? Number(r.budget) : null,
+        })),
+      });
+
+      setAiSuggestedSummary(result.revisedSummary);
+      setAiRevisionError(null);
+    } catch {
+      setAiRevisionError("We couldn’t generate a revised summary. Your current summary has not been changed.");
+      toast.error("We couldn’t generate a revised summary. Your current summary has not been changed.");
+    }
+  };
+
+  const handleRestoreSummaryVersion = async () => {
+    if (!analysisDispatchResult?.importId || !historyRestoreVersion?.id) return;
+    try {
+      const restored = await restoreSummaryVersionMutation.mutateAsync({
+        importId: analysisDispatchResult.importId,
+        versionId: historyRestoreVersion.id,
+      });
+      setUndoSummaryStack((prev) => [...prev, cameronSummary]);
+      setCameronSummary(restored.restoredSummary);
+      setLastPersistedSummary(restored.restoredSummary.trim());
+      setHistoryRestoreVersion(null);
+      setHistoryWarning(null);
+      void summaryHistoryQuery.refetch();
+    } catch {
+      setHistoryWarning("Unable to restore this version right now.");
+    }
+  };
+
   const handleSaveReviewedPeriod = async () => {
     if (!analysisDispatchResult?.importId) return;
     if (!impersonatingTenantSlug) {
@@ -633,7 +822,33 @@ export default function Financials() {
       );
 
       setCameronSummary(financialSummary);
+      setAiAssistOpen(false);
+      setAiInstruction("");
+      setAiSuggestedSummary("");
+      setAiRevisionError(null);
+      setHistoryPanelOpen(false);
+      setHistoryViewVersion(null);
+      setHistoryRestoreVersion(null);
+      setHistoryWarning(null);
+      setLastPersistedSummary(financialSummary.trim());
+      setUndoSummaryStack([]);
       setReviewNotes(notes);
+      setInitialReviewSnapshot(
+        JSON.stringify({
+          income: incomeSources.map((row: any) => ({
+            category: typeof row?.category === "string" ? row.category : "",
+            actual: row?.actual == null ? "" : String(row.actual),
+            budget: row?.budget == null ? "" : String(row.budget),
+          })),
+          expense: expenses.map((row: any) => ({
+            category: typeof row?.category === "string" ? row.category : "",
+            actual: row?.actual == null ? "" : String(row.actual),
+            budget: row?.budget == null ? "" : String(row.budget),
+          })),
+          cameronSummary: financialSummary,
+          reviewNotes: notes,
+        }),
+      );
       setAnalysisDispatchResult((prev) => prev ? { ...prev, status: "ready_for_review" } : prev);
       setImportFailureMessage(null);
       setStatusCheckError(null);
@@ -657,6 +872,24 @@ export default function Financials() {
   );
   const reviewNetProfit = reviewRevenue - reviewExpenses;
   const reviewMargin = reviewRevenue > 0 ? (reviewNetProfit / reviewRevenue) * 100 : 0;
+
+  const currentReviewSnapshot = useMemo(
+    () => JSON.stringify({ income: reviewIncomeRows, expense: reviewExpenseRows, cameronSummary, reviewNotes }),
+    [reviewIncomeRows, reviewExpenseRows, cameronSummary, reviewNotes],
+  );
+  const hasUnsavedReviewChanges =
+    analysisDispatchResult?.status === "ready_for_review" &&
+    initialReviewSnapshot != null &&
+    currentReviewSnapshot !== initialReviewSnapshot;
+
+  const hasInProgressImport =
+    !!selectedPdfFile ||
+    !!uploadedFinancialPdfResult ||
+    !!analysisDispatchResult ||
+    !!uploadError ||
+    isUploadingImport ||
+    isDispatchingAnalysis ||
+    isSavingReviewedPeriod;
 
   const { data: financials = [], isLoading } = trpc.financials.get.useQuery({ year, tenantSlug: tslug });
   const { data: lineItems = [] } = trpc.financials.lineItems.useQuery(
@@ -737,6 +970,7 @@ export default function Financials() {
                   {expandedMonth === period.month && expandedPeriod && (
                     <ExpandedPeriodDetail
                       period={{
+                        id: expandedPeriod.id,
                         year: expandedPeriod.year,
                         month: expandedPeriod.month,
                         revenue: fmtN(expandedPeriod.revenue),
@@ -746,6 +980,11 @@ export default function Financials() {
                         budget_revenue: fmtN(expandedPeriod.budget_revenue),
                         budget_expenses: fmtN(expandedPeriod.budget_expenses),
                         summary: expandedPeriod.summary,
+                      }}
+                      summaryExpanded={!!expandedSavedSummaries[String(expandedPeriod.id ?? `${expandedPeriod.year}-${expandedPeriod.month}`)]}
+                      onToggleSummaryExpanded={() => {
+                        const key = String(expandedPeriod.id ?? `${expandedPeriod.year}-${expandedPeriod.month}`);
+                        setExpandedSavedSummaries((prev) => ({ ...prev, [key]: !prev[key] }));
                       }}
                       lineItems={lineItems.map(li => ({
                         id: li.id,
@@ -764,10 +1003,11 @@ export default function Financials() {
         <Dialog
           open={importDialogOpen}
           onOpenChange={(open) => {
-            setImportDialogOpen(open);
             if (!open) {
-              resetImportDialogState();
+              requestCloseImportDialog();
+              return;
             }
+            setImportDialogOpen(true);
           }}
         >
           <DialogContent
@@ -775,8 +1015,19 @@ export default function Financials() {
               "bg-card border-border w-[95vw] max-w-[calc(100vw-2rem)] max-h-[90vh] overflow-hidden p-0 flex flex-col",
               isReviewState ? "sm:max-w-[1480px]" : "sm:max-w-[760px]",
             ].join(" ")}
+            showCloseButton={false}
+            onEscapeKeyDown={(e) => {
+              e.preventDefault();
+              requestCloseImportDialog();
+            }}
+            onPointerDownOutside={(e) => {
+              e.preventDefault();
+            }}
+            onInteractOutside={(e) => {
+              e.preventDefault();
+            }}
           >
-            <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4 flex items-start justify-between gap-4">
+            <div className="sticky top-0 z-10 border-b border-border/80 bg-card/95 backdrop-blur px-6 py-4 flex items-start justify-between gap-4">
               <div>
                 <DialogTitle>Review Financial Data</DialogTitle>
                 <DialogDescription className="mt-1">
@@ -790,11 +1041,7 @@ export default function Financials() {
                 variant="ghost"
                 size="icon"
                 className="shrink-0"
-                onClick={() => {
-                  setImportDialogOpen(false);
-                  resetImportDialogState();
-                }}
-                disabled={isUploadingImport || isDispatchingAnalysis}
+                onClick={requestCloseImportDialog}
                 aria-label="Close import dialog"
               >
                 <X className="w-4 h-4" />
@@ -829,39 +1076,229 @@ export default function Financials() {
             ) : analysisDispatchResult?.status === "ready_for_review" ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Revenue</p>
-                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewRevenue)}</p>
+                    <p className="text-base font-semibold text-primary mt-1">{fmtD(reviewRevenue)}</p>
                   </div>
-                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Expenses</p>
-                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewExpenses)}</p>
+                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(reviewExpenses)}</p>
                   </div>
-                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Net Profit</p>
-                    <p className="text-base font-semibold text-foreground mt-1">{fmtD(reviewNetProfit)}</p>
+                    <p className="text-base font-semibold text-emerald-300 mt-1">{fmtD(reviewNetProfit)}</p>
                   </div>
-                  <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Margin</p>
                     <p className="text-base font-semibold text-foreground mt-1">{reviewMargin.toFixed(2)}%</p>
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-border p-4 space-y-2 bg-muted/10">
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-semibold text-foreground">Cameron’s Financial Summary</h4>
-                    <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">Draft</span>
+                <div className="rounded-lg border border-primary/30 p-4 space-y-3 bg-primary/5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-foreground">Cameron’s Financial Summary</h4>
+                      <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">Draft</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {undoSummaryStack.length > 0 && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const prev = undoSummaryStack[undoSummaryStack.length - 1];
+                            setUndoSummaryStack((stack) => stack.slice(0, -1));
+                            setCameronSummary(prev);
+                          }}
+                        >
+                          Undo
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setHistoryPanelOpen((v) => !v);
+                          setAiAssistOpen(false);
+                        }}
+                      >
+                        <History className="w-4 h-4 mr-1" />
+                        History
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setAiAssistOpen((v) => !v);
+                          setHistoryPanelOpen(false);
+                        }}
+                        disabled={rewriteSummaryWithAiMutation.isPending}
+                      >
+                        <Sparkles className="w-4 h-4 mr-1" />
+                        AI Assist
+                      </Button>
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">Review and edit this summary before saving.</p>
-                  <Textarea
-                    value={cameronSummary}
-                    onChange={(e) => setCameronSummary(e.target.value)}
-                    className="w-full min-h-[160px]"
-                    placeholder="Cameron's financial summary"
-                  />
+
+                  {aiAssistOpen && (
+                    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-2">
+                      <label className="text-xs font-medium text-foreground">Tell AI what to improve</label>
+                      <Textarea
+                        value={aiInstruction}
+                        onChange={(e) => setAiInstruction(e.target.value)}
+                        maxLength={2000}
+                        className="w-full min-h-[96px] bg-muted/35 border-border/60"
+                        placeholder="Example: Make this easier for the client to understand and clarify that payroll remained within budget."
+                      />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>AI will rewrite only Cameron’s Financial Summary. Financial figures and rows will not be changed.</span>
+                        <span>{aiInstruction.length.toLocaleString()} / 2,000</span>
+                      </div>
+                      {aiRevisionError && <p className="text-xs text-red-300">{aiRevisionError}</p>}
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setAiAssistOpen(false);
+                            setAiInstruction("");
+                            setAiSuggestedSummary("");
+                            setAiRevisionError(null);
+                          }}
+                          disabled={rewriteSummaryWithAiMutation.isPending}
+                        >
+                          Cancel
+                        </Button>
+                        <Button type="button" onClick={handleGenerateAiRevision} disabled={rewriteSummaryWithAiMutation.isPending}>
+                          {rewriteSummaryWithAiMutation.isPending ? "Generating Revision..." : "Generate Revision"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {aiSuggestedSummary && (
+                    <div className="rounded-md border border-primary/25 bg-primary/10 p-3 space-y-2">
+                      <h5 className="text-xs font-semibold text-primary">AI Suggested Revision</h5>
+                      <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words">{aiSuggestedSummary}</p>
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setAiSuggestedSummary("");
+                            setAiRevisionError(null);
+                          }}
+                          disabled={rewriteSummaryWithAiMutation.isPending}
+                        >
+                          Keep Current Summary
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await persistSummaryVersion({ summary: aiSuggestedSummary, changeSource: "ai_revision" });
+                            } catch {
+                              setAiRevisionError("We couldn’t store this revision in history yet. Please try again.");
+                              return;
+                            }
+                            setUndoSummaryStack((prev) => [...prev, cameronSummary]);
+                            setCameronSummary(aiSuggestedSummary);
+                            setAiSuggestedSummary("");
+                            setAiInstruction("");
+                            setAiRevisionError(null);
+                            setAiAssistOpen(false);
+                          }}
+                          disabled={rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending}
+                        >
+                          Apply Revision
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className={historyPanelOpen ? "grid grid-cols-1 lg:grid-cols-12 gap-3" : "space-y-2"}>
+                    <div className={historyPanelOpen ? "lg:col-span-7 space-y-2" : "space-y-2"}>
+                      <p className="text-xs text-muted-foreground">Review and edit this summary before saving.</p>
+                      <Textarea
+                        value={cameronSummary}
+                        onChange={(e) => setCameronSummary(e.target.value)}
+                        onBlur={handleSummaryBlurSnapshot}
+                        maxLength={10000}
+                        className="w-full min-h-[160px] bg-muted/30 border-border/70"
+                        placeholder="Cameron's financial summary"
+                      />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>This summary will be visible in the saved financial period after approval.</span>
+                        <span>{cameronSummary.length.toLocaleString()} / 10,000</span>
+                      </div>
+                      {historyWarning && <p className="text-xs text-amber-300">{historyWarning}</p>}
+                    </div>
+
+                    {historyPanelOpen && (
+                      <div className="lg:col-span-5 rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h5 className="text-sm font-semibold text-foreground">Summary History</h5>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => void summaryHistoryQuery.refetch()}>
+                            Retry
+                          </Button>
+                        </div>
+
+                        {summaryHistoryQuery.isLoading ? (
+                          <p className="text-sm text-muted-foreground">Loading history…</p>
+                        ) : summaryHistoryQuery.isError ? (
+                          <p className="text-sm text-red-300">Unable to load summary history.</p>
+                        ) : (summaryHistoryQuery.data?.versions?.length ?? 0) === 0 ? (
+                          <p className="text-sm text-muted-foreground">No versions yet.</p>
+                        ) : (
+                          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                            {(summaryHistoryQuery.data?.versions ?? []).map((v) => {
+                              const sourceLabel = v.changeSource === "initial_extraction"
+                                ? "Original Extraction"
+                                : v.changeSource === "manual_edit"
+                                  ? "Manual Edit"
+                                  : v.changeSource === "ai_revision"
+                                    ? "AI Revision"
+                                    : v.changeSource === "restored_version"
+                                      ? "Restored Version"
+                                      : "Final Approved";
+                              const isCurrent = v.summary.trim() === cameronSummary.trim();
+                              return (
+                                <div key={v.id} className="rounded-md border border-border/60 bg-card/40 p-2 space-y-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-xs text-foreground font-medium">Version {v.versionNumber}</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] rounded-full border border-border/60 px-2 py-0.5 text-muted-foreground">{sourceLabel}</span>
+                                      {isCurrent && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary">Current</span>}
+                                    </div>
+                                  </div>
+                                  <p className="text-[11px] text-muted-foreground">
+                                    {new Date(v.createdAt).toLocaleString()} • {v.changeSource === "initial_extraction"
+                                      ? "Created by System"
+                                      : v.changeSource === "ai_revision"
+                                        ? "Generated by AI"
+                                        : v.createdByRole
+                                          ? `Updated by ${v.createdByRole}`
+                                          : "Created by System"}
+                                  </p>
+                                  <p className="text-xs text-foreground/85 line-clamp-3 whitespace-pre-wrap break-words">{v.summary}</p>
+                                  <div className="flex items-center justify-end gap-2">
+                                    <Button type="button" size="sm" variant="outline" onClick={() => setHistoryViewVersion(v)}>View</Button>
+                                    <Button type="button" size="sm" onClick={() => setHistoryRestoreVersion(v)} disabled={restoreSummaryVersionMutation.isPending}>Restore this version</Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="rounded-lg border border-border p-3 space-y-3">
+                <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="text-sm font-semibold text-foreground">Income Sources</h4>
                     <Button
@@ -873,7 +1310,7 @@ export default function Financials() {
                       Add Income Row
                     </Button>
                   </div>
-                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1">
+                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground/90 px-1">
                     <div className="col-span-12 sm:col-span-6">Category</div>
                     <div className="col-span-4 sm:col-span-2 text-right">Actual</div>
                     <div className="col-span-4 sm:col-span-2 text-right">Budget</div>
@@ -884,18 +1321,18 @@ export default function Financials() {
                   ) : (
                     <div className="space-y-2">
                       {reviewIncomeRows.map((row) => (
-                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/60 rounded-md p-2">
-                          <Input className="col-span-12 sm:col-span-6" placeholder="Category" value={row.category} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
+                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/50 rounded-md p-2 bg-card/40">
+                          <Input className="col-span-12 sm:col-span-6 bg-muted/35 border-border/60" placeholder="Category" value={row.category} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
                           <div className="col-span-4 sm:col-span-2 relative">
                             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
-                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
+                            <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 relative">
                             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
-                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
+                            <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 flex justify-end">
-                            <Button type="button" variant="ghost" size="icon" className="hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
@@ -905,7 +1342,7 @@ export default function Financials() {
                   )}
                 </div>
 
-                <div className="rounded-lg border border-border p-3 space-y-3">
+                <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="text-sm font-semibold text-foreground">Expenses</h4>
                     <Button
@@ -917,7 +1354,7 @@ export default function Financials() {
                       Add Expense Row
                     </Button>
                   </div>
-                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1">
+                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground/90 px-1">
                     <div className="col-span-12 sm:col-span-6">Category</div>
                     <div className="col-span-4 sm:col-span-2 text-right">Actual</div>
                     <div className="col-span-4 sm:col-span-2 text-right">Budget</div>
@@ -928,18 +1365,18 @@ export default function Financials() {
                   ) : (
                     <div className="space-y-2">
                       {reviewExpenseRows.map((row) => (
-                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/60 rounded-md p-2">
-                          <Input className="col-span-12 sm:col-span-6" placeholder="Category" value={row.category} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
+                        <div key={row.localId} className="grid grid-cols-12 gap-2 items-center border border-border/50 rounded-md p-2 bg-card/40">
+                          <Input className="col-span-12 sm:col-span-6 bg-muted/35 border-border/60" placeholder="Category" value={row.category} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, category: e.target.value } : r))} />
                           <div className="col-span-4 sm:col-span-2 relative">
                             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
-                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
+                            <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="0" value={row.actual} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, actual: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 relative">
                             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
-                            <Input className="pl-5 text-right" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
+                            <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 flex justify-end">
-                            <Button type="button" variant="ghost" size="icon" className="hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
@@ -949,12 +1386,12 @@ export default function Financials() {
                   )}
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Notes</label>
+                <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2">
+                  <label className="text-sm font-semibold text-foreground">Notes</label>
                   <Textarea
                     value={reviewNotes}
                     onChange={(e) => setReviewNotes(e.target.value)}
-                    className="w-full min-h-[120px]"
+                    className="w-full min-h-[120px] bg-muted/35 border-border/60"
                     placeholder="Add notes"
                   />
                 </div>
@@ -1106,7 +1543,7 @@ export default function Financials() {
             )}
             </div>
 
-            <div className="sticky bottom-0 z-10 border-t border-border bg-card px-6 py-4">
+            <div className="sticky bottom-0 z-10 border-t border-border/80 bg-card/95 backdrop-blur px-6 py-4">
               {analysisDispatchResult?.status === "processing" && statusCheckError ? (
                 <DialogFooter className="m-0">
                   <Button
@@ -1169,10 +1606,7 @@ export default function Financials() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      setImportDialogOpen(false);
-                      resetImportDialogState();
-                    }}
+                    onClick={requestCloseImportDialog}
                     disabled={isSavingReviewedPeriod}
                   >
                     Cancel
@@ -1180,7 +1614,7 @@ export default function Financials() {
                   <Button
                     type="button"
                     onClick={handleSaveReviewedPeriod}
-                    disabled={isSavingReviewedPeriod}
+                    disabled={isSavingReviewedPeriod || rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending || restoreSummaryVersionMutation.isPending}
                   >
                     {isSavingReviewedPeriod ? "Saving…" : "Save Financial Period"}
                   </Button>
@@ -1190,10 +1624,7 @@ export default function Financials() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      setImportDialogOpen(false);
-                      resetImportDialogState();
-                    }}
+                    onClick={requestCloseImportDialog}
                     disabled={isUploadingImport || isDispatchingAnalysis}
                   >
                     Cancel
@@ -1208,6 +1639,84 @@ export default function Financials() {
                 </DialogFooter>
               )}
             </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={confirmCloseOpen} onOpenChange={setConfirmCloseOpen}>
+          <DialogContent className="w-[95vw] max-w-[calc(100vw-2rem)] sm:max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle>
+                {confirmCloseMode === "discard_review" ? "Discard unsaved changes?" : "Cancel financial import?"}
+              </DialogTitle>
+              <DialogDescription>
+                {confirmCloseMode === "discard_review"
+                  ? "You have unsaved changes to this financial review. Closing now will discard them."
+                  : "This will stop the current import flow and clear the selected file and progress."}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setConfirmCloseOpen(false);
+                  setConfirmCloseMode(null);
+                }}
+              >
+                {confirmCloseMode === "discard_review" ? "Keep Editing" : "Continue Import"}
+              </Button>
+              <Button type="button" onClick={handleDiscardAndClose}>
+                {confirmCloseMode === "discard_review" ? "Discard Changes" : "Cancel Import"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!historyViewVersion} onOpenChange={(open) => { if (!open) setHistoryViewVersion(null); }}>
+          <DialogContent className="w-[95vw] max-w-[calc(100vw-2rem)] sm:max-w-[760px]">
+            <DialogHeader>
+              <DialogTitle>{historyViewVersion ? `Version ${historyViewVersion.versionNumber}` : "Version"}</DialogTitle>
+              <DialogDescription>
+                {historyViewVersion ? `${new Date(historyViewVersion.createdAt).toLocaleString()} • ${historyViewVersion.changeSource}` : ""}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border border-border/70 bg-muted/20 p-3">
+              <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words">{historyViewVersion?.summary ?? ""}</p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setHistoryViewVersion(null)}>Close</Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  setHistoryRestoreVersion(historyViewVersion);
+                  setHistoryViewVersion(null);
+                }}
+              >
+                Restore this version
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!historyRestoreVersion} onOpenChange={(open) => { if (!open) setHistoryRestoreVersion(null); }}>
+          <DialogContent className="w-[95vw] max-w-[calc(100vw-2rem)] sm:max-w-[760px]">
+            <DialogHeader>
+              <DialogTitle>Restore this summary version?</DialogTitle>
+              <DialogDescription>
+                This will replace the current summary in the editor. The financial period will not be saved automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border border-border/70 bg-muted/20 p-3 max-h-[280px] overflow-y-auto">
+              <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words">{historyRestoreVersion?.summary ?? ""}</p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setHistoryRestoreVersion(null)}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleRestoreSummaryVersion} disabled={restoreSummaryVersionMutation.isPending}>
+                {restoreSummaryVersionMutation.isPending ? "Restoring..." : "Restore Version"}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

@@ -1,5 +1,5 @@
 import { Lock, NotebookPen, Plus, Search, SlidersHorizontal, ArrowUpDown, MessageSquare, MoreHorizontal, Pin, Archive, Trash2, Pencil } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Streamdown } from "streamdown";
+import { Streamdown, defaultRemarkPlugins } from "streamdown";
+import remarkBreaks from "remark-breaks";
 
 type NoteCategory = "general" | "bookkeeping" | "tax" | "payroll" | "urgent" | "follow_up";
 
@@ -48,6 +49,125 @@ function convertNoteShortcodes(content: string): string {
   return content.replace(shortcodeRegex, (_match, prefix: string, token: string) => {
     return `${prefix}${NOTE_SHORTCODE_MAP[token] ?? token}`;
   });
+}
+
+function normalizePlainText(input: string): string {
+  return input
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\t\f\v]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractTextExcludingNestedLists(li: HTMLLIElement): string {
+  const clone = li.cloneNode(true) as HTMLLIElement;
+  clone.querySelectorAll("ul,ol").forEach((nested) => nested.remove());
+
+  return normalizePlainText(clone.textContent ?? "")
+    .replace(/^\s*(?:[-*+•]\s+|\d+[.)]\s+)/, "")
+    .trim();
+}
+
+function listToMarkdown(listEl: HTMLOListElement | HTMLUListElement, depth = 0): string {
+  const isOrdered = listEl.tagName.toLowerCase() === "ol";
+  const indent = "  ".repeat(depth);
+  const lines: string[] = [];
+
+  const items = Array.from(listEl.children).filter((child): child is HTMLLIElement => {
+    return child.tagName.toLowerCase() === "li";
+  });
+
+  items.forEach((li, index) => {
+    const marker = isOrdered ? `${index + 1}.` : "-";
+    const text = extractTextExcludingNestedLists(li);
+    lines.push(text ? `${indent}${marker} ${text}` : `${indent}${marker}`);
+
+    const nestedLists = Array.from(li.children).filter((child): child is HTMLOListElement | HTMLUListElement => {
+      const tag = child.tagName.toLowerCase();
+      return tag === "ul" || tag === "ol";
+    });
+
+    nestedLists.forEach((nested) => {
+      const nestedMd = listToMarkdown(nested, depth + 1);
+      if (nestedMd) lines.push(nestedMd);
+    });
+  });
+
+  return lines.join("\n");
+}
+
+function extractNodeText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ");
+  }
+
+  if (!(node instanceof Element)) return "";
+
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return "\n";
+  if (tag === "ul" || tag === "ol") return "";
+
+  const raw = Array.from(node.childNodes)
+    .map((child) => extractNodeText(child))
+    .join("");
+
+  return raw;
+}
+
+function htmlWithListsToMarkdown(html: string): string | null {
+  if (!html.trim()) return null;
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const body = doc.body;
+  const hasList = !!body.querySelector("ul,ol");
+  if (!hasList) return null;
+
+  const blocks: string[] = [];
+
+  const appendBlock = (value: string) => {
+    const normalized = normalizePlainText(value);
+    if (normalized) blocks.push(normalized);
+  };
+
+  Array.from(body.childNodes).forEach((node) => {
+    if (node instanceof Element) {
+      const tag = node.tagName.toLowerCase();
+      if (tag === "ul" || tag === "ol") {
+        appendBlock(listToMarkdown(node as HTMLOListElement | HTMLUListElement));
+        return;
+      }
+
+      if (node.querySelector("ul,ol")) {
+        let textBuffer = "";
+        Array.from(node.childNodes).forEach((child) => {
+          if (child instanceof Element) {
+            const childTag = child.tagName.toLowerCase();
+            if (childTag === "ul" || childTag === "ol") {
+              appendBlock(textBuffer);
+              textBuffer = "";
+              appendBlock(listToMarkdown(child as HTMLOListElement | HTMLUListElement));
+              return;
+            }
+          }
+
+          const next = extractNodeText(child);
+          if (next) textBuffer += next;
+        });
+
+        appendBlock(textBuffer);
+        return;
+      }
+
+      appendBlock(extractNodeText(node));
+      return;
+    }
+
+    appendBlock(node.textContent ?? "");
+  });
+
+  const output = blocks.join("\n\n").trim();
+  return output || null;
 }
 
 function formatDate(value: string) {
@@ -271,6 +391,33 @@ export default function Notes() {
     updateCommentMutation.mutate({ commentId, content: editingCommentContent.trim() });
   };
 
+  const handleNotePaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData.getData("text/html");
+    if (!html?.trim()) return;
+
+    const markdownFromHtml = htmlWithListsToMarkdown(html);
+    if (!markdownFromHtml) return;
+
+    e.preventDefault();
+
+    const textarea = e.currentTarget;
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? selectionStart;
+
+    const before = draftContent.slice(0, selectionStart);
+    const after = draftContent.slice(selectionEnd);
+    const nextValue = `${before}${markdownFromHtml}${after}`;
+
+    const limitedValue = nextValue.slice(0, 20000);
+    setDraftContent(limitedValue);
+
+    const cursorAt = Math.min(before.length + markdownFromHtml.length, limitedValue.length);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(cursorAt, cursorAt);
+    });
+  };
+
   const pinnedFirst = useMemo(() => {
     return [...notes].sort((a: any, b: any) => Number(b.is_pinned) - Number(a.is_pinned));
   }, [notes]);
@@ -410,7 +557,15 @@ export default function Notes() {
                       )}
                     </div>
                     <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-300/95 leading-7 prose-p:my-2 prose-headings:my-2 prose-headings:text-zinc-100 prose-strong:text-zinc-100 prose-ul:my-2 prose-ol:my-2 prose-ul:list-disc prose-ol:list-decimal prose-li:my-0.5 prose-li:marker:text-zinc-500 prose-a:text-emerald-300 prose-a:underline prose-a:decoration-emerald-500/50 hover:prose-a:text-emerald-200 prose-pre:bg-zinc-900/70 prose-pre:border prose-pre:border-zinc-800 prose-code:text-zinc-200">
-                      <Streamdown>{convertNoteShortcodes(String(note.content ?? ""))}</Streamdown>
+                      <Streamdown
+                        remarkPlugins={[
+                          defaultRemarkPlugins.gfm,
+                          defaultRemarkPlugins.math,
+                          remarkBreaks,
+                        ]}
+                      >
+                        {convertNoteShortcodes(String(note.content ?? ""))}
+                      </Streamdown>
                     </div>
                   </div>
 
@@ -635,12 +790,12 @@ export default function Notes() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-lg bg-card border-border">
+        <DialogContent className="sm:max-w-xl bg-card border-border max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-foreground">{editNoteId ? "Edit Note" : "Add Note"}</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="flex-1 overflow-y-auto pr-1 space-y-4">
             <div className="space-y-2">
               <label className="text-xs uppercase tracking-wider text-muted-foreground">Title</label>
               <Input
@@ -659,9 +814,10 @@ export default function Notes() {
               <Textarea
                 value={draftContent}
                 onChange={(e) => setDraftContent(e.target.value)}
+                onPaste={handleNotePaste}
                 placeholder="Write your note..."
                 rows={6}
-                className="bg-background border-border text-foreground"
+                className="bg-background border-border text-foreground field-sizing-fixed min-h-[170px] max-h-[430px] overflow-y-auto resize-y"
                 maxLength={20000}
               />
               <p className="text-[11px] text-zinc-500">{draftContent.length}/20000</p>

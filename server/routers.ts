@@ -185,6 +185,201 @@ function getPortalPublicBaseUrl(): string {
   return "http://localhost:3000";
 }
 
+const normalizeSummaryText = (value: unknown): string => String(value ?? "").trim();
+
+const SummaryVersionSourceSchema = z.enum([
+  "initial_extraction",
+  "manual_edit",
+  "ai_revision",
+  "restored_version",
+  "final_approved",
+]);
+
+const getLatestSummaryVersion = async (importId: string) => {
+  const { data, error } = await supabase
+    .from("financial_summary_versions")
+    .select("id, version_number, summary, change_source")
+    .eq("import_id", importId)
+    .order("version_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load summary version history." });
+  return data;
+};
+
+const ensureInitialSummaryVersion = async (importJob: {
+  import_id: string;
+  tenant_slug: string | null;
+  extracted_data?: unknown;
+}) => {
+  const importId = String(importJob.import_id);
+  const tenantSlug = sanitizeTenantSlug(String(importJob.tenant_slug || ""));
+  const extracted = importJob.extracted_data && typeof importJob.extracted_data === "object"
+    ? (importJob.extracted_data as Record<string, unknown>)
+    : null;
+  const originalSummary = normalizeSummaryText(extracted?.financialSummary);
+
+  const { data: initialVersion, error: initialError } = await supabase
+    .from("financial_summary_versions")
+    .select("id, version_number")
+    .eq("import_id", importId)
+    .eq("change_source", "initial_extraction")
+    .order("version_number", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (initialError) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to verify initial summary history version." });
+  }
+
+  const latest = await getLatestSummaryVersion(importId);
+  const latestVersionNumber = latest ? Number(latest.version_number) : 0;
+  const nextVersionNumber = latestVersionNumber + 1;
+
+  let insertedInitialVersion = false;
+  if (!initialVersion && originalSummary && tenantSlug) {
+    const { error: insertError } = await supabase
+      .from("financial_summary_versions")
+      .insert({
+        import_id: importId,
+        tenant_slug: tenantSlug,
+        version_number: 1,
+        summary: originalSummary,
+        change_source: "initial_extraction",
+        created_by_user_id: null,
+        created_by_role: "system",
+      });
+
+    if (insertError) {
+      if (!String(insertError.message || "").toLowerCase().includes("duplicate")) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create initial summary history version." });
+      }
+    } else {
+      insertedInitialVersion = true;
+    }
+  }
+
+  console.info("[financials.summaryHistory.ensureInitial]", {
+    importId,
+    initialVersionExists: !!initialVersion,
+    originalSummaryPresent: !!originalSummary,
+    insertedInitialVersion,
+    latestVersionNumber,
+    nextVersionNumber,
+  });
+
+  return {
+    initialVersionExists: !!initialVersion,
+    originalSummaryPresent: !!originalSummary,
+    insertedInitialVersion,
+    latestVersionNumber,
+    nextVersionNumber,
+  };
+};
+
+const createSummaryVersionRecord = async (args: {
+  importId: string;
+  tenantSlug: string;
+  summary: string;
+  changeSource: z.infer<typeof SummaryVersionSourceSchema>;
+  changeNote?: string | null;
+  createdByUserId?: string | null;
+  createdByRole?: string | null;
+  restoredFromVersionId?: string | null;
+  financialPeriodId?: string | null;
+  forceInsert?: boolean;
+}) => {
+  const normalizedSummary = normalizeSummaryText(args.summary);
+  if (!normalizedSummary) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Summary is required." });
+  }
+  if (normalizedSummary.length > 10_000) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Summary is too long." });
+  }
+
+  const latest = await getLatestSummaryVersion(args.importId);
+  const latestSummary = latest ? normalizeSummaryText(String(latest.summary || "")) : null;
+  const latestSource = latest ? String(latest.change_source || "") : null;
+
+  if (
+    latest &&
+    latestSummary === normalizedSummary &&
+    !args.forceInsert &&
+    !(args.changeSource === "final_approved" && latestSource !== "final_approved")
+  ) {
+    return {
+      inserted: false as const,
+      version: {
+        id: String(latest.id),
+        versionNumber: Number(latest.version_number),
+      },
+    };
+  }
+
+  const nextVersionNumber = (latest ? Number(latest.version_number) : 0) + 1;
+  const { data, error } = await supabase
+    .from("financial_summary_versions")
+    .insert({
+      import_id: args.importId,
+      tenant_slug: args.tenantSlug,
+      financial_period_id: args.financialPeriodId ?? null,
+      version_number: nextVersionNumber,
+      summary: normalizedSummary,
+      change_source: args.changeSource,
+      change_note: args.changeNote ?? null,
+      created_by_user_id: args.createdByUserId ?? null,
+      created_by_role: args.createdByRole ?? null,
+      restored_from_version_id: args.restoredFromVersionId ?? null,
+    })
+    .select("id, version_number")
+    .single();
+
+  if (error || !data) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create summary version." });
+  }
+
+  return {
+    inserted: true as const,
+    version: {
+      id: String(data.id),
+      versionNumber: Number(data.version_number),
+    },
+  };
+};
+
+const loadImportJobForSummaryHistory = async (importId: string) => {
+  const { data, error } = await supabase
+    .from("financial_import_jobs")
+    .select("import_id, document_id, tenant_slug, month, year, status, extracted_data")
+    .eq("import_id", importId)
+    .maybeSingle();
+  if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load import job." });
+  if (!data) throw new TRPCError({ code: "NOT_FOUND", message: "Import job not found." });
+  return data;
+};
+
+const assertSummaryHistoryAccess = async (ctx: { user: PortalUser; clientWorkspaceTenantSlug?: string | null; viewAsClientTenantSlug?: string | null }, tenantSlug: string) => {
+  const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+  if (!allowedRoles.has(ctx.user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to access summary history." });
+  }
+
+  const activeWorkspaceTenant = sanitizeTenantSlug(String(ctx.clientWorkspaceTenantSlug || ""));
+  const activeViewAsTenant = sanitizeTenantSlug(String(ctx.viewAsClientTenantSlug || ""));
+  const activeTenant = activeViewAsTenant || activeWorkspaceTenant;
+
+  if (activeTenant && activeTenant !== tenantSlug) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Requested tenant does not match active client workspace." });
+  }
+
+  if (ctx.user.role !== "admin") {
+    const assigned = await getAssignedTenantSlugsForUser(ctx.user);
+    if (!assigned.includes(tenantSlug)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "You are not assigned to this tenant." });
+    }
+  }
+};
+
 function sanitizeStorageFileName(rawName: string | undefined, fallbackExt: string): string {
   const raw = (rawName && rawName.trim()) || `document.${fallbackExt}`;
 
@@ -283,6 +478,8 @@ const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATIO
 const N8N_DOCUMENT_MOVED_WEBHOOK_URL = process.env.N8N_DOCUMENT_MOVED_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/movedfile";
 const N8N_FINANCIAL_IMPORT_WEBHOOK_URL = process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_URL?.trim() || "";
 const N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET = process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET?.trim() || "";
+const N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL = process.env.N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL?.trim() || "";
+const N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET = process.env.N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET?.trim() || "";
 const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "documents";
 const MAX_VIDEO_UPLOAD_BYTES = 250 * 1024 * 1024;
 const ALLOWED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
@@ -2401,6 +2598,8 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "Import job is not ready for review." });
         }
 
+        await ensureInitialSummaryVersion(job as any);
+
         const cleanIncome = input.incomeSources.map((row) => ({
           category: row.category.trim(),
           actual: Number(row.actual),
@@ -2476,6 +2675,27 @@ export const appRouter = router({
         const periodRows = await getFinancials(requestedTenant, input.year, input.month);
         const period = periodRows[0];
 
+        try {
+          await createSummaryVersionRecord({
+            importId: input.importId,
+            tenantSlug: requestedTenant,
+            summary: financialSummary,
+            changeSource: "final_approved",
+            createdByUserId: String(ctx.user.id),
+            createdByRole: String(ctx.user.role),
+            financialPeriodId: period ? String(period.id) : null,
+            forceInsert: true,
+          });
+        } catch (historyError) {
+          console.warn("[financials.saveReviewedPeriod] summary history final_approved failed", {
+            importId: input.importId,
+            tenantSlug: requestedTenant,
+            userRole: ctx.user.role,
+            summaryLength: financialSummary.length,
+            status: "failed",
+          });
+        }
+
         return {
           success: true,
           periodId: period ? String(period.id) : `${requestedTenant}:${input.year}:${input.month}`,
@@ -2487,6 +2707,350 @@ export const appRouter = router({
           netProfit,
           margin,
         };
+      }),
+    getSummaryHistory: protectedProcedure
+      .input(z.object({ importId: z.string().uuid() }))
+      .query(async ({ ctx, input }) => {
+        const job = await loadImportJobForSummaryHistory(input.importId);
+        const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
+        await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await ensureInitialSummaryVersion(job as any);
+
+        const { data, error } = await supabase
+          .from("financial_summary_versions")
+          .select("id, version_number, summary, change_source, change_note, created_by_user_id, created_by_role, restored_from_version_id, created_at")
+          .eq("import_id", input.importId)
+          .order("version_number", { ascending: false });
+
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load summary history." });
+        }
+
+        return {
+          versions: (data ?? []).map((row: any) => ({
+            id: String(row.id),
+            versionNumber: Number(row.version_number),
+            summary: String(row.summary || ""),
+            changeSource: String(row.change_source) as z.infer<typeof SummaryVersionSourceSchema>,
+            changeNote: row.change_note == null ? null : String(row.change_note),
+            createdByUserId: row.created_by_user_id == null ? null : String(row.created_by_user_id),
+            createdByRole: row.created_by_role == null ? null : String(row.created_by_role),
+            createdAt: String(row.created_at),
+            restoredFromVersionId: row.restored_from_version_id == null ? null : String(row.restored_from_version_id),
+          })),
+        };
+      }),
+    createSummaryVersion: protectedProcedure
+      .input(z.object({
+        importId: z.string().uuid(),
+        summary: z.string().max(10000),
+        changeSource: SummaryVersionSourceSchema.exclude(["initial_extraction"]),
+        changeNote: z.string().max(500).optional(),
+        restoredFromVersionId: z.string().uuid().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const job = await loadImportJobForSummaryHistory(input.importId);
+        const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
+        await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await ensureInitialSummaryVersion(job as any);
+
+        const status = String(job.status || "").trim().toLowerCase();
+        if (status !== "ready_for_review") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import job is not ready for review." });
+        }
+
+        const summary = normalizeSummaryText(input.summary);
+        if (!summary) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Summary is required." });
+        }
+
+        const created = await createSummaryVersionRecord({
+          importId: input.importId,
+          tenantSlug,
+          summary,
+          changeSource: input.changeSource,
+          changeNote: input.changeNote?.trim() || null,
+          createdByUserId: String(ctx.user.id),
+          createdByRole: String(ctx.user.role),
+          restoredFromVersionId: input.restoredFromVersionId ?? null,
+        });
+
+        return {
+          id: created.version.id,
+          versionNumber: created.version.versionNumber,
+          inserted: created.inserted,
+        };
+      }),
+    restoreSummaryVersion: protectedProcedure
+      .input(z.object({ importId: z.string().uuid(), versionId: z.string().uuid() }))
+      .mutation(async ({ ctx, input }) => {
+        const job = await loadImportJobForSummaryHistory(input.importId);
+        const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
+        await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await ensureInitialSummaryVersion(job as any);
+
+        const status = String(job.status || "").trim().toLowerCase();
+        if (status !== "ready_for_review") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import job is not ready for review." });
+        }
+
+        const { data: selected, error } = await supabase
+          .from("financial_summary_versions")
+          .select("id, import_id, summary")
+          .eq("id", input.versionId)
+          .maybeSingle();
+
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load requested summary version." });
+        }
+        if (!selected || String(selected.import_id) !== input.importId) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Summary version not found for this import." });
+        }
+
+        const restoredSummary = normalizeSummaryText(selected.summary);
+        const created = await createSummaryVersionRecord({
+          importId: input.importId,
+          tenantSlug,
+          summary: restoredSummary,
+          changeSource: "restored_version",
+          createdByUserId: String(ctx.user.id),
+          createdByRole: String(ctx.user.role),
+          restoredFromVersionId: input.versionId,
+          forceInsert: true,
+        });
+
+        return {
+          restoredSummary,
+          newVersion: {
+            id: created.version.id,
+            versionNumber: created.version.versionNumber,
+          },
+        };
+      }),
+    rewriteSummaryWithAi: protectedProcedure
+      .input(z.object({
+        importId: z.string().uuid(),
+        instruction: z.string().max(2000),
+        currentSummary: z.string().max(10000),
+        incomeSources: z.array(z.object({
+          id: z.string().optional(),
+          category: z.string(),
+          actual: z.number().finite(),
+          budget: z.number().finite().nullable(),
+        })).max(500),
+        expenses: z.array(z.object({
+          id: z.string().optional(),
+          category: z.string(),
+          actual: z.number().finite(),
+          budget: z.number().finite().nullable(),
+        })).max(500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const startedAt = Date.now();
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to use AI summary assist." });
+        }
+
+        const instruction = String(input.instruction ?? "").trim();
+        if (!instruction) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Instruction is required." });
+        }
+
+        const currentSummary = String(input.currentSummary ?? "");
+        if (currentSummary.length > 10000) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Current summary is too long." });
+        }
+
+        const { data: job, error: jobError } = await supabase
+          .from("financial_import_jobs")
+          .select("import_id, document_id, tenant_slug, month, year, status")
+          .eq("import_id", input.importId)
+          .maybeSingle();
+
+        if (jobError) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load import job." });
+        }
+        if (!job) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Import job not found." });
+        }
+
+        const requestedTenant = sanitizeTenantSlug(String(job.tenant_slug || ""));
+        if (!requestedTenant) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import job tenant is missing." });
+        }
+
+        const activeWorkspaceTenant = sanitizeTenantSlug(String(ctx.clientWorkspaceTenantSlug || ""));
+        const activeViewAsTenant = sanitizeTenantSlug(String(ctx.viewAsClientTenantSlug || ""));
+        const activeTenant = activeViewAsTenant || activeWorkspaceTenant;
+
+        if (activeTenant && requestedTenant !== activeTenant) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Requested tenant does not match active client workspace." });
+        }
+
+        if (ctx.user.role !== "admin") {
+          const assigned = await getAssignedTenantSlugsForUser(ctx.user);
+          if (!assigned.includes(requestedTenant)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You are not assigned to this tenant." });
+          }
+        }
+
+        if (String(job.status).trim().toLowerCase() !== "ready_for_review") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Import job is not ready for review." });
+        }
+
+        await ensureInitialSummaryVersion(job as any);
+
+        const cleanIncome = input.incomeSources.map((row) => ({
+          category: String(row.category || "").trim(),
+          actual: Number(row.actual),
+          budget: row.budget == null ? null : Number(row.budget),
+        }));
+        const cleanExpenses = input.expenses.map((row) => ({
+          category: String(row.category || "").trim(),
+          actual: Number(row.actual),
+          budget: row.budget == null ? null : Number(row.budget),
+        }));
+
+        for (const row of [...cleanIncome, ...cleanExpenses]) {
+          if (!row.category) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Category is required for all rows." });
+          }
+          if (!Number.isFinite(row.actual)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Actual values must be finite numbers." });
+          }
+          if (row.budget != null && !Number.isFinite(row.budget)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Budget values must be finite numbers or null." });
+          }
+        }
+
+        const totalRevenue = cleanIncome.reduce((sum, row) => sum + row.actual, 0);
+        const totalExpenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
+        const netProfit = totalRevenue - totalExpenses;
+        const marginPercent = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+
+        if (!N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL || !N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET) {
+          throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service is not configured." });
+        }
+
+        const requestId = randomUUID();
+        const payload = {
+          event: "financial_summary_revision_requested",
+          schema_version: "1.0",
+          request_id: requestId,
+          import_id: String(job.import_id),
+          document_id: String(job.document_id),
+          tenant_slug: requestedTenant,
+          period: {
+            month: Number(job.month),
+            year: Number(job.year),
+          },
+          requested_by: {
+            user_id: String(ctx.user.id),
+            role: String(ctx.user.role),
+          },
+          instruction,
+          current_summary: currentSummary,
+          financial_context: {
+            currency: "USD",
+            total_revenue: totalRevenue,
+            total_expenses: totalExpenses,
+            net_profit: netProfit,
+            margin_percent: marginPercent,
+            income_sources: cleanIncome.map((r) => ({ category: r.category, actual: r.actual, budget: r.budget })),
+            expenses: cleanExpenses.map((r) => ({ category: r.category, actual: r.actual, budget: r.budget })),
+          },
+          metadata: {
+            source: "financial_import_review",
+            requested_at: new Date().toISOString(),
+            summary_character_limit: 10000,
+            instruction_character_limit: 2000,
+          },
+        };
+
+        const controller = new AbortController();
+        const timeoutMs = 60000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const response = await fetch(N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Kynli-Webhook-Secret": N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET,
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service did not accept the request." });
+          }
+
+          const json = await response.json().catch(() => null) as any;
+          let revisedSummary: string | null = null;
+
+          if (json && typeof json === "object" && ("event" in json || "request_id" in json || "import_id" in json || "status" in json || "result" in json)) {
+            if (
+              json.event !== "financial_summary_revision_completed" ||
+              json.request_id !== requestId ||
+              json.import_id !== String(job.import_id) ||
+              json.status !== "completed" ||
+              !json.result ||
+              typeof json.result.revised_summary !== "string"
+            ) {
+              throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service returned an invalid response." });
+            }
+            revisedSummary = json.result.revised_summary;
+          } else if (json && typeof json.revised_summary === "string") {
+            revisedSummary = json.revised_summary;
+          }
+
+          const normalizedRevised = typeof revisedSummary === "string" ? revisedSummary.trim() : "";
+          if (!normalizedRevised) {
+            throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service returned an empty revision." });
+          }
+          if (normalizedRevised.length > 10000) {
+            throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service returned a revision that is too long." });
+          }
+
+          console.info("[financials.rewriteSummaryWithAi] success", {
+            requestId,
+            importId: String(job.import_id),
+            tenantSlug: requestedTenant,
+            userRole: ctx.user.role,
+            instructionLength: instruction.length,
+            currentSummaryLength: currentSummary.length,
+            revisedSummaryLength: normalizedRevised.length,
+            durationMs: Date.now() - startedAt,
+            status: "completed",
+          });
+
+          return {
+            requestId,
+            revisedSummary: normalizedRevised,
+          };
+        } catch (error) {
+          const isAbort = error instanceof Error && error.name === "AbortError";
+          console.warn("[financials.rewriteSummaryWithAi] failed", {
+            requestId,
+            importId: String(job.import_id),
+            tenantSlug: requestedTenant,
+            userRole: ctx.user.role,
+            instructionLength: instruction.length,
+            currentSummaryLength: currentSummary.length,
+            revisedSummaryLength: null,
+            durationMs: Date.now() - startedAt,
+            status: isAbort ? "timeout" : "failed",
+          });
+
+          throw new TRPCError({
+            code: "BAD_GATEWAY",
+            message: "We couldn’t generate a revised summary. Your current summary has not been changed.",
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
       }),
     getImportStatus: protectedProcedure
       .input(z.object({ importId: z.string().uuid() }))
