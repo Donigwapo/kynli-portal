@@ -36,7 +36,7 @@ export function hasAccess(tenantTier: PackageTier, requiredTier: PackageTier): b
  * Confirmed feature matrix:
  *   legacy:    overview, financials, documents, chat
  *   momentum:  + sales_tracker
- *   growth_1:  + coaching, time_intelligence, reports
+ *   growth_1:  + time_intelligence, reports
  *   growth_2:  + clients, kpi_dashboard
  *   cfo:       all
  */
@@ -45,8 +45,8 @@ export const TAB_ACCESS: Record<string, PackageTier> = {
   financials:        "legacy",
   documents:         "legacy",
   chat:              "legacy",
+  coaching:          "legacy",
   sales_tracker:     "momentum",
-  coaching:          "growth_1",
   time_intelligence: "growth_1",
   reports:           "growth_1",
   clients:           "growth_2",

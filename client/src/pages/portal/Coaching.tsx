@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { trpc } from "@/lib/trpc";
+import { htmlWithListsToMarkdown, insertTextAtSelection } from "@/lib/markdownPaste";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Save, Target, ChevronDown, Info, CheckCircle2, Circle, Plus, MoreHorizontal, Pencil, Trash2, Download } from "lucide-react";
@@ -200,6 +201,34 @@ export default function Coaching() {
   }, [note, year, quarter]);
 
   const isDirty = content !== savedContent;
+
+  const handleGoalsPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData.getData("text/html");
+    if (!html?.trim()) return;
+
+    const markdownFromHtml = htmlWithListsToMarkdown(html);
+    if (!markdownFromHtml) return;
+
+    e.preventDefault();
+
+    const textarea = e.currentTarget;
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? selectionStart;
+
+    const { value, cursor } = insertTextAtSelection({
+      currentValue: content,
+      insertText: markdownFromHtml,
+      selectionStart,
+      selectionEnd,
+    });
+
+    setContent(value);
+
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  };
 
   const handleSave = useCallback(() => {
     if (!isDirty || saving) return;
@@ -602,6 +631,7 @@ export default function Coaching() {
             ref={textareaRef}
             value={content}
             onChange={e => setContent(e.target.value)}
+            onPaste={handleGoalsPaste}
             placeholder={`Write your Q${quarter} ${year} goals here…\n\nExamples:\n- Sign 12 new clients\n- Launch the new website\n- Hit $50k MRR`}
             className="w-full resize-none bg-transparent px-5 py-5 text-sm text-foreground focus:outline-none placeholder:text-muted-foreground/40 font-mono leading-relaxed"
             style={{ minHeight: "360px" }}
