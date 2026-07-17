@@ -51,13 +51,25 @@ function convertNoteShortcodes(content: string): string {
   });
 }
 
-function normalizePlainText(input: string): string {
+function removeFragmentMarkerLines(input: string): string {
   return input
-    .replace(/\u00a0/g, " ")
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\t\f\v]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== "StartFragment" && trimmed !== "EndFragment";
+    })
+    .join("\n");
+}
+
+function normalizePlainText(input: string): string {
+  return removeFragmentMarkerLines(
+    input
+      .replace(/\u00a0/g, " ")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\t\f\v]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  );
 }
 
 function extractTextExcludingNestedLists(li: HTMLLIElement): string {
@@ -98,7 +110,11 @@ function listToMarkdown(listEl: HTMLOListElement | HTMLUListElement, depth = 0):
 }
 
 function extractNodeText(node: Node): string {
+  if (node.nodeType === Node.COMMENT_NODE) return "";
+
   if (node.nodeType === Node.TEXT_NODE) {
+    const text = (node.textContent ?? "").trim();
+    if (text === "StartFragment" || text === "EndFragment") return "";
     return (node.textContent ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ");
   }
 
@@ -131,6 +147,8 @@ function htmlWithListsToMarkdown(html: string): string | null {
   };
 
   Array.from(body.childNodes).forEach((node) => {
+    if (node.nodeType === Node.COMMENT_NODE) return;
+
     if (node instanceof Element) {
       const tag = node.tagName.toLowerCase();
       if (tag === "ul" || tag === "ol") {
