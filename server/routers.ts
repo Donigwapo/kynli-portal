@@ -2326,6 +2326,104 @@ export const appRouter = router({
         });
         return { success: true };
       }),
+    getImportStatus: protectedProcedure
+      .input(z.object({ importId: z.string().uuid() }))
+      .query(async ({ ctx, input }) => {
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view financial import status." });
+        }
+
+        const { data: job, error } = await supabase
+          .from("financial_import_jobs")
+          .select("import_id, document_id, tenant_slug, month, year, status, extracted_data, error_message, uploaded_by_user_id")
+          .eq("import_id", input.importId)
+          .maybeSingle();
+
+        if (error) {
+          console.warn("[financials.getImportStatus] load error", {
+            code: "INTERNAL_SERVER_ERROR",
+            message: error.message,
+            importId: input.importId,
+            userRole: ctx.user.role,
+            activeClientWorkspaceTenantSlug: ctx.clientWorkspaceTenantSlug ?? null,
+          });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Failed to load import status: ${error.message}` });
+        }
+        if (!job) {
+          console.warn("[financials.getImportStatus] import job not found", {
+            code: "NOT_FOUND",
+            importId: input.importId,
+            userRole: ctx.user.role,
+            activeClientWorkspaceTenantSlug: ctx.clientWorkspaceTenantSlug ?? null,
+          });
+          throw new TRPCError({ code: "NOT_FOUND", message: "Import job not found." });
+        }
+
+        const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
+        const userId = String(ctx.user.id);
+        let tenantAuthorized = false;
+
+        if (ctx.user.role === "admin") {
+          tenantAuthorized = true;
+        } else if (STAFF_PORTAL_ROLES.has(ctx.user.role)) {
+          const assignedSlugs = await getAssignedTenantSlugsForUser(ctx.user);
+          tenantAuthorized = assignedSlugs.includes(tenantSlug);
+          if (!tenantAuthorized && String(job.uploaded_by_user_id ?? "") === userId) {
+            tenantAuthorized = true;
+          }
+        }
+
+        if (!tenantAuthorized) {
+          console.warn("[financials.getImportStatus] forbidden", {
+            code: "FORBIDDEN",
+            importId: input.importId,
+            userRole: ctx.user.role,
+            activeClientWorkspaceTenantSlug: ctx.clientWorkspaceTenantSlug ?? null,
+            storedTenantSlug: tenantSlug || null,
+            jobFound: true,
+            importIdMatches: String(job.import_id) === input.importId,
+            tenantAuthorized,
+          });
+          throw new TRPCError({ code: "FORBIDDEN", message: "You are not authorized to view this import job." });
+        }
+
+        const normalizedStatus = String(job.status || "").trim().toLowerCase();
+        const status: "processing" | "ready_for_review" | "failed" =
+          normalizedStatus === "ready_for_review"
+            ? "ready_for_review"
+            : normalizedStatus === "failed"
+              ? "failed"
+              : "processing";
+        const extractedData = (job.extracted_data as any) ?? null;
+
+        console.info("[financials.getImportStatus] success", {
+          importId: input.importId,
+          userRole: ctx.user.role,
+          activeClientWorkspaceTenantSlug: ctx.clientWorkspaceTenantSlug ?? null,
+          storedTenantSlug: tenantSlug || null,
+          jobFound: true,
+          importIdMatches: String(job.import_id) === input.importId,
+          tenantAuthorized,
+          rawStatus: String(job.status || ""),
+          status,
+          extractedDataPresent: extractedData != null,
+          extractedDataValidShape:
+            extractedData == null ||
+            (Array.isArray((extractedData as any).incomeSources) && Array.isArray((extractedData as any).expenses)),
+        });
+
+        return {
+          importId: String(job.import_id),
+          documentId: String(job.document_id),
+          tenantSlug,
+          month: Number(job.month),
+          year: Number(job.year),
+          status,
+          extractedData,
+          errorMessage: job.error_message ? String(job.error_message) : null,
+        };
+      }),
     analyzeUploadedPdf: protectedProcedure
       .input(z.object({
         documentId: z.string().min(1),
