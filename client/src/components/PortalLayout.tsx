@@ -22,7 +22,7 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
-import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
+import { PACKAGE_TIERS, TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import FloatingTimerWidget from "./FloatingTimerWidget";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -80,7 +80,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const [coachingExpanded, setCoachingExpanded] = useState(false);
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const { impersonatingTenantSlug, setImpersonatingTenantSlug, effectiveTier, setEffectiveTier } = usePortal();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug } = usePortal();
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
@@ -126,6 +126,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   });
 
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [impersonationTierLoading, setImpersonationTierLoading] = useState(false);
   const [exitViewConfirmOpen, setExitViewConfirmOpen] = useState(false);
   const [exitViewLoading, setExitViewLoading] = useState(false);
   const [pendingExitTimerEntryId, setPendingExitTimerEntryId] = useState<string | null>(null);
@@ -151,16 +152,21 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   useEffect(() => {
     if (!user) {
       setImpersonatingTenantSlug(null);
+      setImpersonationTierLoading(false);
       return;
     }
 
     const canUseViewAs = ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
-    if (!canUseViewAs) return;
+    if (!canUseViewAs) {
+      setImpersonationTierLoading(false);
+      return;
+    }
 
     let canceled = false;
 
     (async () => {
       try {
+        setImpersonationTierLoading(true);
         const res = await fetch("/api/auth/view-as-client/current", {
           method: "GET",
           credentials: "include",
@@ -170,6 +176,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           if (!canceled && (res.status === 401 || res.status === 403)) {
             setImpersonatingTenantSlug(null);
           }
+          if (!canceled) setImpersonationTierLoading(false);
           return;
         }
 
@@ -180,24 +187,17 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
         if (canceled) return;
         setImpersonatingTenantSlug(slug);
-        if (slug) setEffectiveTier("cfo");
+        // Never force cfo while impersonating; actual tenant tier is resolved below.
       } catch {
         // no-op; keep current local context on transient errors
+        if (!canceled) setImpersonationTierLoading(false);
       }
     })();
 
     return () => {
       canceled = true;
     };
-  }, [user?.id, user?.role, setEffectiveTier, setImpersonatingTenantSlug]);
-
-  // Determine the active tier: impersonated tenant uses effectiveTier set by admin;
-  // client users use their own tenant tier; staff portfolio users get full client nav visibility.
-  const activeTier: PackageTier = isAdmin
-    ? "cfo"
-    : isStaffPortfolioUser
-      ? "cfo"
-      : (impersonatingTenantSlug ? effectiveTier : (tenant?.package_tier ?? "legacy")) as PackageTier;
+  }, [user?.id, user?.role, setImpersonatingTenantSlug]);
 
   const displayLabel = isAdmin
     ? "Admin"
@@ -211,6 +211,33 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     enabled: !!isStaffOrAdmin,
     staleTime: 30_000,
   });
+
+  const matchedImpersonatedTenant = useMemo(() => {
+    if (!impersonatingTenantSlug) return null;
+    const normalized = String(impersonatingTenantSlug).trim().toLowerCase();
+    return (staffWorkspaces as any[]).find((t: any) => String(t?.slug ?? "").trim().toLowerCase() === normalized) ?? null;
+  }, [impersonatingTenantSlug, staffWorkspaces]);
+
+  const impersonatedTier = (matchedImpersonatedTenant?.package_tier ?? null) as PackageTier | null;
+
+  useEffect(() => {
+    if (!impersonatingTenantSlug) {
+      setImpersonationTierLoading(false);
+      return;
+    }
+    const isKnownTier = !!impersonatedTier && PACKAGE_TIERS.includes(impersonatedTier);
+    setImpersonationTierLoading(!isKnownTier);
+  }, [impersonatingTenantSlug, impersonatedTier]);
+
+  // Determine active tier used for package-gated sidebar visibility.
+  // In View-as-Client mode, always use the impersonated tenant's real package tier.
+  const activeTier: PackageTier = impersonatingTenantSlug
+    ? ((impersonatedTier && PACKAGE_TIERS.includes(impersonatedTier)) ? impersonatedTier : "legacy")
+    : isAdmin
+      ? "cfo"
+      : isStaffPortfolioUser
+        ? "cfo"
+        : (tenant?.package_tier ?? "legacy") as PackageTier;
 
   const workspaceOptions = useMemo(() => {
     if (isClientUser) {
@@ -263,7 +290,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           // - staff/admin View-as-Client impersonation
           return !!user && user.role !== "client" && !impersonatingTenantSlug;
         }
-        if (isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
+        if (!impersonatingTenantSlug && isStaffPortfolioUser && (item.featureKey === "sales_tracker" || item.featureKey === "financials")) {
           return false;
         }
         // Hide Coaching in accountant's regular (non View-as-Client) sidebar only.
@@ -274,6 +301,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         // so hide direct "Portal" nav entry in their normal sidebar only.
         // Keep it visible while impersonating (View As Client).
         if (user?.role === "accountant" && item.id === "documents" && !impersonatingTenantSlug) {
+          return false;
+        }
+        if (impersonatingTenantSlug && impersonationTierLoading) {
+          // Restrictive fallback while resolving impersonated tenant package.
           return false;
         }
         return !item.featureKey || hasAccess(activeTier, TAB_ACCESS[item.featureKey] ?? "legacy");
@@ -307,7 +338,6 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
       // no-op: local state reset still proceeds
     }
     setImpersonatingTenantSlug(null);
-    setEffectiveTier("cfo");
     if (user?.role === "admin") {
       navigate("/admin/clients");
     }
@@ -368,7 +398,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     if (!res.ok) throw new Error(payload?.error || "Unable to switch workspace");
 
     setImpersonatingTenantSlug(targetSlug);
-    setEffectiveTier("cfo");
+    setImpersonationTierLoading(true);
 
     await Promise.all([
       utils.tenant.me.invalidate(),
@@ -684,7 +714,6 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 // ignore; logout will still proceed and clear local state
               }
               setImpersonatingTenantSlug(null);
-              setEffectiveTier("cfo");
               await logout();
             }}
             className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80"

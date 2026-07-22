@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { usePortal } from "../contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "../lib/trpc";
-import { TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
+import { PACKAGE_TIERS, TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import { Lock } from "lucide-react";
 
 interface TierGateProps {
@@ -36,7 +36,7 @@ const FEATURE_LABELS: Record<string, string> = {
  */
 export default function TierGate({ featureKey, children }: TierGateProps) {
   const { user } = useAuth();
-  const { impersonatingTenantSlug, effectiveTier } = usePortal();
+  const { impersonatingTenantSlug } = usePortal();
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
 
   // Fetch real tenant tier (only for non-impersonating client sessions)
@@ -44,20 +44,33 @@ export default function TierGate({ featureKey, children }: TierGateProps) {
     enabled: !impersonatingTenantSlug,
   });
 
+  // For View-as-Client, resolve impersonated tenant tier from allowed tenant list.
+  const { data: staffWorkspaces = [] } = trpc.tenant.list.useQuery(undefined, {
+    enabled: !!impersonatingTenantSlug && !!isStaffOrAdmin,
+    staleTime: 30_000,
+  });
+
   // Staff/admin should never receive client package gating in normal mode.
   if (isStaffOrAdmin && !impersonatingTenantSlug) {
     return <>{children}</>;
   }
 
+  const matchedImpersonatedTenant = impersonatingTenantSlug
+    ? (staffWorkspaces as any[]).find((t: any) => String(t?.slug ?? "").trim().toLowerCase() === String(impersonatingTenantSlug).trim().toLowerCase())
+    : null;
+
+  const impersonatedTier = (matchedImpersonatedTenant?.package_tier ?? null) as PackageTier | null;
+  const impersonationTierKnown = !!impersonatedTier && PACKAGE_TIERS.includes(impersonatedTier);
+
   const activeTier: PackageTier = impersonatingTenantSlug
-    ? effectiveTier
+    ? (impersonationTierKnown ? impersonatedTier : "legacy")
     : (tenant?.package_tier ?? "legacy") as PackageTier;
 
   const requiredTier = (TAB_ACCESS[featureKey] ?? "legacy") as PackageTier;
   const allowed = hasAccess(activeTier, requiredTier);
 
   // While loading, render nothing (RouteGuard already shows a spinner above)
-  if (isLoading && !impersonatingTenantSlug) return null;
+  if ((isLoading && !impersonatingTenantSlug) || (impersonatingTenantSlug && !impersonationTierKnown)) return null;
 
   if (!allowed) {
     const featureLabel = FEATURE_LABELS[featureKey] ?? featureKey;

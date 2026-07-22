@@ -38,6 +38,20 @@ function varianceExpense(actual: number, budget: number) {
   return { v, pct, isGood: v <= 0 };
 }
 
+type ReviewSpecialTotals = {
+  totalCostOfGoodsSold: { actual: string; budget: string };
+  totalOtherIncome: { actual: string; budget: string };
+  totalOtherExpense: { actual: string; budget: string };
+};
+
+function defaultReviewSpecialTotals(): ReviewSpecialTotals {
+  return {
+    totalCostOfGoodsSold: { actual: "0", budget: "" },
+    totalOtherIncome: { actual: "0", budget: "" },
+    totalOtherExpense: { actual: "0", budget: "" },
+  };
+}
+
 function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -116,16 +130,39 @@ function MonthlySummaryPanel({
 function PeriodRow({
   period, onExpand, isExpanded,
 }: {
-  period: { year: number; month: number; revenue: number; expenses: number; net_profit: number; net_profit_margin: number; budget_revenue: number; budget_expenses: number; summary?: string | null };
+  period: {
+    year: number;
+    month: number;
+    revenue: number;
+    expenses: number;
+    cogs_actual?: number;
+    other_income_actual?: number;
+    other_expense_actual?: number;
+    net_profit: number;
+    net_profit_margin: number;
+    budget_revenue: number;
+    budget_expenses: number;
+    cogs_budget?: number | null;
+    other_income_budget?: number | null;
+    other_expense_budget?: number | null;
+    summary?: string | null;
+  };
   onExpand: () => void;
   isExpanded: boolean;
 }) {
   const rev = fmtN(period.revenue);
   const exp = fmtN(period.expenses);
-  const profit = fmtN(period.net_profit);
-  const margin = fmtN(period.net_profit_margin);
+  const cogs = fmtN(period.cogs_actual);
+  const otherIncome = fmtN(period.other_income_actual);
+  const otherExpense = fmtN(period.other_expense_actual);
+  const profit = rev - cogs - exp + otherIncome - otherExpense;
+  const margin = rev > 0 ? (profit / rev) * 100 : 0;
   const budRev = fmtN(period.budget_revenue);
   const budExp = fmtN(period.budget_expenses);
+  const cogsBudget = fmtN(period.cogs_budget);
+  const otherIncomeBudget = fmtN(period.other_income_budget);
+  const otherExpenseBudget = fmtN(period.other_expense_budget);
+  const budgetNetProfit = budRev - cogsBudget - budExp + otherIncomeBudget - otherExpenseBudget;
   const revVar = variance(rev, budRev);
   const expVar = varianceExpense(exp, budExp);
 
@@ -151,11 +188,15 @@ function PeriodRow({
             <div className="font-semibold text-foreground">{fmtD(exp)}</div>
           </div>
           <div className="text-right">
+            <div className="text-xs text-muted-foreground mb-0.5">COGS</div>
+            <div className="font-semibold text-foreground">{fmtD(cogs)}</div>
+          </div>
+          <div className="text-right">
             <div className="text-xs text-muted-foreground mb-0.5">Net Profit</div>
             <div className="font-semibold" style={{ color: profit >= 0 ? GREEN : RED }}>{fmtD(profit)}</div>
           </div>
           <div className="text-right">
-            <div className="text-xs text-muted-foreground mb-0.5">Margin</div>
+            <div className="text-xs text-muted-foreground mb-0.5">Net Margin</div>
             <div className="font-semibold" style={{ color: margin >= 35 ? GREEN : RED }}>{margin.toFixed(1)}%</div>
           </div>
           <div className="text-right">
@@ -163,8 +204,8 @@ function PeriodRow({
             <VarianceBadge {...revVar} />
           </div>
           <div className="text-right">
-            <div className="text-xs text-muted-foreground mb-0.5">Exp vs Budget</div>
-            <VarianceBadge {...expVar} />
+            <div className="text-xs text-muted-foreground mb-0.5">Net vs Budget</div>
+            <VarianceBadge {...variance(profit, budgetNetProfit)} />
           </div>
         </div>
       </button>
@@ -178,7 +219,24 @@ function ExpandedPeriodDetail({
   summaryExpanded,
   onToggleSummaryExpanded,
 }: {
-  period: { year: number; month: number; revenue: number; expenses: number; net_profit: number; net_profit_margin: number; budget_revenue: number; budget_expenses: number; summary?: string | null; id?: string | number };
+  period: {
+    year: number;
+    month: number;
+    revenue: number;
+    expenses: number;
+    cogs_actual?: number;
+    cogs_budget?: number | null;
+    other_income_actual?: number;
+    other_income_budget?: number | null;
+    other_expense_actual?: number;
+    other_expense_budget?: number | null;
+    net_profit: number;
+    net_profit_margin: number;
+    budget_revenue: number;
+    budget_expenses: number;
+    summary?: string | null;
+    id?: string | number;
+  };
   lineItems: { id: number; label: string; type: string; amount: number; budget_amount?: number | null }[];
   summaryExpanded: boolean;
   onToggleSummaryExpanded: () => void;
@@ -186,11 +244,22 @@ function ExpandedPeriodDetail({
   const income = lineItems.filter(i => i.type === "income");
   const expenses = lineItems.filter(i => i.type === "expense");
   const totalRev = fmtN(period.revenue);
-  const totalExp = fmtN(period.expenses);
-  const profit = fmtN(period.net_profit);
-  const margin = fmtN(period.net_profit_margin);
+  const operatingExp = fmtN(period.expenses);
+  const cogs = fmtN(period.cogs_actual);
+  const otherIncome = fmtN(period.other_income_actual);
+  const otherExpense = fmtN(period.other_expense_actual);
   const budRev = fmtN(period.budget_revenue);
-  const budExp = fmtN(period.budget_expenses);
+  const budOperatingExp = fmtN(period.budget_expenses);
+  const cogsBudget = fmtN(period.cogs_budget);
+  const otherIncomeBudget = fmtN(period.other_income_budget);
+  const otherExpenseBudget = fmtN(period.other_expense_budget);
+
+  const grossProfit = totalRev - cogs;
+  const profit = totalRev - cogs - operatingExp + otherIncome - otherExpense;
+  const margin = totalRev > 0 ? (profit / totalRev) * 100 : 0;
+  const budgetGrossProfit = budRev - cogsBudget;
+  const budgetNetProfit = budRev - cogsBudget - budOperatingExp + otherIncomeBudget - otherExpenseBudget;
+  const budgetMargin = budRev > 0 ? (budgetNetProfit / budRev) * 100 : 0;
 
   return (
     <div className="border border-t-0 border-border rounded-b-xl bg-background px-5 py-5 space-y-5">
@@ -205,12 +274,13 @@ function ExpandedPeriodDetail({
       />
 
       {/* KPI row */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-5 gap-3">
         {[
-          { label: "Total Revenue", value: fmtD(totalRev), budget: fmtD(budRev), var: variance(totalRev, budRev), icon: <DollarSign size={14} /> },
-          { label: "Total Expenses", value: fmtD(totalExp), budget: fmtD(budExp), var: varianceExpense(totalExp, budExp), icon: <TrendingDown size={14} /> },
-          { label: "Net Profit", value: fmtD(profit), budget: fmtD(budRev - budExp), var: variance(profit, budRev - budExp), icon: <TrendingUp size={14} /> },
-          { label: "Net Margin", value: `${margin.toFixed(1)}%`, budget: "35% target", var: { v: margin - 35, pct: margin - 35, isGood: margin >= 35 }, icon: <Percent size={14} /> },
+          { label: "Revenue", value: fmtD(totalRev), budget: fmtD(budRev), var: variance(totalRev, budRev), icon: <DollarSign size={14} /> },
+          { label: "COGS", value: fmtD(cogs), budget: fmtD(cogsBudget), var: varianceExpense(cogs, cogsBudget), icon: <TrendingDown size={14} /> },
+          { label: "Operating Expenses", value: fmtD(operatingExp), budget: fmtD(budOperatingExp), var: varianceExpense(operatingExp, budOperatingExp), icon: <TrendingDown size={14} /> },
+          { label: "Net Profit", value: fmtD(profit), budget: fmtD(budgetNetProfit), var: variance(profit, budgetNetProfit), icon: <TrendingUp size={14} /> },
+          { label: "Net Margin", value: `${margin.toFixed(1)}%`, budget: `${budgetMargin.toFixed(1)}%`, var: { v: margin - budgetMargin, pct: margin - budgetMargin, isGood: margin >= budgetMargin }, icon: <Percent size={14} /> },
         ].map(card => (
           <div key={card.label} className="bg-card border border-border rounded-xl p-4">
             <div className="flex items-center justify-between mb-2">
@@ -224,7 +294,46 @@ function ExpandedPeriodDetail({
         ))}
       </div>
 
-      {/* Income + Expense tables */}
+      {/* Special totals + Income + Expense tables */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-sm font-semibold text-foreground">Special Totals</h3>
+        </div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="text-left px-4 py-2 text-muted-foreground font-medium">Category</th>
+              <th className="text-right px-4 py-2 text-muted-foreground font-medium">Actual</th>
+              <th className="text-right px-4 py-2 text-muted-foreground font-medium">Budget</th>
+              <th className="text-right px-4 py-2 text-muted-foreground font-medium">Variance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { label: "Cost of Goods Sold", actual: cogs, budget: cogsBudget, expenseLike: true },
+              { label: "Other Income", actual: otherIncome, budget: otherIncomeBudget, expenseLike: false },
+              { label: "Other Expense", actual: otherExpense, budget: otherExpenseBudget, expenseLike: true },
+            ].map((row) => {
+              const rowVariance = row.expenseLike ? varianceExpense(row.actual, row.budget) : variance(row.actual, row.budget);
+              return (
+                <tr key={row.label} className="border-b border-border/50 hover:bg-muted/10">
+                  <td className="px-4 py-2.5 text-foreground">{row.label}</td>
+                  <td className="px-4 py-2.5 text-right font-medium text-foreground">{fmtD(row.actual)}</td>
+                  <td className="px-4 py-2.5 text-right text-muted-foreground">{fmtD(row.budget)}</td>
+                  <td className="px-4 py-2.5 text-right"><VarianceBadge {...rowVariance} /></td>
+                </tr>
+              );
+            })}
+            <tr className="border-t border-border bg-muted/20">
+              <td className="px-4 py-2.5 font-semibold text-foreground">Gross Profit</td>
+              <td className="px-4 py-2.5 text-right font-bold text-foreground">{fmtD(grossProfit)}</td>
+              <td className="px-4 py-2.5 text-right font-medium text-muted-foreground">{fmtD(budgetGrossProfit)}</td>
+              <td className="px-4 py-2.5 text-right"><VarianceBadge {...variance(grossProfit, budgetGrossProfit)} /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <div className="grid grid-cols-2 gap-4">
         {/* Income table */}
         <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -298,9 +407,9 @@ function ExpandedPeriodDetail({
               })}
               <tr className="border-t border-border bg-muted/20">
                 <td className="px-4 py-2.5 font-semibold text-foreground">Total</td>
-                <td className="px-4 py-2.5 text-right font-bold" style={{ color: RED }}>{fmtD(totalExp)}</td>
-                <td className="px-4 py-2.5 text-right font-medium text-muted-foreground">{budExp > 0 ? fmtD(budExp) : "—"}</td>
-                <td className="px-4 py-2.5 text-right">{budExp > 0 ? <VarianceBadge {...varianceExpense(totalExp, budExp)} /> : "—"}</td>
+                <td className="px-4 py-2.5 text-right font-bold" style={{ color: RED }}>{fmtD(operatingExp)}</td>
+                <td className="px-4 py-2.5 text-right font-medium text-muted-foreground">{budOperatingExp > 0 ? fmtD(budOperatingExp) : "—"}</td>
+                <td className="px-4 py-2.5 text-right">{budOperatingExp > 0 ? <VarianceBadge {...varianceExpense(operatingExp, budOperatingExp)} /> : "—"}</td>
               </tr>
             </tbody>
           </table>
@@ -347,6 +456,7 @@ export default function Financials() {
   const [importFailureMessage, setImportFailureMessage] = useState<string | null>(null);
   const [reviewIncomeRows, setReviewIncomeRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
   const [reviewExpenseRows, setReviewExpenseRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
+  const [reviewSpecialTotals, setReviewSpecialTotals] = useState<ReviewSpecialTotals>(defaultReviewSpecialTotals());
   const [cameronSummary, setCameronSummary] = useState("");
   const [aiAssistOpen, setAiAssistOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
@@ -443,6 +553,7 @@ export default function Financials() {
     setImportFailureMessage(null);
     setReviewIncomeRows([]);
     setReviewExpenseRows([]);
+    setReviewSpecialTotals(defaultReviewSpecialTotals());
     setCameronSummary("");
     setAiAssistOpen(false);
     setAiInstruction("");
@@ -675,6 +786,20 @@ export default function Financials() {
           actual: Number.isFinite(Number(r.actual)) ? Number(r.actual) : 0,
           budget: r.budget === "" ? null : Number.isFinite(Number(r.budget)) ? Number(r.budget) : null,
         })),
+        specialTotals: {
+          totalCostOfGoodsSold: {
+            actual: Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.actual)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.actual) : 0,
+            budget: reviewSpecialTotals.totalCostOfGoodsSold.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.budget)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.budget) : null),
+          },
+          totalOtherIncome: {
+            actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.actual)) ? Number(reviewSpecialTotals.totalOtherIncome.actual) : 0,
+            budget: reviewSpecialTotals.totalOtherIncome.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.budget)) ? Number(reviewSpecialTotals.totalOtherIncome.budget) : null),
+          },
+          totalOtherExpense: {
+            actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.actual)) ? Number(reviewSpecialTotals.totalOtherExpense.actual) : 0,
+            budget: reviewSpecialTotals.totalOtherExpense.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.budget)) ? Number(reviewSpecialTotals.totalOtherExpense.budget) : null),
+          },
+        },
       });
 
       setAiSuggestedSummary(result.revisedSummary);
@@ -742,6 +867,21 @@ export default function Financials() {
 
     setIsSavingReviewedPeriod(true);
     try {
+      const specialTotalsPayload = {
+        totalCostOfGoodsSold: {
+          actual: Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.actual)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.actual) : 0,
+          budget: reviewSpecialTotals.totalCostOfGoodsSold.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.budget)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.budget) : null),
+        },
+        totalOtherIncome: {
+          actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.actual)) ? Number(reviewSpecialTotals.totalOtherIncome.actual) : 0,
+          budget: reviewSpecialTotals.totalOtherIncome.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.budget)) ? Number(reviewSpecialTotals.totalOtherIncome.budget) : null),
+        },
+        totalOtherExpense: {
+          actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.actual)) ? Number(reviewSpecialTotals.totalOtherExpense.actual) : 0,
+          budget: reviewSpecialTotals.totalOtherExpense.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.budget)) ? Number(reviewSpecialTotals.totalOtherExpense.budget) : null),
+        },
+      };
+
       const result = await saveReviewedPeriodMutation.mutateAsync({
         importId: analysisDispatchResult.importId,
         tenantSlug: impersonatingTenantSlug,
@@ -749,6 +889,7 @@ export default function Financials() {
         year: analysisDispatchResult.selectedYear,
         incomeSources: normalizedIncome,
         expenses: normalizedExpenses,
+        specialTotals: specialTotalsPayload,
         financialSummary: cameronSummary,
         notes: reviewNotes,
       });
@@ -800,6 +941,13 @@ export default function Financials() {
       const extracted = (latest.extractedData || {}) as any;
       const incomeSources = Array.isArray(extracted.incomeSources) ? extracted.incomeSources : [];
       const expenses = Array.isArray(extracted.expenses) ? extracted.expenses : [];
+      const specialTotals = extracted?.specialTotals && typeof extracted.specialTotals === "object"
+        ? extracted.specialTotals
+        : {
+            totalCostOfGoodsSold: { actual: 0, budget: null },
+            totalOtherIncome: { actual: 0, budget: null },
+            totalOtherExpense: { actual: 0, budget: null },
+          };
       const financialSummary = typeof extracted.financialSummary === "string" ? extracted.financialSummary : "";
       const notes = typeof extracted.notes === "string" ? extracted.notes : "";
 
@@ -821,6 +969,20 @@ export default function Financials() {
         })),
       );
 
+      setReviewSpecialTotals({
+        totalCostOfGoodsSold: {
+          actual: specialTotals?.totalCostOfGoodsSold?.actual == null ? "0" : String(specialTotals.totalCostOfGoodsSold.actual),
+          budget: specialTotals?.totalCostOfGoodsSold?.budget == null ? "" : String(specialTotals.totalCostOfGoodsSold.budget),
+        },
+        totalOtherIncome: {
+          actual: specialTotals?.totalOtherIncome?.actual == null ? "0" : String(specialTotals.totalOtherIncome.actual),
+          budget: specialTotals?.totalOtherIncome?.budget == null ? "" : String(specialTotals.totalOtherIncome.budget),
+        },
+        totalOtherExpense: {
+          actual: specialTotals?.totalOtherExpense?.actual == null ? "0" : String(specialTotals.totalOtherExpense.actual),
+          budget: specialTotals?.totalOtherExpense?.budget == null ? "" : String(specialTotals.totalOtherExpense.budget),
+        },
+      });
       setCameronSummary(financialSummary);
       setAiAssistOpen(false);
       setAiInstruction("");
@@ -845,6 +1007,20 @@ export default function Financials() {
             actual: row?.actual == null ? "" : String(row.actual),
             budget: row?.budget == null ? "" : String(row.budget),
           })),
+          specialTotals: {
+            totalCostOfGoodsSold: {
+              actual: specialTotals?.totalCostOfGoodsSold?.actual == null ? "0" : String(specialTotals.totalCostOfGoodsSold.actual),
+              budget: specialTotals?.totalCostOfGoodsSold?.budget == null ? "" : String(specialTotals.totalCostOfGoodsSold.budget),
+            },
+            totalOtherIncome: {
+              actual: specialTotals?.totalOtherIncome?.actual == null ? "0" : String(specialTotals.totalOtherIncome.actual),
+              budget: specialTotals?.totalOtherIncome?.budget == null ? "" : String(specialTotals.totalOtherIncome.budget),
+            },
+            totalOtherExpense: {
+              actual: specialTotals?.totalOtherExpense?.actual == null ? "0" : String(specialTotals.totalOtherExpense.actual),
+              budget: specialTotals?.totalOtherExpense?.budget == null ? "" : String(specialTotals.totalOtherExpense.budget),
+            },
+          },
           cameronSummary: financialSummary,
           reviewNotes: notes,
         }),
@@ -866,16 +1042,49 @@ export default function Financials() {
     () => reviewIncomeRows.reduce((sum, row) => sum + (Number.isFinite(Number(row.actual)) ? Number(row.actual) : 0), 0),
     [reviewIncomeRows],
   );
-  const reviewExpenses = useMemo(
+  const reviewOperatingExpenses = useMemo(
     () => reviewExpenseRows.reduce((sum, row) => sum + (Number.isFinite(Number(row.actual)) ? Number(row.actual) : 0), 0),
     [reviewExpenseRows],
   );
-  const reviewNetProfit = reviewRevenue - reviewExpenses;
+  const reviewBudgetRevenue = useMemo(
+    () => reviewIncomeRows.reduce((sum, row) => sum + (Number.isFinite(Number(row.budget)) ? Number(row.budget) : 0), 0),
+    [reviewIncomeRows],
+  );
+  const reviewBudgetOperatingExpenses = useMemo(
+    () => reviewExpenseRows.reduce((sum, row) => sum + (Number.isFinite(Number(row.budget)) ? Number(row.budget) : 0), 0),
+    [reviewExpenseRows],
+  );
+
+  const specialCogsActual = Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.actual))
+    ? Number(reviewSpecialTotals.totalCostOfGoodsSold.actual)
+    : 0;
+  const specialCogsBudgetForCalc = Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.budget))
+    ? Number(reviewSpecialTotals.totalCostOfGoodsSold.budget)
+    : 0;
+  const specialOtherIncomeActual = Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.actual))
+    ? Number(reviewSpecialTotals.totalOtherIncome.actual)
+    : 0;
+  const specialOtherIncomeBudgetForCalc = Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.budget))
+    ? Number(reviewSpecialTotals.totalOtherIncome.budget)
+    : 0;
+  const specialOtherExpenseActual = Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.actual))
+    ? Number(reviewSpecialTotals.totalOtherExpense.actual)
+    : 0;
+  const specialOtherExpenseBudgetForCalc = Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.budget))
+    ? Number(reviewSpecialTotals.totalOtherExpense.budget)
+    : 0;
+
+  const reviewGrossProfit = reviewRevenue - specialCogsActual;
+  const reviewNetProfit = reviewRevenue - specialCogsActual - reviewOperatingExpenses + specialOtherIncomeActual - specialOtherExpenseActual;
   const reviewMargin = reviewRevenue > 0 ? (reviewNetProfit / reviewRevenue) * 100 : 0;
 
+  const reviewBudgetGrossProfit = reviewBudgetRevenue - specialCogsBudgetForCalc;
+  const reviewBudgetNetProfit = reviewBudgetRevenue - specialCogsBudgetForCalc - reviewBudgetOperatingExpenses + specialOtherIncomeBudgetForCalc - specialOtherExpenseBudgetForCalc;
+  const reviewBudgetMargin = reviewBudgetRevenue > 0 ? (reviewBudgetNetProfit / reviewBudgetRevenue) * 100 : 0;
+
   const currentReviewSnapshot = useMemo(
-    () => JSON.stringify({ income: reviewIncomeRows, expense: reviewExpenseRows, cameronSummary, reviewNotes }),
-    [reviewIncomeRows, reviewExpenseRows, cameronSummary, reviewNotes],
+    () => JSON.stringify({ income: reviewIncomeRows, expense: reviewExpenseRows, specialTotals: reviewSpecialTotals, cameronSummary, reviewNotes }),
+    [reviewIncomeRows, reviewExpenseRows, reviewSpecialTotals, cameronSummary, reviewNotes],
   );
   const hasUnsavedReviewChanges =
     analysisDispatchResult?.status === "ready_for_review" &&
@@ -958,6 +1167,12 @@ export default function Financials() {
                       month: period.month,
                       revenue: fmtN(period.revenue),
                       expenses: fmtN(period.expenses),
+                      cogs_actual: fmtN((period as any).cogs_actual),
+                      cogs_budget: (period as any).cogs_budget == null ? null : fmtN((period as any).cogs_budget),
+                      other_income_actual: fmtN((period as any).other_income_actual),
+                      other_income_budget: (period as any).other_income_budget == null ? null : fmtN((period as any).other_income_budget),
+                      other_expense_actual: fmtN((period as any).other_expense_actual),
+                      other_expense_budget: (period as any).other_expense_budget == null ? null : fmtN((period as any).other_expense_budget),
                       net_profit: fmtN(period.net_profit),
                       net_profit_margin: fmtN(period.net_profit_margin),
                       budget_revenue: fmtN(period.budget_revenue),
@@ -975,6 +1190,12 @@ export default function Financials() {
                         month: expandedPeriod.month,
                         revenue: fmtN(expandedPeriod.revenue),
                         expenses: fmtN(expandedPeriod.expenses),
+                        cogs_actual: fmtN((expandedPeriod as any).cogs_actual),
+                        cogs_budget: (expandedPeriod as any).cogs_budget == null ? null : fmtN((expandedPeriod as any).cogs_budget),
+                        other_income_actual: fmtN((expandedPeriod as any).other_income_actual),
+                        other_income_budget: (expandedPeriod as any).other_income_budget == null ? null : fmtN((expandedPeriod as any).other_income_budget),
+                        other_expense_actual: fmtN((expandedPeriod as any).other_expense_actual),
+                        other_expense_budget: (expandedPeriod as any).other_expense_budget == null ? null : fmtN((expandedPeriod as any).other_expense_budget),
                         net_profit: fmtN(expandedPeriod.net_profit),
                         net_profit_margin: fmtN(expandedPeriod.net_profit_margin),
                         budget_revenue: fmtN(expandedPeriod.budget_revenue),
@@ -1075,21 +1296,25 @@ export default function Financials() {
               </div>
             ) : analysisDispatchResult?.status === "ready_for_review" ? (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Revenue</p>
                     <p className="text-base font-semibold text-primary mt-1">{fmtD(reviewRevenue)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
-                    <p className="text-xs text-muted-foreground">Expenses</p>
-                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(reviewExpenses)}</p>
+                    <p className="text-xs text-muted-foreground">COGS</p>
+                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(specialCogsActual)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
+                    <p className="text-xs text-muted-foreground">Operating Expenses</p>
+                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(reviewOperatingExpenses)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Net Profit</p>
                     <p className="text-base font-semibold text-emerald-300 mt-1">{fmtD(reviewNetProfit)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
-                    <p className="text-xs text-muted-foreground">Margin</p>
+                    <p className="text-xs text-muted-foreground">Net Margin</p>
                     <p className="text-base font-semibold text-foreground mt-1">{reviewMargin.toFixed(2)}%</p>
                   </div>
                 </div>
@@ -1296,6 +1521,59 @@ export default function Financials() {
                       </div>
                     )}
                   </div>
+                </div>
+
+                <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-foreground">Special Totals</h4>
+                  </div>
+                  <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground/90 px-1">
+                    <div className="col-span-12 sm:col-span-6">Category</div>
+                    <div className="col-span-6 sm:col-span-3 text-right">Actual</div>
+                    <div className="col-span-6 sm:col-span-3 text-right">Budget</div>
+                  </div>
+
+                  {[
+                    { key: "totalCostOfGoodsSold", label: "Cost of Goods Sold" },
+                    { key: "totalOtherIncome", label: "Other Income" },
+                    { key: "totalOtherExpense", label: "Other Expense" },
+                  ].map((item) => (
+                    <div key={item.key} className="grid grid-cols-12 gap-2 items-center border border-border/50 rounded-md p-2 bg-card/40">
+                      <div className="col-span-12 sm:col-span-6 text-sm text-foreground">{item.label}</div>
+                      <div className="col-span-6 sm:col-span-3 relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                        <Input
+                          className="pl-5 text-right bg-muted/35 border-border/60"
+                          inputMode="decimal"
+                          placeholder="0"
+                          value={(reviewSpecialTotals as any)[item.key].actual}
+                          onChange={(e) => setReviewSpecialTotals((prev) => ({
+                            ...prev,
+                            [item.key]: {
+                              ...(prev as any)[item.key],
+                              actual: sanitizeNumericInput(e.target.value),
+                            },
+                          }))}
+                        />
+                      </div>
+                      <div className="col-span-6 sm:col-span-3 relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">$</span>
+                        <Input
+                          className="pl-5 text-right bg-muted/35 border-border/60"
+                          inputMode="decimal"
+                          placeholder=""
+                          value={(reviewSpecialTotals as any)[item.key].budget}
+                          onChange={(e) => setReviewSpecialTotals((prev) => ({
+                            ...prev,
+                            [item.key]: {
+                              ...(prev as any)[item.key],
+                              budget: sanitizeNumericInput(e.target.value),
+                            },
+                          }))}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
@@ -1567,6 +1845,7 @@ export default function Financials() {
                       setStatusPollingEnabled(true);
                       setReviewIncomeRows([]);
                       setReviewExpenseRows([]);
+                      setReviewSpecialTotals(defaultReviewSpecialTotals());
                       setCameronSummary("");
                       setReviewNotes("");
                       setSelectedPdfFile(null);

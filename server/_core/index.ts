@@ -65,6 +65,54 @@ function normalizeCallbackRows(rows: unknown): Array<{ category: string; actual:
   });
 }
 
+type SpecialTotalsShape = {
+  totalCostOfGoodsSold: { actual: number; budget: number | null };
+  totalOtherIncome: { actual: number; budget: number | null };
+  totalOtherExpense: { actual: number; budget: number | null };
+};
+
+function defaultSpecialTotals(): SpecialTotalsShape {
+  return {
+    totalCostOfGoodsSold: { actual: 0, budget: null },
+    totalOtherIncome: { actual: 0, budget: null },
+    totalOtherExpense: { actual: 0, budget: null },
+  };
+}
+
+function normalizeSpecialTotalsFromCallback(raw: unknown): SpecialTotalsShape {
+  const defaults = defaultSpecialTotals();
+  if (raw == null) return defaults;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("special_totals must be an object when provided.");
+  }
+
+  const src = raw as Record<string, unknown>;
+  const readSection = (key: string): { actual: number; budget: number | null } => {
+    const section = src[key];
+    if (!section || typeof section !== "object") {
+      return { actual: 0, budget: null };
+    }
+    const row = section as Record<string, unknown>;
+    const actual = row.actual;
+    const budget = row.budget === undefined ? null : row.budget;
+
+    if (typeof actual !== "number" || !Number.isFinite(actual)) {
+      throw new Error(`${key}.actual must be a finite number.`);
+    }
+    if (budget !== null && (typeof budget !== "number" || !Number.isFinite(budget))) {
+      throw new Error(`${key}.budget must be a finite number or null.`);
+    }
+
+    return { actual, budget: budget as number | null };
+  };
+
+  return {
+    totalCostOfGoodsSold: readSection("total_cost_of_goods_sold"),
+    totalOtherIncome: readSection("total_other_income"),
+    totalOtherExpense: readSection("total_other_expense"),
+  };
+}
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
@@ -152,9 +200,11 @@ async function startServer() {
 
       let incomeSources: Array<{ category: string; actual: number | null; budget: number | null }>;
       let expenses: Array<{ category: string; actual: number | null; budget: number | null }>;
+      let specialTotals: SpecialTotalsShape;
       try {
         incomeSources = normalizeCallbackRows(body.income_sources);
         expenses = normalizeCallbackRows(body.expenses);
+        specialTotals = normalizeSpecialTotalsFromCallback(body.special_totals);
       } catch {
         return res.status(400).json({ received: false });
       }
@@ -198,16 +248,35 @@ async function startServer() {
       const normalized = {
         incomeSources,
         expenses,
+        specialTotals,
         financialSummary,
         notes: (notes ?? "").trim(),
       };
 
       console.info("[financials.import-result] normalized payload", {
         importId,
+        tenantSlug: String(job.tenant_slug || "").trim() || null,
         status,
         hasFinancialSummaryField,
         financialSummaryType,
         normalizedFinancialSummaryLength: financialSummary.length,
+        specialTotalsPresent: body.special_totals != null,
+        cogsActual: specialTotals.totalCostOfGoodsSold.actual,
+        otherIncomeActual: specialTotals.totalOtherIncome.actual,
+        otherExpenseActual: specialTotals.totalOtherExpense.actual,
+      });
+
+      console.info("[financials.import-result] pre-update diagnostics", {
+        importId,
+        specialTotalsPresentInBody: body.special_totals != null,
+        normalizedCogsActual: specialTotals.totalCostOfGoodsSold.actual,
+        normalizedOtherIncomeActual: specialTotals.totalOtherIncome.actual,
+        normalizedOtherExpenseActual: specialTotals.totalOtherExpense.actual,
+        extractedDataHasSpecialTotals:
+          !!normalized &&
+          typeof normalized === "object" &&
+          "specialTotals" in normalized &&
+          !!(normalized as any).specialTotals,
       });
 
       const now = new Date().toISOString();

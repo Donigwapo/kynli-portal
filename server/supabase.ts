@@ -150,6 +150,12 @@ export type Financial = {
   budget_expenses: number;
   net_profit: number;
   net_profit_margin: number;
+  cogs_actual?: number;
+  cogs_budget?: number | null;
+  other_income_actual?: number;
+  other_income_budget?: number | null;
+  other_expense_actual?: number;
+  other_expense_budget?: number | null;
   summary?: string | null;
 };
 
@@ -808,10 +814,32 @@ export async function getFinancials(slug: string, year: number, month?: number):
     budget_expenses: parseFloat(r.budget_expenses as string),
     net_profit: parseFloat(r.net_profit as string),
     net_profit_margin: parseFloat(r.net_profit_margin as string),
+    cogs_actual: r.cogs_actual == null ? 0 : parseFloat(r.cogs_actual as string),
+    cogs_budget: r.cogs_budget == null ? null : parseFloat(r.cogs_budget as string),
+    other_income_actual: r.other_income_actual == null ? 0 : parseFloat(r.other_income_actual as string),
+    other_income_budget: r.other_income_budget == null ? null : parseFloat(r.other_income_budget as string),
+    other_expense_actual: r.other_expense_actual == null ? 0 : parseFloat(r.other_expense_actual as string),
+    other_expense_budget: r.other_expense_budget == null ? null : parseFloat(r.other_expense_budget as string),
   })) as Financial[];
 }
 
 export async function upsertFinancial(slug: string, data: Omit<Financial, "id">): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error(`Invalid slug: "${slug}".`);
+  }
+
+  await supabase.rpc("exec_sql", {
+    sql: `
+      ALTER TABLE IF EXISTS ${slug}_financials
+        ADD COLUMN IF NOT EXISTS cogs_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS cogs_budget NUMERIC(15,2),
+        ADD COLUMN IF NOT EXISTS other_income_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS other_income_budget NUMERIC(15,2),
+        ADD COLUMN IF NOT EXISTS other_expense_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS other_expense_budget NUMERIC(15,2);
+    `,
+  });
+
   const { error } = await supabase
     .from(`${slug}_financials`)
     .upsert(data, { onConflict: "year,month" });
@@ -3239,6 +3267,12 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
           budget_expenses      NUMERIC(15,2) NOT NULL DEFAULT 0,
           net_profit           NUMERIC(15,2) NOT NULL DEFAULT 0,
           net_profit_margin    NUMERIC(8,4) NOT NULL DEFAULT 0,
+          cogs_actual          NUMERIC(15,2) NOT NULL DEFAULT 0,
+          cogs_budget          NUMERIC(15,2),
+          other_income_actual  NUMERIC(15,2) NOT NULL DEFAULT 0,
+          other_income_budget  NUMERIC(15,2),
+          other_expense_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
+          other_expense_budget NUMERIC(15,2),
           summary              TEXT,
           created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),

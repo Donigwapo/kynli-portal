@@ -187,6 +187,57 @@ function getPortalPublicBaseUrl(): string {
 
 const normalizeSummaryText = (value: unknown): string => String(value ?? "").trim();
 
+type FinancialSpecialTotals = {
+  totalCostOfGoodsSold: { actual: number; budget: number | null };
+  totalOtherIncome: { actual: number; budget: number | null };
+  totalOtherExpense: { actual: number; budget: number | null };
+};
+
+const defaultSpecialTotals = (): FinancialSpecialTotals => ({
+  totalCostOfGoodsSold: { actual: 0, budget: null },
+  totalOtherIncome: { actual: 0, budget: null },
+  totalOtherExpense: { actual: 0, budget: null },
+});
+
+const normalizeSpecialTotals = (raw: unknown): FinancialSpecialTotals => {
+  const defaults = defaultSpecialTotals();
+  if (!raw || typeof raw !== "object") return defaults;
+  const src = raw as Record<string, unknown>;
+
+  const readSection = (sectionRaw: unknown): { actual: number; budget: number | null } => {
+    if (!sectionRaw || typeof sectionRaw !== "object") return { actual: 0, budget: null };
+    const section = sectionRaw as Record<string, unknown>;
+    const actual = Number(section.actual);
+    const budgetRaw = section.budget;
+    const budget = budgetRaw == null ? null : Number(budgetRaw);
+    return {
+      actual: Number.isFinite(actual) ? actual : 0,
+      budget: budget == null ? null : (Number.isFinite(budget) ? budget : null),
+    };
+  };
+
+  return {
+    totalCostOfGoodsSold: readSection(src.totalCostOfGoodsSold),
+    totalOtherIncome: readSection(src.totalOtherIncome),
+    totalOtherExpense: readSection(src.totalOtherExpense),
+  };
+};
+
+const SpecialTotalsSchema = z.object({
+  totalCostOfGoodsSold: z.object({
+    actual: z.number().finite(),
+    budget: z.number().finite().nullable(),
+  }),
+  totalOtherIncome: z.object({
+    actual: z.number().finite(),
+    budget: z.number().finite().nullable(),
+  }),
+  totalOtherExpense: z.object({
+    actual: z.number().finite(),
+    budget: z.number().finite().nullable(),
+  }),
+});
+
 const SummaryVersionSourceSchema = z.enum([
   "initial_extraction",
   "manual_edit",
@@ -2392,6 +2443,12 @@ export const appRouter = router({
           budget_revenue: number;
           expenses: number;
           budget_expenses: number;
+          cogs_actual: number;
+          cogs_budget: number;
+          other_income_actual: number;
+          other_income_budget: number;
+          other_expense_actual: number;
+          other_expense_budget: number;
           net_profit: number;
           net_profit_margin: number;
           summary: string | null;
@@ -2406,6 +2463,12 @@ export const appRouter = router({
               budget_revenue: 0,
               expenses: 0,
               budget_expenses: 0,
+              cogs_actual: 0,
+              cogs_budget: 0,
+              other_income_actual: 0,
+              other_income_budget: 0,
+              other_expense_actual: 0,
+              other_expense_budget: 0,
               net_profit: 0,
               net_profit_margin: 0,
               summary: null,
@@ -2414,13 +2477,19 @@ export const appRouter = router({
             existing.budget_revenue += row.budget_revenue ?? 0;
             existing.expenses += row.expenses ?? 0;
             existing.budget_expenses += row.budget_expenses ?? 0;
+            existing.cogs_actual += (row as any).cogs_actual ?? 0;
+            existing.cogs_budget += (row as any).cogs_budget ?? 0;
+            existing.other_income_actual += (row as any).other_income_actual ?? 0;
+            existing.other_income_budget += (row as any).other_income_budget ?? 0;
+            existing.other_expense_actual += (row as any).other_expense_actual ?? 0;
+            existing.other_expense_budget += (row as any).other_expense_budget ?? 0;
             byMonth.set(row.month, existing);
           }
         }
 
         const merged = Array.from(byMonth.values())
           .map((m, idx) => {
-            const netProfit = m.revenue - m.expenses;
+            const netProfit = m.revenue - m.cogs_actual - m.expenses + m.other_income_actual - m.other_expense_actual;
             const margin = m.revenue > 0 ? netProfit / m.revenue : 0;
             return {
               id: idx + 1,
@@ -2430,6 +2499,12 @@ export const appRouter = router({
               budget_revenue: m.budget_revenue,
               expenses: m.expenses,
               budget_expenses: m.budget_expenses,
+              cogs_actual: m.cogs_actual,
+              cogs_budget: m.cogs_budget,
+              other_income_actual: m.other_income_actual,
+              other_income_budget: m.other_income_budget,
+              other_expense_actual: m.other_expense_actual,
+              other_expense_budget: m.other_expense_budget,
               net_profit: netProfit,
               net_profit_margin: margin,
               summary: null,
@@ -2540,6 +2615,7 @@ export const appRouter = router({
           actual: z.number().finite(),
           budget: z.number().finite().nullable(),
         })),
+        specialTotals: SpecialTotalsSchema,
         financialSummary: z.string().max(10000),
         notes: z.string(),
       }))
@@ -2623,13 +2699,23 @@ export const appRouter = router({
           }
         }
 
+        const specialTotals = normalizeSpecialTotals(input.specialTotals);
+        const cogsActual = Number(specialTotals.totalCostOfGoodsSold.actual);
+        const cogsBudget = specialTotals.totalCostOfGoodsSold.budget == null ? null : Number(specialTotals.totalCostOfGoodsSold.budget);
+        const otherIncomeActual = Number(specialTotals.totalOtherIncome.actual);
+        const otherIncomeBudget = specialTotals.totalOtherIncome.budget == null ? null : Number(specialTotals.totalOtherIncome.budget);
+        const otherExpenseActual = Number(specialTotals.totalOtherExpense.actual);
+        const otherExpenseBudget = specialTotals.totalOtherExpense.budget == null ? null : Number(specialTotals.totalOtherExpense.budget);
+
         const revenue = cleanIncome.reduce((sum, row) => sum + row.actual, 0);
-        const expenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
-        const netProfit = revenue - expenses;
+        const operatingExpenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
+        const netProfit = revenue - cogsActual - operatingExpenses + otherIncomeActual - otherExpenseActual;
         const margin = revenue > 0 ? (netProfit / revenue) * 100 : 0;
 
         const budgetRevenue = cleanIncome.reduce((sum, row) => sum + (row.budget ?? 0), 0);
-        const budgetExpenses = cleanExpenses.reduce((sum, row) => sum + (row.budget ?? 0), 0);
+        const budgetOperatingExpenses = cleanExpenses.reduce((sum, row) => sum + (row.budget ?? 0), 0);
+        const budgetNetProfit = budgetRevenue - (cogsBudget ?? 0) - budgetOperatingExpenses + (otherIncomeBudget ?? 0) - (otherExpenseBudget ?? 0);
+        const budgetNetMargin = budgetRevenue > 0 ? (budgetNetProfit / budgetRevenue) * 100 : 0;
         const financialSummary = String(input.financialSummary ?? "").trim();
         const notes = String(input.notes ?? "").trim();
 
@@ -2638,10 +2724,16 @@ export const appRouter = router({
           month: input.month,
           revenue,
           budget_revenue: budgetRevenue,
-          expenses,
-          budget_expenses: budgetExpenses,
+          expenses: operatingExpenses,
+          budget_expenses: budgetOperatingExpenses,
           net_profit: netProfit,
           net_profit_margin: margin,
+          cogs_actual: cogsActual,
+          cogs_budget: cogsBudget,
+          other_income_actual: otherIncomeActual,
+          other_income_budget: otherIncomeBudget,
+          other_expense_actual: otherExpenseActual,
+          other_expense_budget: otherExpenseBudget,
           summary: financialSummary || null,
         });
 
@@ -2659,6 +2751,7 @@ export const appRouter = router({
           ...extracted,
           incomeSources: cleanIncome,
           expenses: cleanExpenses,
+          specialTotals,
           financialSummary,
           notes,
         };
@@ -2703,9 +2796,13 @@ export const appRouter = router({
           month: input.month,
           year: input.year,
           revenue,
-          expenses,
+          expenses: operatingExpenses,
+          cogs: cogsActual,
+          otherIncome: otherIncomeActual,
+          otherExpense: otherExpenseActual,
           netProfit,
           margin,
+          budgetNetMargin,
         };
       }),
     getSummaryHistory: protectedProcedure
@@ -2844,6 +2941,7 @@ export const appRouter = router({
           actual: z.number().finite(),
           budget: z.number().finite().nullable(),
         })).max(500),
+        specialTotals: SpecialTotalsSchema.optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const startedAt = Date.now();
@@ -2864,7 +2962,7 @@ export const appRouter = router({
 
         const { data: job, error: jobError } = await supabase
           .from("financial_import_jobs")
-          .select("import_id, document_id, tenant_slug, month, year, status")
+          .select("import_id, document_id, tenant_slug, month, year, status, extracted_data")
           .eq("import_id", input.importId)
           .maybeSingle();
 
@@ -2924,9 +3022,17 @@ export const appRouter = router({
           }
         }
 
+        const extractedForAi = (job as any)?.extracted_data && typeof (job as any).extracted_data === "object"
+          ? ((job as any).extracted_data as Record<string, unknown>)
+          : {};
+        const specialTotals = normalizeSpecialTotals(input.specialTotals ?? extractedForAi.specialTotals);
+
         const totalRevenue = cleanIncome.reduce((sum, row) => sum + row.actual, 0);
-        const totalExpenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
-        const netProfit = totalRevenue - totalExpenses;
+        const totalOperatingExpenses = cleanExpenses.reduce((sum, row) => sum + row.actual, 0);
+        const totalCostOfGoodsSold = Number(specialTotals.totalCostOfGoodsSold.actual || 0);
+        const totalOtherIncome = Number(specialTotals.totalOtherIncome.actual || 0);
+        const totalOtherExpense = Number(specialTotals.totalOtherExpense.actual || 0);
+        const netProfit = totalRevenue - totalCostOfGoodsSold - totalOperatingExpenses + totalOtherIncome - totalOtherExpense;
         const marginPercent = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
 
         if (!N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL || !N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET) {
@@ -2954,7 +3060,11 @@ export const appRouter = router({
           financial_context: {
             currency: "USD",
             total_revenue: totalRevenue,
-            total_expenses: totalExpenses,
+            total_cost_of_goods_sold: totalCostOfGoodsSold,
+            total_operating_expenses: totalOperatingExpenses,
+            total_other_income: totalOtherIncome,
+            total_other_expense: totalOtherExpense,
+            total_expenses: totalOperatingExpenses,
             net_profit: netProfit,
             margin_percent: marginPercent,
             income_sources: cleanIncome.map((r) => ({ category: r.category, actual: r.actual, budget: r.budget })),
@@ -3127,16 +3237,24 @@ export const appRouter = router({
           ? {
               incomeSources: Array.isArray(rawExtracted.incomeSources) ? rawExtracted.incomeSources : [],
               expenses: Array.isArray(rawExtracted.expenses) ? rawExtracted.expenses : [],
+              specialTotals: normalizeSpecialTotals(rawExtracted.specialTotals),
               financialSummary:
                 typeof rawExtracted.financialSummary === "string"
                   ? rawExtracted.financialSummary
                   : "",
               notes: typeof rawExtracted.notes === "string" ? rawExtracted.notes : "",
             }
-          : null;
+          : {
+              incomeSources: [],
+              expenses: [],
+              specialTotals: defaultSpecialTotals(),
+              financialSummary: "",
+              notes: "",
+            };
 
         console.info("[financials.getImportStatus] success", {
           importId: input.importId,
+          tenantSlug: tenantSlug || null,
           userRole: ctx.user.role,
           activeClientWorkspaceTenantSlug: ctx.clientWorkspaceTenantSlug ?? null,
           storedTenantSlug: tenantSlug || null,
@@ -3145,6 +3263,10 @@ export const appRouter = router({
           tenantAuthorized,
           rawStatus: String(job.status || ""),
           status,
+          specialTotalsPresent: normalizedExtracted?.specialTotals != null,
+          cogsActual: normalizedExtracted?.specialTotals?.totalCostOfGoodsSold?.actual ?? 0,
+          otherIncomeActual: normalizedExtracted?.specialTotals?.totalOtherIncome?.actual ?? 0,
+          otherExpenseActual: normalizedExtracted?.specialTotals?.totalOtherExpense?.actual ?? 0,
           extractedDataPresent: normalizedExtracted != null,
           extractedDataValidShape:
             normalizedExtracted == null ||
@@ -3159,6 +3281,7 @@ export const appRouter = router({
           year: Number(job.year),
           fileName: job.file_name ? String(job.file_name) : "",
           status,
+          specialTotals: normalizedExtracted.specialTotals,
           extractedData: normalizedExtracted,
           errorMessage: job.error_message ? String(job.error_message) : null,
         };
