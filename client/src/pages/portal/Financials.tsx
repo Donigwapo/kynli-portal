@@ -722,6 +722,58 @@ export default function Financials() {
     return String(parsed);
   };
 
+  const buildSpecialTotalsPayloadForSave = () => {
+    const rows: Array<{
+      label: string;
+      key: keyof ReviewSpecialTotals;
+    }> = [
+      { label: "Cost of Goods Sold", key: "totalCostOfGoodsSold" },
+      { label: "Other Income", key: "totalOtherIncome" },
+      { label: "Other Expense", key: "totalOtherExpense" },
+    ];
+
+    const payload: {
+      totalCostOfGoodsSold: { actual: number; budget: number | null };
+      totalOtherIncome: { actual: number; budget: number | null };
+      totalOtherExpense: { actual: number; budget: number | null };
+    } = {
+      totalCostOfGoodsSold: { actual: 0, budget: null },
+      totalOtherIncome: { actual: 0, budget: null },
+      totalOtherExpense: { actual: 0, budget: null },
+    };
+
+    for (const row of rows) {
+      const actualRaw = reviewSpecialTotals[row.key].actual;
+      const budgetRaw = reviewSpecialTotals[row.key].budget;
+
+      const actual = Number(actualRaw);
+      if (actualRaw === "" || !Number.isFinite(actual)) {
+        return {
+          ok: false as const,
+          message: `${row.label} actual must be a valid number.`,
+        };
+      }
+
+      const budget = budgetRaw === "" ? null : Number(budgetRaw);
+      if (budgetRaw !== "" && !Number.isFinite(budget)) {
+        return {
+          ok: false as const,
+          message: `${row.label} budget must be a valid number or empty.`,
+        };
+      }
+
+      payload[row.key] = {
+        actual,
+        budget,
+      };
+    }
+
+    return {
+      ok: true as const,
+      payload,
+    };
+  };
+
   const persistSummaryVersion = async (args: {
     summary: string;
     changeSource: "manual_edit" | "ai_revision" | "restored_version" | "final_approved";
@@ -770,6 +822,13 @@ export default function Financials() {
 
     setAiRevisionError(null);
     try {
+      const specialTotalsForAi = buildSpecialTotalsPayloadForSave();
+      if (!specialTotalsForAi.ok) {
+        setAiRevisionError(specialTotalsForAi.message);
+        toast.error(specialTotalsForAi.message);
+        return;
+      }
+
       const result = await rewriteSummaryWithAiMutation.mutateAsync({
         importId: analysisDispatchResult.importId,
         instruction,
@@ -786,20 +845,7 @@ export default function Financials() {
           actual: Number.isFinite(Number(r.actual)) ? Number(r.actual) : 0,
           budget: r.budget === "" ? null : Number.isFinite(Number(r.budget)) ? Number(r.budget) : null,
         })),
-        specialTotals: {
-          totalCostOfGoodsSold: {
-            actual: Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.actual)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.actual) : 0,
-            budget: reviewSpecialTotals.totalCostOfGoodsSold.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.budget)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.budget) : null),
-          },
-          totalOtherIncome: {
-            actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.actual)) ? Number(reviewSpecialTotals.totalOtherIncome.actual) : 0,
-            budget: reviewSpecialTotals.totalOtherIncome.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.budget)) ? Number(reviewSpecialTotals.totalOtherIncome.budget) : null),
-          },
-          totalOtherExpense: {
-            actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.actual)) ? Number(reviewSpecialTotals.totalOtherExpense.actual) : 0,
-            budget: reviewSpecialTotals.totalOtherExpense.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.budget)) ? Number(reviewSpecialTotals.totalOtherExpense.budget) : null),
-          },
-        },
+        specialTotals: specialTotalsForAi.payload,
       });
 
       setAiSuggestedSummary(result.revisedSummary);
@@ -865,23 +911,14 @@ export default function Financials() {
       return;
     }
 
+    const specialTotalsPayloadResult = buildSpecialTotalsPayloadForSave();
+    if (!specialTotalsPayloadResult.ok) {
+      toast.error(specialTotalsPayloadResult.message);
+      return;
+    }
+
     setIsSavingReviewedPeriod(true);
     try {
-      const specialTotalsPayload = {
-        totalCostOfGoodsSold: {
-          actual: Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.actual)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.actual) : 0,
-          budget: reviewSpecialTotals.totalCostOfGoodsSold.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalCostOfGoodsSold.budget)) ? Number(reviewSpecialTotals.totalCostOfGoodsSold.budget) : null),
-        },
-        totalOtherIncome: {
-          actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.actual)) ? Number(reviewSpecialTotals.totalOtherIncome.actual) : 0,
-          budget: reviewSpecialTotals.totalOtherIncome.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherIncome.budget)) ? Number(reviewSpecialTotals.totalOtherIncome.budget) : null),
-        },
-        totalOtherExpense: {
-          actual: Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.actual)) ? Number(reviewSpecialTotals.totalOtherExpense.actual) : 0,
-          budget: reviewSpecialTotals.totalOtherExpense.budget === "" ? null : (Number.isFinite(Number(reviewSpecialTotals.totalOtherExpense.budget)) ? Number(reviewSpecialTotals.totalOtherExpense.budget) : null),
-        },
-      };
-
       const result = await saveReviewedPeriodMutation.mutateAsync({
         importId: analysisDispatchResult.importId,
         tenantSlug: impersonatingTenantSlug,
@@ -889,7 +926,7 @@ export default function Financials() {
         year: analysisDispatchResult.selectedYear,
         incomeSources: normalizedIncome,
         expenses: normalizedExpenses,
-        specialTotals: specialTotalsPayload,
+        specialTotals: specialTotalsPayloadResult.payload,
         financialSummary: cameronSummary,
         notes: reviewNotes,
       });
