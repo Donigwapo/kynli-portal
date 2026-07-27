@@ -31,6 +31,10 @@ function fmtDFull(n: number | string | null | undefined) {
   const v = fmtN(n);
   return `$${Math.round(v).toLocaleString()}`;
 }
+function fmtMaybeDFull(n: number | null) {
+  if (n == null) return "—";
+  return fmtDFull(n);
+}
 function fmtPct(n: number) {
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
 }
@@ -83,8 +87,8 @@ export default function Reports() {
 
   const years = Array.from({ length: 6 }, (_, i) => now.getFullYear() - i);
 
-  // Determine which months to include based on period
-  const activeMonths = useMemo(() => {
+  // Determine which months are selected by controls
+  const selectedMonths = useMemo(() => {
     if (period === "Year") return Array.from({ length: 12 }, (_, i) => i + 1);
     if (period === "Quarter") return QUARTERS[quarter];
     return [month];
@@ -120,123 +124,160 @@ export default function Reports() {
     { staleTime: 30_000 }
   );
 
-  // Filter financial data by active months
+  // Filter financial data by selected period months, but only for actually saved rows
   const filteredFin = useMemo(
-    () => yearlyData.filter(r => activeMonths.includes(r.month ?? 0)),
-    [yearlyData, activeMonths]
+    () => yearlyData.filter((r) => selectedMonths.includes(r.month ?? 0)),
+    [yearlyData, selectedMonths],
   );
 
-  // For P&L table: always show all 12 months (or active months), merging DB data with empty rows
-  const plTableRows = useMemo(() => {
-    const nowYear = new Date().getFullYear();
-    const nowMonth = new Date().getMonth() + 1; // 1-based
-    const dbByMonth: Record<number, typeof yearlyData[0]> = {};
-    yearlyData.forEach(r => { if (r.month) dbByMonth[r.month] = r; });
-    return activeMonths.map(m => {
-      const row = dbByMonth[m];
-      const rev = fmtN(row?.revenue);
-      const bud = fmtN(row?.budget_revenue);
-      const exp = fmtN(row?.expenses);
-      const np = fmtN(row?.net_profit);
-      const rawMargin = fmtN(row?.net_profit_margin);
-      // If margin stored as decimal (e.g. 0.193), multiply by 100; if already >1, use as-is
-      const margin = rawMargin > 1 ? rawMargin : rawMargin * 100;
-      const variance = rev - bud;
-      // Actual = strictly before current month; Projection = current month and all future months
-      const isPast = (year < nowYear) || (year === nowYear && m < nowMonth);
-      const isFuture = !isPast;
-      const hasData = rev > 0 || exp > 0;
-      const label = isPast ? "Actual" : "Projection";
-      return { m, rev, bud, exp, np, margin, variance, label, isFuture, hasData };
-    });
-  }, [yearlyData, activeMonths, year]);
+  const displayedMonths = useMemo(
+    () => filteredFin.map((r) => r.month).filter((m): m is number => typeof m === "number"),
+    [filteredFin],
+  );
 
-  // Aggregate financial totals
+  // P&L table rows: only persisted months in selected range (no generated/future/projection placeholders)
+  const plTableRows = useMemo(() => {
+    return [...filteredFin]
+      .sort((a, b) => (a.month ?? 0) - (b.month ?? 0))
+      .map((row) => {
+        const m = row.month ?? 0;
+        const rev = fmtN(row.revenue);
+        const exp = fmtN(row.expenses); // operating expenses; COGS is separate in financials schema
+        const cogs = fmtN((row as any).cogs_actual);
+        const np = fmtN(row.net_profit);
+        const rawMargin = fmtN(row.net_profit_margin);
+        const margin = Math.abs(rawMargin) <= 1 ? rawMargin * 100 : rawMargin;
+
+        const budgetRaw = (row as any).budget_revenue;
+        const hasRevenueBudget = budgetRaw !== null && budgetRaw !== undefined;
+        const bud = hasRevenueBudget ? fmtN(budgetRaw) : null;
+        const variance = bud == null ? null : rev - bud;
+
+        return {
+          m,
+          rev,
+          bud,
+          exp,
+          cogs,
+          np,
+          margin,
+          variance,
+          status: "Saved",
+          hasRevenueBudget,
+        };
+      });
+  }, [filteredFin]);
+
+  // Aggregate financial totals from displayed saved periods only
   const totals = useMemo(() => filteredFin.reduce(
-    (acc, row) => ({
-      revenue: acc.revenue + fmtN(row.revenue),
-      expenses: acc.expenses + fmtN(row.expenses),
-      netProfit: acc.netProfit + fmtN(row.net_profit),
-      budgetRevenue: acc.budgetRevenue + fmtN(row.budget_revenue),
-      budgetExpenses: acc.budgetExpenses + fmtN(row.budget_expenses),
-    }),
-    { revenue: 0, expenses: 0, netProfit: 0, budgetRevenue: 0, budgetExpenses: 0 }
+    (acc, row) => {
+      const rev = fmtN(row.revenue);
+      const exp = fmtN(row.expenses);
+      const cogs = fmtN((row as any).cogs_actual);
+      const np = fmtN(row.net_profit);
+
+      const rowBudgetRevenueRaw = (row as any).budget_revenue;
+      const rowBudgetExpensesRaw = (row as any).budget_expenses;
+      const hasRowBudgetRevenue = rowBudgetRevenueRaw !== null && rowBudgetRevenueRaw !== undefined;
+      const hasRowBudgetExpenses = rowBudgetExpensesRaw !== null && rowBudgetExpensesRaw !== undefined;
+
+      return {
+        revenue: acc.revenue + rev,
+        expenses: acc.expenses + exp,
+        cogs: acc.cogs + cogs,
+        netProfit: acc.netProfit + np,
+        budgetRevenue: hasRowBudgetRevenue ? acc.budgetRevenue + fmtN(rowBudgetRevenueRaw) : acc.budgetRevenue,
+        budgetExpenses: hasRowBudgetExpenses ? acc.budgetExpenses + fmtN(rowBudgetExpensesRaw) : acc.budgetExpenses,
+        periodsWithRevenueBudget: acc.periodsWithRevenueBudget + (hasRowBudgetRevenue ? 1 : 0),
+        periodsWithExpensesBudget: acc.periodsWithExpensesBudget + (hasRowBudgetExpenses ? 1 : 0),
+      };
+    },
+    {
+      revenue: 0,
+      expenses: 0,
+      cogs: 0,
+      netProfit: 0,
+      budgetRevenue: 0,
+      budgetExpenses: 0,
+      periodsWithRevenueBudget: 0,
+      periodsWithExpensesBudget: 0,
+    },
   ), [filteredFin]);
 
   const netMargin = totals.revenue > 0 ? (totals.netProfit / totals.revenue) * 100 : 0;
-  const targetMargin = totals.budgetRevenue > 0
-    ? ((totals.budgetRevenue - totals.budgetExpenses) / totals.budgetRevenue) * 100
-    : 35;
-  const revVsBudget = totals.budgetRevenue > 0
-    ? ((totals.revenue / totals.budgetRevenue) - 1) * 100 : 0;
-  const expVsBudget = totals.budgetExpenses > 0
-    ? ((totals.expenses / totals.budgetExpenses) - 1) * 100 : 0;
-  const profitVsBudget = (totals.budgetRevenue - totals.budgetExpenses) > 0
-    ? ((totals.netProfit / (totals.budgetRevenue - totals.budgetExpenses)) - 1) * 100 : 0;
-  const marginVsTarget = netMargin - targetMargin;
+  const hasAnyRevenueBudget = totals.periodsWithRevenueBudget > 0;
+  const hasAnyExpensesBudget = totals.periodsWithExpensesBudget > 0;
+  const revVsBudget = hasAnyRevenueBudget && totals.budgetRevenue !== 0
+    ? ((totals.revenue / totals.budgetRevenue) - 1) * 100
+    : null;
+  const expVsBudget = hasAnyExpensesBudget && totals.budgetExpenses !== 0
+    ? ((totals.expenses / totals.budgetExpenses) - 1) * 100
+    : null;
+  const budgetProfitDenominator = totals.budgetRevenue - totals.budgetExpenses;
+  const hasBudgetProfitBasis = hasAnyRevenueBudget && hasAnyExpensesBudget;
+  const profitVsBudget = hasBudgetProfitBasis && budgetProfitDenominator !== 0
+    ? ((totals.netProfit / budgetProfitDenominator) - 1) * 100
+    : null;
 
-  // Aggregate line items by label for the active months
+  // Aggregate line items by label for displayed saved months only
   const { topIncome, topExpense } = useMemo(() => {
-    const filteredItems = (lineItemsData as any[]).filter(r => activeMonths.includes(r.month ?? 0));
+    const filteredItems = (lineItemsData as any[]).filter((r) => displayedMonths.includes(r.month ?? 0));
     const incomeMap: Record<string, number> = {};
     const expenseMap: Record<string, number> = {};
     filteredItems.forEach((r: any) => {
-      const amt = typeof r.amount === 'number' ? r.amount : parseFloat(r.amount ?? '0') || 0;
-      if (r.type === 'income') {
+      const amt = typeof r.amount === "number" ? r.amount : parseFloat(r.amount ?? "0") || 0;
+      if (r.type === "income") {
         incomeMap[r.label] = (incomeMap[r.label] ?? 0) + amt;
       } else {
         expenseMap[r.label] = (expenseMap[r.label] ?? 0) + amt;
       }
     });
-    const sortDesc = (map: Record<string, number>) =>
-      Object.entries(map).sort((a, b) => b[1] - a[1]);
+    const sortDesc = (map: Record<string, number>) => Object.entries(map).sort((a, b) => b[1] - a[1]);
     return { topIncome: sortDesc(incomeMap), topExpense: sortDesc(expenseMap) };
-  }, [lineItemsData, activeMonths]);
+  }, [lineItemsData, displayedMonths]);
 
-  // Revenue vs Budget chart: always all active months, Actual=red for past months, Budget=grey for all
+  // Revenue vs Budget chart: only displayed saved periods (no generated months)
   const revBudgetChartData = useMemo(() => {
-    const nowYear = new Date().getFullYear();
-    const nowMonth = new Date().getMonth() + 1;
-    const dbByMonth: Record<number, typeof yearlyData[0]> = {};
-    yearlyData.forEach(r => { if (r.month) dbByMonth[r.month] = r; });
-    return activeMonths.map(m => {
-      const row = dbByMonth[m];
-      const isPast = (year < nowYear) || (year === nowYear && m < nowMonth);
-      return {
-        month: MONTHS_SHORT[m - 1],
-        Actual: isPast ? fmtN(row?.revenue) : 0,
-        Budget: fmtN(row?.budget_revenue),
-        isPast,
-      };
-    });
-  }, [yearlyData, activeMonths, year]);
+    return [...filteredFin]
+      .sort((a, b) => (a.month ?? 0) - (b.month ?? 0))
+      .map((row) => {
+        const budgetRaw = (row as any).budget_revenue;
+        const hasBudget = budgetRaw !== null && budgetRaw !== undefined;
+        return {
+          month: MONTHS_SHORT[(row.month ?? 1) - 1],
+          Actual: fmtN(row.revenue),
+          Budget: hasBudget ? fmtN(budgetRaw) : null,
+          hasBudget,
+        };
+      });
+  }, [filteredFin]);
 
   // Chart data for P&L
   const chartData = useMemo(() => filteredFin.map(row => ({
     month: MONTHS_SHORT[(row.month ?? 1) - 1],
     Revenue: fmtN(row.revenue),
-    Budget: fmtN(row.budget_revenue),
+    Budget: (row as any).budget_revenue == null ? null : fmtN((row as any).budget_revenue),
     Expenses: fmtN(row.expenses),
     "Net Profit": fmtN(row.net_profit),
   })), [filteredFin]);
 
   // Sales chart data — note: Supabase returns snake_case
   const salesChartData = useMemo(() => salesData
-    .filter((r: any) => activeMonths.includes(r.month ?? 0))
+    .filter((r: any) => selectedMonths.includes(r.month ?? 0))
     .map((r: any) => ({
       month: MONTHS_SHORT[(r.month ?? 1) - 1],
       Goal: r.goal_clients ?? 0,
       Signed: r.signed_clients ?? 0,
       Referrals: r.referral_count ?? 0,
       Outbound: r.outbound_count ?? 0,
-    })), [salesData, activeMonths]);
+    })), [salesData, selectedMonths]);
 
   // Time chart data
   const timeChartData = useMemo(() => {
     const byMonth: Record<number, Record<string, number>> = {};
     const focusAreas = new Set<string>();
     timeData
-      .filter((r: any) => activeMonths.includes(r.month ?? 0))
+      .filter((r: any) => selectedMonths.includes(r.month ?? 0))
       .forEach((r: any) => {
         const m = r.month ?? 0;
         if (!byMonth[m]) byMonth[m] = {};
@@ -251,7 +292,7 @@ export default function Reports() {
       })),
       focusAreas: Array.from(focusAreas),
     };
-  }, [timeData, activeMonths]);
+  }, [timeData, selectedMonths]);
 
   // Period label
   const periodLabel = useMemo(() => {
@@ -367,10 +408,28 @@ export default function Reports() {
             <>
               {/* KPI Cards */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard label="Total Revenue" value={fmtDFull(totals.revenue)} budget={`Budget: ${fmtDFull(totals.budgetRevenue)}`} vsTarget={{ pct: revVsBudget }} icon={DollarSign} />
-                <KpiCard label="Total Expenses" value={fmtDFull(totals.expenses)} budget={`Budget: ${fmtDFull(totals.budgetExpenses)}`} vsTarget={{ pct: expVsBudget }} icon={TrendingDown} />
-                <KpiCard label="Net Profit" value={fmtDFull(totals.netProfit)} budget={`Budget: ${fmtDFull(totals.budgetRevenue - totals.budgetExpenses)}`} vsTarget={{ pct: profitVsBudget }} icon={TrendingUp} />
-                <KpiCard label="Net Margin" value={`${netMargin.toFixed(1)}%`} budget={`Target: ${targetMargin.toFixed(0)}%`} vsTarget={{ pct: marginVsTarget }} icon={BarChart2} />
+                <KpiCard
+                  label="Total Revenue"
+                  value={fmtDFull(totals.revenue)}
+                  budget={hasAnyRevenueBudget ? `Budget: ${fmtDFull(totals.budgetRevenue)}` : "Budget: No budget"}
+                  vsTarget={revVsBudget == null ? undefined : { pct: revVsBudget }}
+                  icon={DollarSign}
+                />
+                <KpiCard
+                  label="Total Expenses"
+                  value={fmtDFull(totals.expenses)}
+                  budget={hasAnyExpensesBudget ? `Budget: ${fmtDFull(totals.budgetExpenses)}` : "Budget: No budget"}
+                  vsTarget={expVsBudget == null ? undefined : { pct: expVsBudget }}
+                  icon={TrendingDown}
+                />
+                <KpiCard
+                  label="Net Profit"
+                  value={fmtDFull(totals.netProfit)}
+                  budget={hasBudgetProfitBasis ? `Budget: ${fmtDFull(totals.budgetRevenue - totals.budgetExpenses)}` : "Budget: No budget"}
+                  vsTarget={profitVsBudget == null ? undefined : { pct: profitVsBudget }}
+                  icon={TrendingUp}
+                />
+                <KpiCard label="Net Margin" value={`${netMargin.toFixed(1)}%`} icon={BarChart2} />
               </div>
 
               {/* Monthly P&L Breakdown Table */}
@@ -384,27 +443,29 @@ export default function Reports() {
                       <tr className="border-b border-border">
                         <th className="text-left px-5 py-3 text-muted-foreground font-medium">Month</th>
                         <th className="text-right px-4 py-3 text-muted-foreground font-medium">Revenue</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Budget</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Variance</th>
+                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Revenue Budget</th>
+                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Revenue Variance</th>
                         <th className="text-right px-4 py-3 text-muted-foreground font-medium">Expenses</th>
+                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">COGS</th>
                         <th className="text-right px-4 py-3 text-muted-foreground font-medium">Net Profit</th>
-                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Margin</th>
-                        <th className="text-right px-5 py-3 text-muted-foreground font-medium">Notes</th>
+                        <th className="text-right px-4 py-3 text-muted-foreground font-medium">Net Margin</th>
+                        <th className="text-right px-5 py-3 text-muted-foreground font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {plTableRows.map(({ m, rev, bud, exp, np, margin, variance, label }) => (
+                      {plTableRows.map(({ m, rev, bud, exp, cogs, np, margin, variance, status }) => (
                         <tr key={m} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                           <td className="px-5 py-3 font-bold text-foreground">{MONTHS_SHORT[m - 1]} {year}</td>
                           <td className="px-4 py-3 text-right text-foreground">{fmtDFull(rev)}</td>
-                          <td className="px-4 py-3 text-right text-muted-foreground">{fmtDFull(bud)}</td>
-                          <td className="px-4 py-3 text-right font-bold" style={{ color: variance > 0 ? GREEN : variance < 0 ? RED : GREEN }}>
-                            {variance >= 0 ? "+" : ""}{fmtDFull(variance)}
+                          <td className="px-4 py-3 text-right text-muted-foreground">{fmtMaybeDFull(bud)}</td>
+                          <td className="px-4 py-3 text-right font-bold" style={{ color: variance == null ? AMBER : variance > 0 ? GREEN : variance < 0 ? RED : GREEN }}>
+                            {variance == null ? "—" : `${variance >= 0 ? "+" : ""}${fmtDFull(variance)}`}
                           </td>
                           <td className="px-4 py-3 text-right text-foreground">{fmtDFull(exp)}</td>
-                          <td className="px-4 py-3 text-right font-bold" style={{ color: GREEN }}>{fmtDFull(np)}</td>
-                          <td className="px-4 py-3 text-right font-semibold" style={{ color: margin >= 30 ? AMBER : margin > 0 ? AMBER : AMBER }}>{margin.toFixed(1)}%</td>
-                          <td className="px-5 py-3 text-right text-muted-foreground text-xs">{label}</td>
+                          <td className="px-4 py-3 text-right text-foreground">{fmtDFull(cogs)}</td>
+                          <td className="px-4 py-3 text-right font-bold" style={{ color: np >= 0 ? GREEN : RED }}>{fmtDFull(np)}</td>
+                          <td className="px-4 py-3 text-right font-semibold" style={{ color: margin >= 0 ? AMBER : RED }}>{margin.toFixed(1)}%</td>
+                          <td className="px-5 py-3 text-right text-muted-foreground text-xs">{status}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -412,23 +473,29 @@ export default function Reports() {
                       <tr className="border-t-2 border-border">
                         <td className="px-5 py-3 font-bold text-foreground">TOTAL</td>
                         <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totals.revenue)}</td>
-                        <td className="px-4 py-3 text-right font-bold text-muted-foreground">{fmtDFull(totals.budgetRevenue)}</td>
-                        <td className="px-4 py-3 text-right font-bold" style={{ color: (totals.revenue - totals.budgetRevenue) >= 0 ? GREEN : RED }}>
-                          {totals.revenue - totals.budgetRevenue >= 0 ? "+" : ""}{fmtDFull(totals.revenue - totals.budgetRevenue)}
+                        <td className="px-4 py-3 text-right font-bold text-muted-foreground">{hasAnyRevenueBudget ? fmtDFull(totals.budgetRevenue) : "—"}</td>
+                        <td className="px-4 py-3 text-right font-bold" style={{ color: !hasAnyRevenueBudget ? AMBER : (totals.revenue - totals.budgetRevenue) >= 0 ? GREEN : RED }}>
+                          {!hasAnyRevenueBudget ? "—" : `${totals.revenue - totals.budgetRevenue >= 0 ? "+" : ""}${fmtDFull(totals.revenue - totals.budgetRevenue)}`}
                         </td>
                         <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totals.expenses)}</td>
-                        <td className="px-4 py-3 text-right font-bold" style={{ color: GREEN }}>{fmtDFull(totals.netProfit)}</td>
+                        <td className="px-4 py-3 text-right font-bold text-foreground">{fmtDFull(totals.cogs)}</td>
+                        <td className="px-4 py-3 text-right font-bold" style={{ color: totals.netProfit >= 0 ? GREEN : RED }}>{fmtDFull(totals.netProfit)}</td>
                         <td className="px-4 py-3 text-right font-bold text-foreground">{netMargin.toFixed(1)}%</td>
-                        <td className="px-5 py-3" />
+                        <td className="px-5 py-3 text-right text-muted-foreground text-xs">Saved</td>
                       </tr>
                     </tfoot>
                   </table>
                 </div>
               </div>
 
-              {/* Revenue vs Budget Chart — 12 months, red=Actual (past), grey=Budget (all) */}
+              {/* Revenue vs Budget Chart — saved periods only */}
               <div className="bg-card border border-border rounded-xl p-5">
-                <h3 className="font-semibold text-foreground mb-4">Revenue vs Budget</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-foreground">Revenue vs Budget</h3>
+                  {!plTableRows.some((r) => r.hasRevenueBudget) && (
+                    <span className="text-xs text-muted-foreground">Budget unavailable</span>
+                  )}
+                </div>
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={revBudgetChartData} barCategoryGap="20%" barGap={3}>
                     <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
@@ -445,12 +512,12 @@ export default function Reports() {
                         <span style={{ color: value === "Actual" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
                       )}
                     />
-                    <Bar dataKey="Actual" radius={[4,4,0,0]}>
+                    <Bar dataKey="Actual" radius={[4,4,0,0]} fill={RED} />
+                    <Bar dataKey="Budget" radius={[4,4,0,0]}>
                       {revBudgetChartData.map((entry, index) => (
-                        <Cell key={`actual-${index}`} fill={entry.isPast && entry.Actual > 0 ? RED : "transparent"} />
+                        <Cell key={`budget-${index}`} fill={entry.hasBudget ? "oklch(0.32 0.008 240)" : "transparent"} />
                       ))}
                     </Bar>
-                    <Bar dataKey="Budget" fill="oklch(0.32 0.008 240)" radius={[4,4,0,0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -545,7 +612,7 @@ export default function Reports() {
           const cy = d.getFullYear();
           const cm = d.getMonth() + 1;
           if (cy !== year) return false;
-          return activeMonths.includes(cm);
+          return selectedMonths.includes(cm);
         });
 
         const netGrowth = newClients.length - churnedClients.length;
@@ -722,7 +789,7 @@ export default function Reports() {
         const salesByMonth: Record<number, any> = {};
         ;(salesData as any[]).forEach(r => { if (r.month) salesByMonth[r.month] = r; });
 
-        const salesTableRows = activeMonths.map(m => {
+        const salesTableRows = selectedMonths.map(m => {
           const r = salesByMonth[m];
           const goal = r?.goal_clients ?? 0;
           const closed = r?.signed_clients ?? 0;
@@ -853,7 +920,7 @@ export default function Reports() {
 
       {/* ── Time Tab ── */}
       {tab === "time" && (() => {
-        const filtered = (timeData as any[]).filter(r => activeMonths.includes(r.month ?? 0));
+        const filtered = (timeData as any[]).filter(r => selectedMonths.includes(r.month ?? 0));
         const totalHours = filtered.reduce((s, r) => s + fmtN(r.hours), 0);
 
         // Hours by focus area

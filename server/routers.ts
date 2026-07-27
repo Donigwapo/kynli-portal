@@ -531,6 +531,104 @@ const N8N_FINANCIAL_IMPORT_WEBHOOK_URL = process.env.N8N_FINANCIAL_IMPORT_WEBHOO
 const N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET = process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET?.trim() || "";
 const N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL = process.env.N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_URL?.trim() || "";
 const N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET = process.env.N8N_FINANCIAL_SUMMARY_REWRITE_WEBHOOK_SECRET?.trim() || "";
+const N8N_DELETE_CHAT_HISTORY_WEBHOOK_URL = process.env.N8N_DELETE_CHAT_HISTORY_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/delete_n8n_chat_history";
+const N8N_DELETE_CHAT_HISTORY_WEBHOOK_SECRET = process.env.N8N_DELETE_CHAT_HISTORY_WEBHOOK_SECRET?.trim() || N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET;
+
+type ChatHistoryCleanupPayload = {
+  event: "financial_import_chat_history_cleanup_requested";
+  schema_version: "1.0";
+  request_id: string;
+  import_id: string;
+  document_id: string | null;
+  business_slug: string;
+  month: number;
+  year: number;
+  financial_period_id: string | null;
+  requested_by: {
+    user_id: string;
+    role: string;
+  };
+  metadata: {
+    source: "financial_period_approval";
+    requested_at: string;
+  };
+};
+
+async function triggerDeleteChatHistoryCleanup(payload: ChatHistoryCleanupPayload): Promise<{ attempted: boolean; succeeded: boolean }> {
+  if (!N8N_DELETE_CHAT_HISTORY_WEBHOOK_URL || !N8N_DELETE_CHAT_HISTORY_WEBHOOK_SECRET) {
+    console.warn("[financials.chat-history-cleanup] skipped", {
+      requestId: payload.request_id,
+      importId: payload.import_id,
+      tenantSlug: payload.business_slug,
+      financialPeriodId: payload.financial_period_id,
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      responseStatus: "not_configured",
+      durationMs: 0,
+    });
+    return { attempted: false, succeeded: false };
+  }
+
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+
+  try {
+    const response = await fetch(N8N_DELETE_CHAT_HISTORY_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Kynli-Webhook-Secret": N8N_DELETE_CHAT_HISTORY_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const durationMs = Date.now() - startedAt;
+    const succeeded = response.ok;
+    if (!succeeded) {
+      console.warn("[financials.chat-history-cleanup] webhook non-2xx", {
+        requestId: payload.request_id,
+        importId: payload.import_id,
+        tenantSlug: payload.business_slug,
+        financialPeriodId: payload.financial_period_id,
+        cleanupAttempted: true,
+        cleanupSucceeded: false,
+        responseStatus: response.status,
+        durationMs,
+      });
+      return { attempted: true, succeeded: false };
+    }
+
+    console.info("[financials.chat-history-cleanup] success", {
+      requestId: payload.request_id,
+      importId: payload.import_id,
+      tenantSlug: payload.business_slug,
+      financialPeriodId: payload.financial_period_id,
+      cleanupAttempted: true,
+      cleanupSucceeded: true,
+      responseStatus: response.status,
+      durationMs,
+    });
+    return { attempted: true, succeeded: true };
+  } catch {
+    const durationMs = Date.now() - startedAt;
+    console.warn("[financials.chat-history-cleanup] webhook request failed", {
+      requestId: payload.request_id,
+      importId: payload.import_id,
+      tenantSlug: payload.business_slug,
+      financialPeriodId: payload.financial_period_id,
+      cleanupAttempted: true,
+      cleanupSucceeded: false,
+      responseStatus: "request_failed",
+      durationMs,
+    });
+    return { attempted: true, succeeded: false };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "documents";
 const MAX_VIDEO_UPLOAD_BYTES = 250 * 1024 * 1024;
 const ALLOWED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
@@ -2768,6 +2866,30 @@ export const appRouter = router({
         const periodRows = await getFinancials(requestedTenant, input.year, input.month);
         const period = periodRows[0];
 
+        let chatHistoryCleanup = { attempted: false, succeeded: false };
+        const cleanupRequestId = randomUUID();
+        const cleanupPayload: ChatHistoryCleanupPayload = {
+          event: "financial_import_chat_history_cleanup_requested",
+          schema_version: "1.0",
+          request_id: cleanupRequestId,
+          import_id: input.importId,
+          document_id: (job as any)?.document_id == null ? null : String((job as any).document_id),
+          business_slug: requestedTenant,
+          month: input.month,
+          year: input.year,
+          financial_period_id: period ? String(period.id) : null,
+          requested_by: {
+            user_id: String(ctx.user.id),
+            role: String(ctx.user.role),
+          },
+          metadata: {
+            source: "financial_period_approval",
+            requested_at: new Date().toISOString(),
+          },
+        };
+
+        chatHistoryCleanup = await triggerDeleteChatHistoryCleanup(cleanupPayload);
+
         try {
           await createSummaryVersionRecord({
             importId: input.importId,
@@ -2803,6 +2925,7 @@ export const appRouter = router({
           netProfit,
           margin,
           budgetNetMargin,
+          chatHistoryCleanup,
         };
       }),
     getSummaryHistory: protectedProcedure

@@ -936,6 +936,9 @@ export default function Financials() {
       }
 
       toast.success("Financial period saved successfully.");
+      if ((result as any)?.chatHistoryCleanup?.attempted && !(result as any)?.chatHistoryCleanup?.succeeded) {
+        toast.warning("Financial period saved, but temporary AI history could not be cleared automatically.");
+      }
       await Promise.all([
         trpcUtils.financials.get.invalidate({ year, tenantSlug: tslug }),
         trpcUtils.financials.lineItemsByYear.invalidate({ year, tenantSlug: tslug }),
