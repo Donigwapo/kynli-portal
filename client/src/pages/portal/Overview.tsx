@@ -64,6 +64,26 @@ function fileTypeIcon(mime?: string | null) {
   return <File className="w-4 h-4 text-zinc-400" />;
 }
 
+function formatShortDate(value?: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function statusLabel(value?: string | null): string {
+  const v = String(value || "open");
+  if (v === "in_progress") return "In Progress";
+  return "Open";
+}
+
+function sourceBadgeClass(source?: string | null): string {
+  const base = "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium";
+  if (source === "deep_dive") return `${base} border-cyan-800/70 text-cyan-300`;
+  if (source === "check_in_call") return `${base} border-amber-800/70 text-amber-300`;
+  return `${base} border-emerald-800/70 text-emerald-300`;
+}
+
 function KpiCard({
   label, value, budget, variance, variancePct, icon, invertGood = false,
 }: {
@@ -125,6 +145,11 @@ export default function Overview() {
   );
   const { data: rosterData = [] } = trpc.roster.list.useQuery(
     { tenantSlug: tslug ?? undefined },
+    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
+  );
+
+  const { data: coachingOverviewTasks } = trpc.coaching.overviewTasks.useQuery(
+    { year, quarter: currentQ, tenantSlug: tslug ?? undefined },
     { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
 
@@ -320,6 +345,66 @@ export default function Overview() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Open Coaching Tasks */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Open Coaching Tasks</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Tasks from Deep Dive, Client Meeting, and Check-in Calls</p>
+            </div>
+            <Link href="/portal/coaching" className="text-xs text-primary hover:underline">View Coaching →</Link>
+          </div>
+
+          {!(coachingOverviewTasks?.items?.length) ? (
+            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+              No open coaching tasks.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
+                    <th className="py-2 pr-3">Task</th>
+                    <th className="py-2 pr-3">Source</th>
+                    <th className="py-2 pr-3">Due Date</th>
+                    <th className="py-2 pr-3">Assigned To</th>
+                    <th className="py-2 pr-1">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(coachingOverviewTasks.items as Array<any>).map((task) => (
+                    <tr key={task.id} className="border-b border-border/70">
+                      <td className="py-3 pr-3">
+                        <div className="min-w-0">
+                          <p className="text-foreground truncate" title={task.title}>{task.title}</p>
+                          {task.isAssignedToCurrentUser ? (
+                            <p className="text-[11px] text-emerald-300 mt-0.5">Assigned to you</p>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="py-3 pr-3">
+                        <span className={sourceBadgeClass(task.source)}>{task.sourceLabel}</span>
+                      </td>
+                      <td className="py-3 pr-3">
+                        <div className="text-xs">
+                          <span className={task.isOverdue ? "text-rose-300" : "text-muted-foreground"}>{formatShortDate(task.dueDate)}</span>
+                          {task.isOverdue ? <div className="text-[11px] text-rose-300 mt-0.5">Overdue</div> : null}
+                        </div>
+                      </td>
+                      <td className="py-3 pr-3 text-muted-foreground text-xs">{task.assignedToName || "Unassigned"}</td>
+                      <td className="py-3 pr-1">
+                        <span className="inline-flex items-center rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-200">
+                          {statusLabel(task.status)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Top Income + Top Expenses */}

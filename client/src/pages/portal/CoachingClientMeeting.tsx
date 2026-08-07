@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 import jsPDF from "jspdf";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
+import { htmlWithListsToMarkdown, insertTextAtSelection } from "@/lib/markdownPaste";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +16,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
+import { Streamdown, defaultRemarkPlugins } from "streamdown";
+import remarkBreaks from "remark-breaks";
 import { CalendarDays, ChevronDown, Filter, Plus, Pencil, Trash2 } from "lucide-react";
 
 const MEETING_TYPES = ["all", "quarterly_review", "monthly_cfo", "tax_planning", "bookkeeping_review", "other"] as const;
@@ -27,6 +30,7 @@ type ItemDraft = {
   details: string;
   status: "open" | "in_progress" | "completed";
   dueDate: string;
+  assignedToUserId: number | null;
 };
 
 function fmtDate(v?: string | null) {
@@ -38,10 +42,12 @@ function fmtDate(v?: string | null) {
 function normalizeItems(items: ItemDraft[]) {
   return items
     .map((it, idx) => ({
+      id: it.id,
       title: it.title.trim(),
       details: it.details.trim() || null,
       status: it.status,
       dueDate: it.dueDate || null,
+      assignedToUserId: it.assignedToUserId ?? null,
       sortOrder: idx,
     }))
     .filter((it) => it.title.length > 0);
@@ -68,6 +74,17 @@ function fmtItemStatus(status?: string | null): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
+function fmtRoleLabel(role?: string | null): string {
+  const value = String(role || "").trim();
+  if (!value) return "";
+  if (value === "accounting_manager") return "Accounting Manager";
+  if (value === "tax_manager") return "Tax Manager";
+  if (value === "accountant") return "Accountant";
+  if (value === "client") return "Client";
+  if (value === "admin") return "Admin";
+  return value.replace(/_/g, " ");
+}
+
 type CoachingClientMeetingProps = {
   mode?: "clientMeeting" | "checkInCalls";
 };
@@ -77,6 +94,10 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
   const { impersonatingTenantSlug } = usePortal();
   const tenantSlug = impersonatingTenantSlug ?? undefined;
   const isClientReadOnly = user?.role === "client";
+  const currentUserId = useMemo(() => {
+    const id = Number(user?.id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }, [user?.id]);
   const meetingMode = mode === "checkInCalls" ? "check_in_call" : "client_meeting";
 
   const utils = trpc.useUtils();
@@ -110,10 +131,17 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
   const [editItems, setEditItems] = useState(false);
   const [isExportingDocx, setIsExportingDocx] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [statusUpdatingItemId, setStatusUpdatingItemId] = useState<number | null>(null);
+  const pendingStatusSnapshotRef = useRef<{ id: number; previousStatus: "open" | "in_progress" | "completed" } | null>(null);
 
   const detailQuery = trpc.coaching.meetingsGet.useQuery(
     { id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode },
     { enabled: !!selectedMeetingId && !isCreating }
+  );
+
+  const { data: memberCandidates = [] } = trpc.chat.mentionCandidates.useQuery(
+    { tenantSlug, q: "" },
+    { enabled: !!user },
   );
 
   const createMutation = trpc.coaching.meetingsCreate.useMutation({
@@ -156,13 +184,61 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
   });
 
   const updateItemStatusMutation = trpc.coaching.meetingActionItemsUpdateStatus.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (_res, variables) => {
+      if (variables?.id) {
+        setItems((prev) => prev.map((row) => (
+          row.id === variables.id ? { ...row, status: variables.status } : row
+        )));
+      }
+      pendingStatusSnapshotRef.current = null;
+      setStatusUpdatingItemId(null);
       await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
       await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+    },
+    onError: (error, variables) => {
+      const snap = pendingStatusSnapshotRef.current;
+      if (snap && variables?.id === snap.id) {
+        setItems((prev) => prev.map((row) => (
+          row.id === snap.id ? { ...row, status: snap.previousStatus } : row
+        )));
+      }
+      pendingStatusSnapshotRef.current = null;
+      setStatusUpdatingItemId(null);
+      toast.error(error?.message || "Failed to update status. Please try again.");
+    },
+    onSettled: () => {
+      pendingStatusSnapshotRef.current = null;
+      setStatusUpdatingItemId(null);
     },
   });
 
   const rows = useMemo(() => meetings as Array<any>, [meetings]);
+
+  const memberOptions = useMemo(() => {
+    const rows = (memberCandidates as Array<any>) || [];
+    const seen = new Set<string>();
+    return rows
+      .map((m) => ({
+        id: Number(m.id),
+        name: String(m.displayName || m.email || `User ${m.id}`),
+        role: String(m.role || ""),
+        email: m.email ? String(m.email) : null,
+      }))
+      .filter((m) => {
+        if (!Number.isFinite(m.id) || m.id <= 0) return false;
+        const key = String(m.id);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [memberCandidates]);
+
+  const memberNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const m of memberOptions) map.set(Number(m.id), m.name);
+    return map;
+  }, [memberOptions]);
 
   const yearOptions = useMemo(() => {
     const y = new Set<string>();
@@ -183,6 +259,22 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       return titleMatch && typeMatch && statusMatch && yearMatch;
     });
   }, [rows, search, typeFilter, statusFilter, yearFilter]);
+
+  const prioritizedDisplayItems = useMemo(() => {
+    if (editItems || !currentUserId) return items;
+
+    return items
+      .map((item, index) => ({
+        item,
+        index,
+        mine: Number(item.assignedToUserId ?? 0) === currentUserId,
+      }))
+      .sort((a, b) => {
+        if (a.mine !== b.mine) return a.mine ? -1 : 1;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.item);
+  }, [items, editItems, currentUserId]);
 
   useEffect(() => {
     if (isCreating) return;
@@ -221,6 +313,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       details: it.details ?? "",
       status: (it.status ?? "open") as "open" | "in_progress" | "completed",
       dueDate: it.due_date ? String(it.due_date).slice(0, 10) : "",
+      assignedToUserId: it.assigned_to_user_id != null ? Number(it.assigned_to_user_id) : null,
     }));
 
     setTitle(nextTitle);
@@ -290,7 +383,63 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       meetingId: selectedMeetingId,
       tenantSlug,
       mode: meetingMode,
-      items: normalizeItems(items),
+      items: normalizeItems(items).map((it) => ({
+        title: it.title,
+        details: it.details,
+        status: it.status,
+        dueDate: it.dueDate,
+        assignedToUserId: it.assignedToUserId,
+        sortOrder: it.sortOrder,
+      })),
+    });
+  };
+
+  const handleNotesPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData.getData("text/html");
+    if (!html?.trim()) return;
+
+    const markdownFromHtml = htmlWithListsToMarkdown(html);
+    if (!markdownFromHtml) return;
+
+    e.preventDefault();
+
+    const textarea = e.currentTarget;
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? selectionStart;
+
+    const { value, cursor } = insertTextAtSelection({
+      currentValue: notes,
+      insertText: markdownFromHtml,
+      selectionStart,
+      selectionEnd,
+    });
+
+    setNotes(value);
+
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handleInlineStatusChange = (idx: number, nextStatus: "open" | "in_progress" | "completed") => {
+    if (isCreating || !selectedMeetingId) return;
+    const target = items[idx];
+    if (!target?.id) return;
+    if (target.status === nextStatus) return;
+    if (statusUpdatingItemId === target.id || updateItemStatusMutation.isPending) return;
+
+    const previousStatus = target.status;
+    pendingStatusSnapshotRef.current = { id: target.id, previousStatus };
+    setStatusUpdatingItemId(target.id);
+
+    setItems((prev) => prev.map((row, i) => i === idx ? { ...row, status: nextStatus } : row));
+
+    updateItemStatusMutation.mutate({
+      id: target.id,
+      status: nextStatus,
+      tenantSlug,
+      mode: meetingMode,
     });
   };
 
@@ -545,7 +694,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                     <p className="text-xs text-zinc-400 mt-1">{fmtDate(m.meeting_date)} • {m.meeting_type ?? "other"}</p>
                     <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-500">
                       <span>Open items: {m.open_action_items ?? 0}</span>
-                      <span>Created by: {m.created_by_user_id ?? "—"}</span>
+                      <span>Created by: {m.created_by_name ?? "Unknown user"}</span>
                     </div>
                   </button>
                 );
@@ -664,13 +813,26 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                   <textarea
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
+                    onPaste={handleNotesPaste}
                     disabled={isClientReadOnly}
                     className="w-full min-h-[220px] rounded-xl bg-zinc-900 border border-zinc-700 p-4 text-sm leading-7"
                     placeholder="Document the discussion, decisions, and recommendations."
                   />
                 ) : (
-                  <div className="min-h-[160px] rounded-xl bg-zinc-950/40 px-5 py-4 text-[15px] leading-8 text-zinc-300 whitespace-pre-wrap">
-                    {notes?.trim() ? notes : "No meeting notes yet."}
+                  <div className="min-h-[160px] rounded-xl bg-zinc-950/40 px-5 py-4 text-[15px] leading-8 text-zinc-300">
+                    {notes?.trim() ? (
+                      <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-300/95 leading-7 prose-p:my-2 prose-headings:my-2 prose-headings:text-zinc-100 prose-strong:text-zinc-100 prose-ul:my-2 prose-ol:my-2 prose-ul:list-disc prose-ol:list-decimal prose-li:my-0.5 prose-li:marker:text-zinc-500 prose-a:text-emerald-300 prose-a:underline prose-a:decoration-emerald-500/50 hover:prose-a:text-emerald-200 prose-pre:bg-zinc-900/70 prose-pre:border prose-pre:border-zinc-800 prose-code:text-zinc-200">
+                        <Streamdown
+                          remarkPlugins={[
+                            defaultRemarkPlugins.gfm,
+                            defaultRemarkPlugins.math,
+                            remarkBreaks,
+                          ]}
+                        >
+                          {notes}
+                        </Streamdown>
+                      </div>
+                    ) : "No meeting notes yet."}
                   </div>
                 )}
               </section>
@@ -689,7 +851,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                         className="border-zinc-700"
                         onClick={() => {
                           setEditItems(true);
-                          setItems((prev) => [...prev, { title: "", details: "", status: "open", dueDate: "" }]);
+                          setItems((prev) => [...prev, { title: "", details: "", status: "open", dueDate: "", assignedToUserId: null }]);
                         }}
                       >
                         + Add Action Item
@@ -704,8 +866,11 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {items.map((it, idx) => (
-                      <article key={it.id ?? `draft-${idx}`} className="rounded-xl bg-zinc-950/45 border border-zinc-800/80 p-4 space-y-3">
+                    {prioritizedDisplayItems.map((it, displayIdx) => {
+                      const idx = items.findIndex((row) => row === it);
+                      if (idx < 0) return null;
+                      return (
+                      <article key={it.id ?? `draft-${displayIdx}`} className="rounded-xl bg-zinc-950/45 border border-zinc-800/80 p-4 space-y-3">
                         {editItems && !isClientReadOnly ? (
                           <>
                             <Input
@@ -735,6 +900,25 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                                 className="bg-zinc-900 border-zinc-700"
                               />
                             </div>
+                            <div>
+                              <Select
+                                value={it.assignedToUserId != null ? String(it.assignedToUserId) : "unassigned"}
+                                onValueChange={(v) => {
+                                  const assignedToUserId = v === "unassigned" ? null : Number(v);
+                                  setItems((prev) => prev.map((row, i) => i === idx ? { ...row, assignedToUserId } : row));
+                                }}
+                              >
+                                <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue placeholder="Assign member" /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                                  {memberOptions.map((m) => (
+                                    <SelectItem key={m.id} value={String(m.id)}>
+                                      {m.name}{m.role ? ` • ${fmtRoleLabel(m.role)}` : ""}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
                             <div className="flex justify-end">
                               <Button variant="ghost" className="text-red-300 hover:text-red-200" onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}>Delete</Button>
                             </div>
@@ -744,35 +928,37 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                             <div className="flex items-start justify-between gap-2">
                               <h4 className="text-sm font-semibold text-zinc-100">{it.title || "Untitled task"}</h4>
                               <div className="flex items-center gap-2">
-                                {isClientReadOnly && selectedMeetingId ? (
-                                  <Select
-                                    value={it.status}
-                                    onValueChange={(v) => {
-                                      const nextStatus = v as "open" | "in_progress" | "completed";
-                                      setItems((prev) => prev.map((row, i) => i === idx ? { ...row, status: nextStatus } : row));
-                                      if (it.id) {
-                                        updateItemStatusMutation.mutate({ id: it.id, status: nextStatus, tenantSlug, mode: meetingMode });
-                                      }
-                                    }}
-                                  >
-                                    <SelectTrigger className="w-[150px] h-8 bg-zinc-900 border-zinc-700 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="open">🟡 Open</SelectItem>
-                                      <SelectItem value="in_progress">🟠 In Progress</SelectItem>
-                                      <SelectItem value="completed">🟢 Completed</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                ) : (
-                                  <Badge variant="outline" className="border-zinc-700 text-zinc-300">{it.status.replace("_", " ")}</Badge>
-                                )}
+                                <Select
+                                  value={it.status}
+                                  onValueChange={(v) => {
+                                    void handleInlineStatusChange(idx, v as "open" | "in_progress" | "completed");
+                                  }}
+                                  disabled={!selectedMeetingId || isCreating || !it.id || statusUpdatingItemId === it.id || updateItemStatusMutation.isPending}
+                                >
+                                  <SelectTrigger className="w-[170px] h-8 bg-zinc-900 border-zinc-700 text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="open">🟡 Open</SelectItem>
+                                    <SelectItem value="in_progress">🟠 In Progress</SelectItem>
+                                    <SelectItem value="completed">🟢 Completed</SelectItem>
+                                  </SelectContent>
+                                </Select>
                               </div>
                             </div>
                             {it.details ? <p className="text-sm text-zinc-400 leading-6">{it.details}</p> : null}
                             <p className="text-xs text-zinc-500">Due: {it.dueDate ? fmtDate(it.dueDate) : "No due date"}</p>
+                            {it.assignedToUserId != null && memberNameById.get(Number(it.assignedToUserId)) ? (
+                              <p className="text-xs text-zinc-500">Assigned to: {memberNameById.get(Number(it.assignedToUserId))}</p>
+                            ) : null}
+                            {currentUserId && Number(it.assignedToUserId ?? 0) === currentUserId ? (
+                              <p className="text-[11px] text-emerald-300/90">Assigned to you</p>
+                            ) : null}
                           </>
                         )}
                       </article>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 

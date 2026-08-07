@@ -30,6 +30,8 @@ import {
 import {
   getAllPortalTenants,
   getClientRoster,
+  listClientRosterServicesByTenantSlugs,
+  replaceClientRosterServices,
   getPortalUserByEmail,
   upsertPortalUser,
   getCoachingItems,
@@ -524,6 +526,58 @@ const STAFF_PORTAL_ROLES = new Set<PortalUser["role"]>([
   "tax_manager",
   "accountant",
 ]);
+const MAX_ROSTER_SERVICE_NAME_LENGTH = 100;
+const MAX_ROSTER_SERVICES_PER_CLIENT = 50;
+const MAX_ROSTER_SERVICE_MONTHLY_AMOUNT = 1000000000;
+const ROSTER_SERVICE_STATUS_VALUES = ["active", "inactive", "churned"] as const;
+
+type RosterServiceStatus = typeof ROSTER_SERVICE_STATUS_VALUES[number];
+type RosterServiceRecord = {
+  name: string;
+  monthlyAmount: number;
+  startDate: string;
+  status: RosterServiceStatus;
+};
+
+function normalizeRosterServiceName(raw: unknown): string {
+  return String(raw ?? "").trim();
+}
+
+function dedupeRosterServiceRecordsCaseInsensitive(services: Array<Partial<RosterServiceRecord> | null | undefined>): RosterServiceRecord[] {
+  const out: RosterServiceRecord[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of services || []) {
+    const name = normalizeRosterServiceName(raw?.name);
+    if (!name || name.length > MAX_ROSTER_SERVICE_NAME_LENGTH) continue;
+
+    const key = name.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+
+    const amountRaw = Number(raw?.monthlyAmount ?? 0);
+    const monthlyAmount = Number.isFinite(amountRaw)
+      ? Math.max(0, Math.min(MAX_ROSTER_SERVICE_MONTHLY_AMOUNT, Math.round(amountRaw * 100) / 100))
+      : 0;
+
+    const status = (String(raw?.status || "active") as RosterServiceStatus);
+    const safeStatus = (ROSTER_SERVICE_STATUS_VALUES as readonly string[]).includes(status) ? status : "active";
+
+    const dateRaw = String(raw?.startDate || "").trim();
+    const parsed = dateRaw ? new Date(dateRaw) : null;
+    const now = new Date();
+    const normalizedDate = !parsed || Number.isNaN(parsed.getTime())
+      ? now.toISOString().slice(0, 10)
+      : (parsed.getTime() > now.getTime() ? now.toISOString().slice(0, 10) : parsed.toISOString().slice(0, 10));
+
+    seen.add(key);
+    out.push({ name, monthlyAmount, startDate: normalizedDate, status: safeStatus });
+
+    if (out.length >= MAX_ROSTER_SERVICES_PER_CLIENT) break;
+  }
+
+  return out;
+}
+
 const INTERNAL_CHAT_TENANT_SLUG = "kynli_internal";
 const N8N_MENTION_NOTIFICATION_WEBHOOK_URL = process.env.N8N_MENTION_NOTIFICATION_WEBHOOK_URL?.trim() || "";
 const N8N_DOCUMENT_MOVED_WEBHOOK_URL = process.env.N8N_DOCUMENT_MOVED_WEBHOOK_URL?.trim() || "https://n8n.automatenow.live/webhook/movedfile";
@@ -819,6 +873,17 @@ const nextStepPrioritySchema = z.enum(NEXT_STEP_PRIORITY_VALUES);
 
 function isStaffActor(user: PortalUser): boolean {
   return user.role !== "client";
+}
+
+async function assertUserBelongsToTenantWorkspaceMember(tenantSlug: string, userId: number): Promise<void> {
+  const members = await listTenantMembers(tenantSlug);
+  const allowed = members.some((m) => Number(m.id) === Number(userId));
+  if (!allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Assignee must belong to the current business members list.",
+    });
+  }
 }
 
 type TimerWorkScope = "client" | "internal";
@@ -5140,6 +5205,127 @@ export const appRouter = router({
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         return listCoachingNextSteps(slug, input.year, input.quarter);
       }),
+    overviewTasks: protectedProcedure
+      .input(z.object({ year: z.number().int().min(2000).max(2100), quarter: z.number().int().min(1).max(4), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+
+        const [deepDiveSteps, clientMeetings, checkInMeetings, tenantMembers] = await Promise.all([
+          listCoachingNextSteps(slug, input.year, input.quarter),
+          listClientMeetings(slug, "client_meeting"),
+          listClientMeetings(slug, "check_in_call"),
+          listTenantMembers(slug),
+        ]);
+
+        const assigneeById = new Map<number, string>();
+        for (const member of tenantMembers) {
+          assigneeById.set(Number(member.id), member.name || member.email || "Unknown user");
+        }
+
+        type OverviewTask = {
+          id: string;
+          title: string;
+          source: "deep_dive" | "client_meeting" | "check_in_call";
+          sourceLabel: "Deep Dive" | "Client Meeting" | "Check-in Calls";
+          dueDate: string | null;
+          assignedToUserId: number | null;
+          assignedToName: string | null;
+          status: "open" | "in_progress";
+          isAssignedToCurrentUser: boolean;
+          isOverdue: boolean;
+          originalOrder: number;
+        };
+
+        const today = new Date().toISOString().slice(0, 10);
+        let order = 0;
+        const tasks: OverviewTask[] = [];
+
+        for (const step of deepDiveSteps) {
+          if (step.status === "completed") continue;
+          const normalizedStatus: "open" | "in_progress" = step.status === "in_progress" ? "in_progress" : "open";
+          const dueDate = step.due_date ? String(step.due_date).slice(0, 10) : null;
+          const assignedToUserId = step.assigned_to != null ? Number(step.assigned_to) : null;
+          tasks.push({
+            id: `deep_dive:${step.id}`,
+            title: String(step.title || "Untitled task"),
+            source: "deep_dive",
+            sourceLabel: "Deep Dive",
+            dueDate,
+            assignedToUserId,
+            assignedToName: assignedToUserId != null ? (assigneeById.get(assignedToUserId) || "Former member") : null,
+            status: normalizedStatus,
+            isAssignedToCurrentUser: assignedToUserId != null && assignedToUserId === Number(ctx.user.id),
+            isOverdue: !!(dueDate && dueDate < today),
+            originalOrder: order++,
+          });
+        }
+
+        async function appendMeetingTasks(
+          meetings: Array<{ id: number }>,
+          source: "client_meeting" | "check_in_call",
+          sourceLabel: "Client Meeting" | "Check-in Calls",
+        ) {
+          const grouped = await Promise.all(meetings.map(async (meeting) => ({
+            meetingId: meeting.id,
+            items: await listClientMeetingActionItems(slug, meeting.id),
+          })));
+
+          for (const group of grouped) {
+            for (const item of group.items) {
+              const status = String(item.status || "open");
+              if (status === "completed") continue;
+              const normalizedStatus: "open" | "in_progress" = status === "in_progress" ? "in_progress" : "open";
+              const dueDate = item.due_date ? String(item.due_date).slice(0, 10) : null;
+              const assignedToUserId = item.assigned_to_user_id != null ? Number(item.assigned_to_user_id) : null;
+
+              tasks.push({
+                id: `${source}:${item.id}`,
+                title: String(item.title || "Untitled task"),
+                source,
+                sourceLabel,
+                dueDate,
+                assignedToUserId,
+                assignedToName: assignedToUserId != null ? (assigneeById.get(assignedToUserId) || "Former member") : null,
+                status: normalizedStatus,
+                isAssignedToCurrentUser: assignedToUserId != null && assignedToUserId === Number(ctx.user.id),
+                isOverdue: !!(dueDate && dueDate < today),
+                originalOrder: order++,
+              });
+            }
+          }
+        }
+
+        await appendMeetingTasks(clientMeetings, "client_meeting", "Client Meeting");
+        await appendMeetingTasks(checkInMeetings, "check_in_call", "Check-in Calls");
+
+        const prioritized = [...tasks].sort((a, b) => {
+          if (a.isAssignedToCurrentUser !== b.isAssignedToCurrentUser) return a.isAssignedToCurrentUser ? -1 : 1;
+          if (a.isOverdue !== b.isOverdue) return a.isOverdue ? -1 : 1;
+
+          const aDue = a.dueDate ? Date.parse(a.dueDate) : Number.POSITIVE_INFINITY;
+          const bDue = b.dueDate ? Date.parse(b.dueDate) : Number.POSITIVE_INFINITY;
+          if (aDue !== bDue) return aDue - bDue;
+
+          return a.originalOrder - b.originalOrder;
+        });
+
+        return {
+          totalOpenTasks: tasks.length,
+          items: prioritized.slice(0, 5).map((task) => ({
+            id: task.id,
+            title: task.title,
+            source: task.source,
+            sourceLabel: task.sourceLabel,
+            dueDate: task.dueDate,
+            assignedToUserId: task.assignedToUserId,
+            assignedToName: task.assignedToName,
+            status: task.status,
+            isAssignedToCurrentUser: task.isAssignedToCurrentUser,
+            isOverdue: task.isOverdue,
+          })),
+        };
+      }),
     nextStepsCreate: protectedProcedure
       .input(z.object({
         year: z.number().int().min(2000).max(2100),
@@ -5159,6 +5345,9 @@ export const appRouter = router({
         }
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        if (input.assignedTo != null) {
+          await assertUserBelongsToTenantWorkspaceMember(slug, Number(input.assignedTo));
+        }
         const row = await createCoachingNextStep({
           tenant_slug: slug,
           year: input.year,
@@ -5205,6 +5394,10 @@ export const appRouter = router({
           if (input.status === undefined) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Status is required." });
           }
+        }
+
+        if (input.assignedTo !== undefined && input.assignedTo !== null) {
+          await assertUserBelongsToTenantWorkspaceMember(slug, Number(input.assignedTo));
         }
 
         const row = await updateCoachingNextStep({
@@ -5256,10 +5449,36 @@ export const appRouter = router({
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meetings = await listClientMeetings(slug, mode);
+
+        const creatorIds = Array.from(
+          new Set(meetings.map((m) => Number(m.created_by_user_id)).filter((id) => Number.isFinite(id) && id > 0)),
+        );
+
+        let creatorById = new Map<number, { name: string | null; email: string | null }>();
+        if (creatorIds.length > 0) {
+          const { data: creatorRows, error: creatorError } = await supabase
+            .from("portal_users")
+            .select("id,name,email")
+            .in("id", creatorIds);
+
+          if (creatorError) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: creatorError.message });
+          }
+
+          creatorById = new Map(
+            ((creatorRows ?? []) as Array<{ id: number; name: string | null; email: string | null }>).map((row) => [
+              Number(row.id),
+              { name: row.name ?? null, email: row.email ?? null },
+            ]),
+          );
+        }
+
         const withCounts = await Promise.all(meetings.map(async (m) => {
           const items = await listClientMeetingActionItems(slug, m.id);
           const openCount = items.filter((i) => i.status !== "completed").length;
-          return { ...m, open_action_items: openCount };
+          const creator = m.created_by_user_id != null ? creatorById.get(Number(m.created_by_user_id)) : null;
+          const created_by_name = creator?.name || creator?.email || "Unknown user";
+          return { ...m, open_action_items: openCount, created_by_name };
         }));
         return withCounts;
       }),
@@ -5386,6 +5605,7 @@ export const appRouter = router({
           details: z.string().optional().nullable(),
           status: z.enum(["open", "in_progress", "completed"]).optional(),
           dueDate: z.string().optional().nullable(),
+          assignedToUserId: z.number().int().optional().nullable(),
           completedAt: z.string().optional().nullable(),
           sortOrder: z.number().optional(),
         })),
@@ -5397,6 +5617,13 @@ export const appRouter = router({
         const mode = resolveMeetingMode(input.mode);
         const meeting = await getClientMeetingById(slug, input.meetingId, mode);
         if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+
+        for (const it of input.items) {
+          if (it.assignedToUserId != null) {
+            await assertUserBelongsToTenantWorkspaceMember(slug, Number(it.assignedToUserId));
+          }
+        }
+
         const existingItems = await listClientMeetingActionItems(slug, input.meetingId);
         const rows = await replaceClientMeetingActionItems({
           tenant_slug: slug,
@@ -5406,6 +5633,7 @@ export const appRouter = router({
             details: it.details ?? null,
             status: it.status ?? "open",
             due_date: it.dueDate ?? null,
+            assigned_to_user_id: it.assignedToUserId ?? null,
             completed_at: it.completedAt ?? null,
             sort_order: it.sortOrder,
           })),
@@ -6094,7 +6322,86 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         const slugs = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
         if (ctx.user.role === "admin" || ctx.user.role === "client") {
-          return getClientRoster(slugs[0]);
+          const tenantSlug = slugs[0];
+          const baseRows = await getClientRoster(tenantSlug);
+          const mergedRows = baseRows.map((entry) => ({
+            ...entry,
+            tenant_slug: tenantSlug,
+            roster_entry_id: Number(entry.id),
+          }));
+
+          const serviceRows = await listClientRosterServicesByTenantSlugs([tenantSlug]);
+          const servicesByRosterId = new Map<string, RosterServiceRecord[]>();
+          const fallbackServices = dedupeRosterServiceRecordsCaseInsensitive(
+            serviceRows
+              .filter((r) => sanitizeTenantSlug(r.tenant_slug) === tenantSlug && r.roster_entry_id == null)
+              .map((row) => ({
+                name: normalizeRosterServiceName(row.service_name),
+                monthlyAmount: Number.isFinite(Number(row.monthly_amount)) ? Number(row.monthly_amount) : 0,
+                startDate: row.service_start_date ? String(row.service_start_date) : new Date().toISOString().slice(0, 10),
+                status: (ROSTER_SERVICE_STATUS_VALUES as readonly string[]).includes(String(row.status))
+                  ? (String(row.status) as RosterServiceStatus)
+                  : "active",
+              })),
+          );
+
+          for (const row of serviceRows) {
+            const safeTenant = sanitizeTenantSlug(row.tenant_slug);
+            if (safeTenant !== tenantSlug || row.roster_entry_id == null) continue;
+
+            const record: RosterServiceRecord = {
+              name: normalizeRosterServiceName(row.service_name),
+              monthlyAmount: Number.isFinite(Number(row.monthly_amount)) ? Number(row.monthly_amount) : 0,
+              startDate: row.service_start_date ? String(row.service_start_date) : new Date().toISOString().slice(0, 10),
+              status: (ROSTER_SERVICE_STATUS_VALUES as readonly string[]).includes(String(row.status))
+                ? (String(row.status) as RosterServiceStatus)
+                : "active",
+            };
+
+            const key = `${tenantSlug}::${Number(row.roster_entry_id)}`;
+            const current = servicesByRosterId.get(key) ?? [];
+            servicesByRosterId.set(key, dedupeRosterServiceRecordsCaseInsensitive([...current, record]));
+          }
+
+          const rowsWithFallback = mergedRows.length > 0
+            ? mergedRows
+            : await (async () => {
+              const tenant = await getTenantBySlug(tenantSlug);
+              if (!tenant) return [];
+              return [{
+                id: 9_000_001,
+                roster_entry_id: null,
+                tenant_slug: tenantSlug,
+                client_name: tenant.company_name,
+                package: PACKAGE_LABELS[tenant.package_tier as PackageTier] ?? tenant.package_tier,
+                monthly_amount: 0,
+                signed_date: null,
+                status: tenant.is_churned || !tenant.is_active ? "churned" as const : "active" as const,
+                tenure_months: 0,
+                ltv: 0,
+                total_income: 0,
+                notes: [tenant.contact_name, tenant.email].filter(Boolean).join(" · ") || null,
+                created_at: tenant.created_at,
+                updated_at: tenant.updated_at,
+              }];
+            })();
+
+          return rowsWithFallback.map((row) => {
+            const rosterEntryId = (row as any).roster_entry_id as number | null;
+            const key = rosterEntryId != null ? `${tenantSlug}::${Number(rosterEntryId)}` : null;
+            const records = rosterEntryId != null
+              ? dedupeRosterServiceRecordsCaseInsensitive(key ? (servicesByRosterId.get(key) ?? []) : [])
+              : fallbackServices;
+            const serviceRecords = records.length > 0 ? records : [];
+            const serviceNames = serviceRecords.map((s) => s.name);
+
+            return {
+              ...row,
+              services: serviceNames,
+              service_records: serviceRecords,
+              package: serviceNames.length > 0 ? serviceNames.join(" • ") : (row as any).package,
+            };
+          });
         }
 
         // Staff/accountants: aggregate assigned tenants only
@@ -6110,6 +6417,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
           list.map((entry) => ({
             ...entry,
             tenant_slug: slugs[slugIndex],
+            roster_entry_id: Number(entry.id),
             // Keep numeric id shape for frontend keys while avoiding collisions across tenant tables.
             id: (slugIndex + 1) * 1_000_000 + Number(entry.id),
           })),
@@ -6130,6 +6438,7 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
           .filter((t) => !rosterTenantSlugs.has(sanitizeTenantSlug(t.slug)))
           .map((t, idx) => ({
             id: 9_000_000 + idx + 1,
+            roster_entry_id: null,
             tenant_slug: sanitizeTenantSlug(t.slug),
             client_name: t.company_name,
             package: PACKAGE_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
@@ -6144,7 +6453,53 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
             updated_at: t.updated_at,
           }));
 
-        const finalRows = [...mergedRosterRows, ...fallbackRows];
+        const serviceRows = await listClientRosterServicesByTenantSlugs(slugs);
+        const servicesByTenantAndRosterId = new Map<string, RosterServiceRecord[]>();
+        const fallbackServicesByTenant = new Map<string, RosterServiceRecord[]>();
+
+        for (const row of serviceRows) {
+          const safeTenant = sanitizeTenantSlug(row.tenant_slug);
+          const safeService = normalizeRosterServiceName(row.service_name);
+          if (!safeTenant || !safeService) continue;
+
+          const record: RosterServiceRecord = {
+            name: safeService,
+            monthlyAmount: Number.isFinite(Number(row.monthly_amount)) ? Number(row.monthly_amount) : 0,
+            startDate: row.service_start_date ? String(row.service_start_date) : new Date().toISOString().slice(0, 10),
+            status: (ROSTER_SERVICE_STATUS_VALUES as readonly string[]).includes(String(row.status))
+              ? (String(row.status) as RosterServiceStatus)
+              : "active",
+          };
+
+          if (row.roster_entry_id != null) {
+            const byIdKey = `${safeTenant}::${Number(row.roster_entry_id)}`;
+            const current = servicesByTenantAndRosterId.get(byIdKey) ?? [];
+            servicesByTenantAndRosterId.set(byIdKey, dedupeRosterServiceRecordsCaseInsensitive([...current, record]));
+          } else {
+            const current = fallbackServicesByTenant.get(safeTenant) ?? [];
+            fallbackServicesByTenant.set(safeTenant, dedupeRosterServiceRecordsCaseInsensitive([...current, record]));
+          }
+        }
+
+        const finalRows = [...mergedRosterRows, ...fallbackRows].map((row) => {
+          const safeTenant = sanitizeTenantSlug((row as any).tenant_slug);
+          const rosterEntryId = (row as any).roster_entry_id as number | null;
+          const idKey = rosterEntryId != null ? `${safeTenant}::${Number(rosterEntryId)}` : null;
+
+          const normalizedServiceRecords = rosterEntryId != null
+            ? (idKey ? servicesByTenantAndRosterId.get(idKey) : undefined)
+            : fallbackServicesByTenant.get(safeTenant);
+
+          const validServiceRecords = dedupeRosterServiceRecordsCaseInsensitive(normalizedServiceRecords ?? []);
+          const validServices = validServiceRecords.map((s) => s.name);
+
+          return {
+            ...row,
+            services: validServices,
+            service_records: validServiceRecords,
+            package: validServices.length > 0 ? validServices.join(" • ") : (row as any).package,
+          };
+        });
 
         console.log("[RosterListStaffDebug]", {
           userId: ctx.user.id,
@@ -6236,6 +6591,84 @@ Return ONLY a valid JSON array. No markdown, no explanation outside the JSON.`;
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
         await deleteClientRosterEntry(slug, input.id);
         return { success: true };
+      }),
+    updateServices: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().min(1),
+        rosterEntryId: z.number().int().positive().nullable().optional(),
+        clientName: z.string().min(1),
+        services: z.array(z.object({
+          name: z.string()
+            .max(MAX_ROSTER_SERVICE_NAME_LENGTH)
+            .refine((s) => s.trim().length > 0, { message: "Service name is required" })
+            .transform((s) => s.trim()),
+          monthlyAmount: z.number().min(0).max(MAX_ROSTER_SERVICE_MONTHLY_AMOUNT),
+          startDate: z.string().refine((v) => !Number.isNaN(new Date(v).getTime()), { message: "Invalid start date" }),
+          status: z.enum(ROSTER_SERVICE_STATUS_VALUES),
+        })).max(MAX_ROSTER_SERVICES_PER_CLIENT),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!STAFF_PORTAL_ROLES.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only staff can edit roster services." });
+        }
+
+        const requestedSlug = sanitizeTenantSlug(input.tenantSlug);
+        const assigned = await getAssignedTenantSlugsForUser(ctx.user);
+        if (!assigned.includes(requestedSlug)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+        }
+
+        const rosterRows = await getClientRoster(requestedSlug);
+        const target = input.rosterEntryId != null
+          ? rosterRows.find((r) => Number(r.id) === Number(input.rosterEntryId))
+          : rosterRows.find((r) => String(r.client_name || "").trim().toLowerCase() === String(input.clientName || "").trim().toLowerCase());
+
+        if (!target && input.rosterEntryId != null) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Client roster entry not found for assigned tenant." });
+        }
+
+        let resolvedClientName = target?.client_name ?? String(input.clientName || "").trim();
+        if (!resolvedClientName) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "clientName is required." });
+        }
+
+        if (!target) {
+          const allTenants = await getAllPortalTenants();
+          const tenantRow = allTenants.find((t) => sanitizeTenantSlug(t.slug) === requestedSlug);
+          const expectedName = String(tenantRow?.company_name || "").trim().toLowerCase();
+          const requestedName = resolvedClientName.trim().toLowerCase();
+          if (!tenantRow || !expectedName || requestedName !== expectedName) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Client roster entry not found for assigned tenant." });
+          }
+          resolvedClientName = tenantRow.company_name;
+        }
+
+        const normalizedServices = dedupeRosterServiceRecordsCaseInsensitive(input.services || []);
+
+        await replaceClientRosterServices({
+          tenantSlug: requestedSlug,
+          rosterEntryId: target ? Number(target.id) : null,
+          clientName: resolvedClientName,
+          services: normalizedServices,
+        });
+
+        if (target) {
+          await supabase
+            .from(`${requestedSlug}_client_roster`)
+            .update({
+              package: normalizedServices.length ? normalizedServices.map((s) => s.name).join(" • ") : "",
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", Number(target.id));
+        }
+
+        return {
+          success: true,
+          tenantSlug: requestedSlug,
+          rosterEntryId: target ? Number(target.id) : null,
+          clientName: resolvedClientName,
+          services: normalizedServices,
+        };
       }),
   }),
 

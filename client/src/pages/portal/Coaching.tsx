@@ -123,6 +123,10 @@ export default function Coaching() {
   const { impersonatingTenantSlug } = usePortal();
   const { user } = useAuth();
   const canManageNextSteps = user?.role !== "client";
+  const currentUserId = useMemo(() => {
+    const id = Number(user?.id);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }, [user?.id]);
   const tslug = impersonatingTenantSlug ?? undefined;
   const utils = trpc.useUtils();
 
@@ -277,6 +281,23 @@ export default function Coaching() {
     for (const m of memberOptions) map.set(Number(m.id), m.name);
     return map;
   }, [memberOptions]);
+
+  const prioritizedNextSteps = useMemo(() => {
+    const rows = (nextSteps as Array<any>) || [];
+    if (!currentUserId) return rows;
+
+    return rows
+      .map((step, index) => ({
+        step,
+        index,
+        mine: Number(step?.assigned_to ?? 0) === currentUserId,
+      }))
+      .sort((a, b) => {
+        if (a.mine !== b.mine) return a.mine ? -1 : 1;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.step);
+  }, [nextSteps, currentUserId]);
 
   function closeNextStepModal() {
     setNextStepModalOpen(false);
@@ -686,7 +707,7 @@ export default function Coaching() {
           ) : nextSteps.length === 0 ? (
             <p className="text-sm text-muted-foreground">No next steps yet.</p>
           ) : (
-            (nextSteps as Array<any>).map((step) => {
+            prioritizedNextSteps.map((step) => {
               const isCompleted = step.status === "completed";
               return (
                 <div key={step.id} className="rounded-lg border border-border bg-background/20 px-3 py-2.5 hover:bg-background/30 transition-colors">
@@ -706,6 +727,9 @@ export default function Coaching() {
                         <span className="text-xs text-muted-foreground">Due: {formatDate(step.due_date)}</span>
                         <Badge className={statusBadgeClass(step.status)}>{statusLabel(step.status)}</Badge>
                         <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-300">{priorityLabel(step.priority)}</Badge>
+                        {currentUserId && Number(step.assigned_to ?? 0) === currentUserId ? (
+                          <Badge variant="outline" className="text-[10px] border-emerald-700/70 text-emerald-300">Assigned to you</Badge>
+                        ) : null}
                       </div>
                       {step.description ? (
                         <p className={`text-xs mt-1.5 ${isCompleted ? "text-muted-foreground/70" : "text-muted-foreground"}`}>{step.description}</p>

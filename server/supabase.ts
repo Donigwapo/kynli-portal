@@ -264,6 +264,26 @@ export type ClientRosterEntry = {
   updated_at: string;
 };
 
+export type ClientRosterServiceRow = {
+  id: number;
+  tenant_slug: string;
+  roster_entry_id: number | null;
+  client_name: string;
+  service_name: string;
+  monthly_amount: number;
+  service_start_date: string | null;
+  status: "active" | "inactive" | "churned";
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClientRosterServiceInput = {
+  name: string;
+  monthlyAmount: number;
+  startDate: string | null;
+  status: "active" | "inactive" | "churned";
+};
+
 export type Document = {
   id: string;
   tenant_slug: string | null;
@@ -2962,6 +2982,93 @@ export async function getClientRoster(slug: string): Promise<ClientRosterEntry[]
   })) as ClientRosterEntry[];
 }
 
+export async function listClientRosterServicesByTenantSlugs(tenantSlugs: string[]): Promise<ClientRosterServiceRow[]> {
+  const normalized = Array.from(new Set((tenantSlugs || []).map((s) => sanitizeTenantSlug(s)).filter(Boolean)));
+  if (!normalized.length) return [];
+
+  const mapRows = (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
+    id: Number(row.id ?? 0),
+    tenant_slug: String(row.tenant_slug ?? ""),
+    roster_entry_id: row.roster_entry_id == null ? null : Number(row.roster_entry_id),
+    client_name: String(row.client_name ?? ""),
+    service_name: String(row.service_name ?? ""),
+    monthly_amount: Number(row.monthly_amount ?? 0),
+    service_start_date: row.service_start_date == null ? null : String(row.service_start_date),
+    status: (String(row.status ?? "active") as ClientRosterServiceRow["status"]),
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+  }));
+
+  const primary = await supabase
+    .from("client_roster_services")
+    .select("id, tenant_slug, roster_entry_id, client_name, service_name, monthly_amount, service_start_date, status, created_at, updated_at")
+    .in("tenant_slug", normalized)
+    .order("client_name", { ascending: true })
+    .order("service_name", { ascending: true });
+
+  if (!primary.error) {
+    return mapRows((primary.data ?? []) as Array<Record<string, unknown>>);
+  }
+
+  const primaryCode = (primary.error as any)?.code;
+  // Missing table: gracefully fall back to legacy single-service package field.
+  if (primaryCode === "42P01") return [];
+
+  // Legacy schema compatibility: table exists but structured columns are not present yet.
+  if (primaryCode === "42703") {
+    const legacy = await supabase
+      .from("client_roster_services")
+      .select("id, tenant_slug, roster_entry_id, client_name, service_name, created_at, updated_at")
+      .in("tenant_slug", normalized)
+      .order("client_name", { ascending: true })
+      .order("service_name", { ascending: true });
+
+    if (legacy.error) {
+      const legacyCode = (legacy.error as any)?.code;
+      if (legacyCode === "42P01") return [];
+      throw new Error(`listClientRosterServicesByTenantSlugs(legacy): ${legacy.error.message}`);
+    }
+
+    return mapRows((legacy.data ?? []) as Array<Record<string, unknown>>);
+  }
+
+  throw new Error(`listClientRosterServicesByTenantSlugs: ${primary.error.message}`);
+}
+
+export async function replaceClientRosterServices(input: {
+  tenantSlug: string;
+  rosterEntryId?: number | null;
+  clientName: string;
+  services: ClientRosterServiceInput[];
+}): Promise<void> {
+  const tenantSlug = sanitizeTenantSlug(input.tenantSlug);
+  const clientName = String(input.clientName || "").trim();
+
+  if (!tenantSlug) throw new Error("replaceClientRosterServices: tenantSlug is required");
+  if (!clientName) throw new Error("replaceClientRosterServices: clientName is required");
+
+  const payload = (input.services || []).map((s) => ({
+    name: String(s.name || "").trim(),
+    monthlyAmount: Number(s.monthlyAmount ?? 0),
+    startDate: s.startDate ?? null,
+    status: s.status,
+  }));
+
+  const { error } = await supabase.rpc("replace_client_roster_services", {
+    p_tenant_slug: tenantSlug,
+    p_roster_entry_id: input.rosterEntryId ?? null,
+    p_client_name: clientName,
+    p_services: payload,
+  });
+
+  if (error) {
+    const code = (error as any)?.code;
+    if (code === "42P01") throw new Error("client_roster_services table is missing");
+    if (code === "42883") throw new Error("replace_client_roster_services function is missing");
+    throw new Error(`replaceClientRosterServices.rpc: ${error.message}`);
+  }
+}
+
 export async function upsertClientRosterEntry(
   slug: string,
   entry: Omit<ClientRosterEntry, "id" | "created_at" | "updated_at">
@@ -3869,6 +3976,7 @@ export type ClientMeetingActionItem = {
   details: string | null;
   status: string;
   due_date: string | null;
+  assigned_to_user_id: number | null;
   completed_at: string | null;
   sort_order: number;
   created_at: string;
@@ -4010,6 +4118,7 @@ export async function replaceClientMeetingActionItems(input: {
     details?: string | null;
     status?: string;
     due_date?: string | null;
+    assigned_to_user_id?: number | null;
     completed_at?: string | null;
     sort_order?: number;
   }>;
@@ -4032,6 +4141,7 @@ export async function replaceClientMeetingActionItems(input: {
     details: it.details ?? null,
     status: it.status ?? "open",
     due_date: it.due_date ?? null,
+    assigned_to_user_id: it.assigned_to_user_id ?? null,
     completed_at: it.completed_at ?? null,
     sort_order: it.sort_order ?? idx,
   }));
