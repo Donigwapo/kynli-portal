@@ -906,6 +906,36 @@ export async function insertLineItem(slug: string, item: Omit<LineItem, "id" | "
   if (error) throw new Error(error.message);
 }
 
+export async function deleteLineItemsForPeriod(slug: string, year: number, month: number): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error("Invalid tenant slug for line item deletion.");
+  }
+
+  const table = `${slug}_line_items`;
+  const { error } = await supabase
+    .from(table)
+    .delete()
+    .eq("year", year)
+    .eq("month", month);
+
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteFinancialPeriod(slug: string, year: number, month: number): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error("Invalid tenant slug for financial period deletion.");
+  }
+
+  const table = `${slug}_financials`;
+  const { error } = await supabase
+    .from(table)
+    .delete()
+    .eq("year", year)
+    .eq("month", month);
+
+  if (error) throw new Error(error.message);
+}
+
 export async function replaceLineItemsForPeriod(
   slug: string,
   year: number,

@@ -1,11 +1,17 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X, Trash2, Sparkles, History } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, TrendingUp, TrendingDown, DollarSign, Percent, Upload, X, Trash2, Sparkles, History, MoreHorizontal } from "lucide-react";
 import { usePortal } from "../../contexts/PortalContext";
 import { trpc } from "../../lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -452,6 +458,7 @@ export default function Financials() {
     selectedYear: number;
     status: "processing" | "ready_for_review" | "failed";
     fileName: string;
+    mode?: "import" | "edit_published";
   } | null>(null);
   const [importFailureMessage, setImportFailureMessage] = useState<string | null>(null);
   const [reviewIncomeRows, setReviewIncomeRows] = useState<Array<{ localId: string; category: string; actual: string; budget: string }>>([]);
@@ -474,6 +481,7 @@ export default function Financials() {
   const [initialReviewSnapshot, setInitialReviewSnapshot] = useState<string | null>(null);
   const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
   const [confirmCloseMode, setConfirmCloseMode] = useState<"discard_review" | "cancel_import" | null>(null);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ year: number; month: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const reviewContentScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -506,6 +514,8 @@ export default function Financials() {
   const uploadMutation = trpc.documents.upload.useMutation();
   const analyzeUploadedPdfMutation = trpc.financials.analyzeUploadedPdf.useMutation();
   const saveReviewedPeriodMutation = trpc.financials.saveReviewedPeriod.useMutation();
+  const updatePublishedPeriodMutation = trpc.financials.updatePublishedPeriod.useMutation();
+  const deletePublishedPeriodMutation = trpc.financials.deletePublishedPeriod.useMutation();
   const rewriteSummaryWithAiMutation = trpc.financials.rewriteSummaryWithAi.useMutation();
   const createSummaryVersionMutation = trpc.financials.createSummaryVersion.useMutation();
   const restoreSummaryVersionMutation = trpc.financials.restoreSummaryVersion.useMutation();
@@ -625,6 +635,7 @@ export default function Financials() {
         selectedYear: Number(args.year),
         status: "processing" as const,
         fileName: args.fileName,
+        mode: "import" as const,
       };
       setAnalysisDispatchResult(nextDispatch);
 
@@ -809,7 +820,7 @@ export default function Financials() {
   };
 
   const handleGenerateAiRevision = async () => {
-    if (!analysisDispatchResult?.importId) {
+    if (!analysisDispatchResult) {
       toast.error("Unable to generate revision right now.");
       return;
     }
@@ -829,8 +840,13 @@ export default function Financials() {
         return;
       }
 
+      const isPublishedEditMode = analysisDispatchResult.mode === "edit_published";
       const result = await rewriteSummaryWithAiMutation.mutateAsync({
-        importId: analysisDispatchResult.importId,
+        mode: isPublishedEditMode ? "edit_published" : "import_review",
+        importId: isPublishedEditMode ? undefined : analysisDispatchResult.importId,
+        tenantSlug: isPublishedEditMode ? (impersonatingTenantSlug ?? undefined) : undefined,
+        month: isPublishedEditMode ? analysisDispatchResult.selectedMonth : undefined,
+        year: isPublishedEditMode ? analysisDispatchResult.selectedYear : undefined,
         instruction,
         currentSummary: cameronSummary,
         incomeSources: reviewIncomeRows.map((r) => ({
@@ -850,7 +866,14 @@ export default function Financials() {
 
       setAiSuggestedSummary(result.revisedSummary);
       setAiRevisionError(null);
-    } catch {
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        const err = error as any;
+        console.error("[financials.ai-assist] rewriteSummaryWithAi failed", {
+          message: err?.message,
+          data: err?.data,
+        });
+      }
       setAiRevisionError("We couldn’t generate a revised summary. Your current summary has not been changed.");
       toast.error("We couldn’t generate a revised summary. Your current summary has not been changed.");
     }
@@ -919,17 +942,29 @@ export default function Financials() {
 
     setIsSavingReviewedPeriod(true);
     try {
-      const result = await saveReviewedPeriodMutation.mutateAsync({
-        importId: analysisDispatchResult.importId,
-        tenantSlug: impersonatingTenantSlug,
-        month: analysisDispatchResult.selectedMonth,
-        year: analysisDispatchResult.selectedYear,
-        incomeSources: normalizedIncome,
-        expenses: normalizedExpenses,
-        specialTotals: specialTotalsPayloadResult.payload,
-        financialSummary: cameronSummary,
-        notes: reviewNotes,
-      });
+      const isPublishedEdit = analysisDispatchResult.mode === "edit_published";
+      const result = isPublishedEdit
+        ? await updatePublishedPeriodMutation.mutateAsync({
+            tenantSlug: impersonatingTenantSlug,
+            month: analysisDispatchResult.selectedMonth,
+            year: analysisDispatchResult.selectedYear,
+            incomeSources: normalizedIncome,
+            expenses: normalizedExpenses,
+            specialTotals: specialTotalsPayloadResult.payload,
+            financialSummary: cameronSummary,
+            notes: reviewNotes,
+          })
+        : await saveReviewedPeriodMutation.mutateAsync({
+            importId: analysisDispatchResult.importId,
+            tenantSlug: impersonatingTenantSlug,
+            month: analysisDispatchResult.selectedMonth,
+            year: analysisDispatchResult.selectedYear,
+            incomeSources: normalizedIncome,
+            expenses: normalizedExpenses,
+            specialTotals: specialTotalsPayloadResult.payload,
+            financialSummary: cameronSummary,
+            notes: reviewNotes,
+          });
 
       if (!result?.success) {
         throw new Error("Save did not complete successfully.");
@@ -1140,6 +1175,8 @@ export default function Financials() {
     isDispatchingAnalysis ||
     isSavingReviewedPeriod;
 
+  const canManagePublishedPeriods = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role) && !!impersonatingTenantSlug;
+
   const { data: financials = [], isLoading } = trpc.financials.get.useQuery({ year, tenantSlug: tslug });
   const { data: lineItems = [] } = trpc.financials.lineItems.useQuery(
     { year, month: expandedMonth ?? now.getMonth() + 1, tenantSlug: tslug },
@@ -1153,6 +1190,126 @@ export default function Financials() {
 
   const expandedPeriod = expandedMonth != null ? financials.find(f => f.month === expandedMonth) : null;
   const isReviewState = analysisDispatchResult?.status === "ready_for_review";
+
+  const loadPublishedPeriodIntoReview = async (period: any) => {
+    if (!canManagePublishedPeriods || !impersonatingTenantSlug) return;
+
+    const targetMonth = Number(period.month);
+    const targetYear = Number(period.year);
+
+    const [periodLineItems, yearRows] = await Promise.all([
+      trpcUtils.financials.lineItems.fetch({ year: targetYear, month: targetMonth, tenantSlug: impersonatingTenantSlug }),
+      trpcUtils.financials.get.fetch({ year: targetYear, tenantSlug: impersonatingTenantSlug }),
+    ]);
+
+    const selectedPeriod = (yearRows as any[]).find((r) => Number(r.month) === targetMonth);
+    if (!selectedPeriod) {
+      throw new Error("Unable to load the selected financial period.");
+    }
+
+    const incomeRows = (periodLineItems as any[])
+      .filter((row) => row.type === "income")
+      .map((row) => ({
+        localId: makeLocalRowId(),
+        category: typeof row?.label === "string" ? row.label : "",
+        actual: row?.amount == null ? "" : String(row.amount),
+        budget: row?.budget_amount == null ? "" : String(row.budget_amount),
+      }));
+
+    const expenseRows = (periodLineItems as any[])
+      .filter((row) => row.type === "expense")
+      .map((row) => ({
+        localId: makeLocalRowId(),
+        category: typeof row?.label === "string" ? row.label : "",
+        actual: row?.amount == null ? "" : String(row.amount),
+        budget: row?.budget_amount == null ? "" : String(row.budget_amount),
+      }));
+
+    const loadedSpecialTotals: ReviewSpecialTotals = {
+      totalCostOfGoodsSold: {
+        actual: String((selectedPeriod as any)?.cogs_actual ?? 0),
+        budget: (selectedPeriod as any)?.cogs_budget == null ? "" : String((selectedPeriod as any).cogs_budget),
+      },
+      totalOtherIncome: {
+        actual: String((selectedPeriod as any)?.other_income_actual ?? 0),
+        budget: (selectedPeriod as any)?.other_income_budget == null ? "" : String((selectedPeriod as any).other_income_budget),
+      },
+      totalOtherExpense: {
+        actual: String((selectedPeriod as any)?.other_expense_actual ?? 0),
+        budget: (selectedPeriod as any)?.other_expense_budget == null ? "" : String((selectedPeriod as any).other_expense_budget),
+      },
+    };
+
+    const summary = typeof (selectedPeriod as any)?.summary === "string" ? String((selectedPeriod as any).summary) : "";
+
+    setSelectedImportMonth(targetMonth);
+    setSelectedImportYear(targetYear);
+    setUploadedFinancialPdfResult(null);
+    setAnalysisDispatchResult({
+      importId: "",
+      documentId: "published-period-edit",
+      selectedMonth: targetMonth,
+      selectedYear: targetYear,
+      status: "ready_for_review",
+      fileName: "Published Period",
+      mode: "edit_published",
+    });
+
+    setReviewIncomeRows(incomeRows);
+    setReviewExpenseRows(expenseRows);
+    setReviewSpecialTotals(loadedSpecialTotals);
+    setCameronSummary(summary);
+    setReviewNotes("");
+    setAiAssistOpen(false);
+    setAiInstruction("");
+    setAiSuggestedSummary("");
+    setAiRevisionError(null);
+    setHistoryPanelOpen(false);
+    setHistoryViewVersion(null);
+    setHistoryRestoreVersion(null);
+    setHistoryWarning(null);
+    setLastPersistedSummary(summary.trim());
+    setUndoSummaryStack([]);
+    setImportFailureMessage(null);
+    setStatusCheckError(null);
+    setStatusPollingEnabled(false);
+
+    setInitialReviewSnapshot(
+      JSON.stringify({
+        income: incomeRows,
+        expense: expenseRows,
+        specialTotals: loadedSpecialTotals,
+        cameronSummary: summary,
+        reviewNotes: "",
+      }),
+    );
+
+    setImportDialogOpen(true);
+  };
+
+  const handleDeletePublishedPeriod = async () => {
+    if (!deleteConfirmTarget || !impersonatingTenantSlug) return;
+    try {
+      await deletePublishedPeriodMutation.mutateAsync({
+        tenantSlug: impersonatingTenantSlug,
+        year: deleteConfirmTarget.year,
+        month: deleteConfirmTarget.month,
+      });
+
+      toast.success(`Deleted ${MONTHS_LONG[deleteConfirmTarget.month - 1]} ${deleteConfirmTarget.year} financial report.`);
+      setDeleteConfirmTarget(null);
+      if (expandedMonth === deleteConfirmTarget.month) {
+        setExpandedMonth(null);
+      }
+      await Promise.all([
+        trpcUtils.financials.get.invalidate({ year, tenantSlug: tslug }),
+        trpcUtils.financials.lineItemsByYear.invalidate({ year, tenantSlug: tslug }),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete financial period.";
+      toast.error(message || "Failed to delete financial period.");
+    }
+  };
 
   return (
     <>
@@ -1201,27 +1358,64 @@ export default function Financials() {
             <div className="space-y-2">
               {periods.map((period: any) => (
                 <div key={period.month}>
-                  <PeriodRow
-                    period={{
-                      year: period.year,
-                      month: period.month,
-                      revenue: fmtN(period.revenue),
-                      expenses: fmtN(period.expenses),
-                      cogs_actual: fmtN((period as any).cogs_actual),
-                      cogs_budget: (period as any).cogs_budget == null ? null : fmtN((period as any).cogs_budget),
-                      other_income_actual: fmtN((period as any).other_income_actual),
-                      other_income_budget: (period as any).other_income_budget == null ? null : fmtN((period as any).other_income_budget),
-                      other_expense_actual: fmtN((period as any).other_expense_actual),
-                      other_expense_budget: (period as any).other_expense_budget == null ? null : fmtN((period as any).other_expense_budget),
-                      net_profit: fmtN(period.net_profit),
-                      net_profit_margin: fmtN(period.net_profit_margin),
-                      budget_revenue: fmtN(period.budget_revenue),
-                      budget_expenses: fmtN(period.budget_expenses),
-                      summary: period.summary,
-                    }}
-                    isExpanded={expandedMonth === period.month}
-                    onExpand={() => setExpandedMonth(expandedMonth === period.month ? null : period.month)}
-                  />
+                  <div className="flex items-stretch gap-2">
+                    <div className="flex-1">
+                      <PeriodRow
+                        period={{
+                          year: period.year,
+                          month: period.month,
+                          revenue: fmtN(period.revenue),
+                          expenses: fmtN(period.expenses),
+                          cogs_actual: fmtN((period as any).cogs_actual),
+                          cogs_budget: (period as any).cogs_budget == null ? null : fmtN((period as any).cogs_budget),
+                          other_income_actual: fmtN((period as any).other_income_actual),
+                          other_income_budget: (period as any).other_income_budget == null ? null : fmtN((period as any).other_income_budget),
+                          other_expense_actual: fmtN((period as any).other_expense_actual),
+                          other_expense_budget: (period as any).other_expense_budget == null ? null : fmtN((period as any).other_expense_budget),
+                          net_profit: fmtN(period.net_profit),
+                          net_profit_margin: fmtN(period.net_profit_margin),
+                          budget_revenue: fmtN(period.budget_revenue),
+                          budget_expenses: fmtN(period.budget_expenses),
+                          summary: period.summary,
+                        }}
+                        isExpanded={expandedMonth === period.month}
+                        onExpand={() => setExpandedMonth(expandedMonth === period.month ? null : period.month)}
+                      />
+                    </div>
+                    {canManagePublishedPeriods && (
+                      <div className="shrink-0 pt-2 pr-1">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button type="button" variant="ghost" size="icon" aria-label={`Actions for ${MONTHS_LONG[period.month - 1]} ${period.year}`}>
+                              <MoreHorizontal className="w-4 h-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                void (async () => {
+                                  try {
+                                    await loadPublishedPeriodIntoReview(period);
+                                  } catch (error) {
+                                    const message = error instanceof Error ? error.message : "Unable to load financial period for editing.";
+                                    toast.error(message || "Unable to load financial period for editing.");
+                                  }
+                                })();
+                              }}
+                            >
+                              Edit Report
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-red-300 focus:text-red-200"
+                              onClick={() => setDeleteConfirmTarget({ year: Number(period.year), month: Number(period.month) })}
+                            >
+                              Delete Report
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    )}
+                  </div>
                   {expandedMonth === period.month && expandedPeriod && (
                     <ExpandedPeriodDetail
                       period={{
@@ -1986,6 +2180,38 @@ export default function Financials() {
               </Button>
               <Button type="button" onClick={handleDiscardAndClose}>
                 {confirmCloseMode === "discard_review" ? "Discard Changes" : "Cancel Import"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!deleteConfirmTarget} onOpenChange={(open) => { if (!open) setDeleteConfirmTarget(null); }}>
+          <DialogContent className="w-[95vw] max-w-[calc(100vw-2rem)] sm:max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle>
+                {deleteConfirmTarget
+                  ? `Delete ${MONTHS_LONG[deleteConfirmTarget.month - 1]} ${deleteConfirmTarget.year} Financial Report?`
+                  : "Delete Financial Report?"}
+              </DialogTitle>
+              <DialogDescription>
+                This will permanently remove this published financial period and update the client’s Reports and YTD totals.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDeleteConfirmTarget(null)}
+                disabled={deletePublishedPeriodMutation.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => { void handleDeletePublishedPeriod(); }}
+                disabled={deletePublishedPeriodMutation.isPending}
+              >
+                {deletePublishedPeriodMutation.isPending ? "Deleting…" : "Delete Report"}
               </Button>
             </DialogFooter>
           </DialogContent>
