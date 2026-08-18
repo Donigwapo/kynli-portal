@@ -156,6 +156,8 @@ export type Financial = {
   other_income_budget?: number | null;
   other_expense_actual?: number;
   other_expense_budget?: number | null;
+  source_import_id?: string | null;
+  source_document_id?: string | null;
   summary?: string | null;
 };
 
@@ -840,6 +842,8 @@ export async function getFinancials(slug: string, year: number, month?: number):
     other_income_budget: r.other_income_budget == null ? null : parseFloat(r.other_income_budget as string),
     other_expense_actual: r.other_expense_actual == null ? 0 : parseFloat(r.other_expense_actual as string),
     other_expense_budget: r.other_expense_budget == null ? null : parseFloat(r.other_expense_budget as string),
+    source_import_id: r.source_import_id == null ? null : String(r.source_import_id),
+    source_document_id: r.source_document_id == null ? null : String(r.source_document_id),
   })) as Financial[];
 }
 
@@ -856,7 +860,9 @@ export async function upsertFinancial(slug: string, data: Omit<Financial, "id">)
         ADD COLUMN IF NOT EXISTS other_income_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
         ADD COLUMN IF NOT EXISTS other_income_budget NUMERIC(15,2),
         ADD COLUMN IF NOT EXISTS other_expense_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS other_expense_budget NUMERIC(15,2);
+        ADD COLUMN IF NOT EXISTS other_expense_budget NUMERIC(15,2),
+        ADD COLUMN IF NOT EXISTS source_import_id UUID,
+        ADD COLUMN IF NOT EXISTS source_document_id UUID;
     `,
   });
 
@@ -872,6 +878,36 @@ export async function updateFinancialSummary(slug: string, year: number, month: 
     .update({ summary })
     .eq("year", year)
     .eq("month", month);
+  if (error) throw new Error(error.message);
+}
+
+export async function updateFinancialSourceReferences(
+  slug: string,
+  year: number,
+  month: number,
+  refs: { source_import_id: string | null; source_document_id: string | null },
+): Promise<void> {
+  if (!/^[a-z0-9_]+$/.test(slug)) {
+    throw new Error(`Invalid slug: "${slug}".`);
+  }
+
+  await supabase.rpc("exec_sql", {
+    sql: `
+      ALTER TABLE IF EXISTS ${slug}_financials
+        ADD COLUMN IF NOT EXISTS source_import_id UUID,
+        ADD COLUMN IF NOT EXISTS source_document_id UUID;
+    `,
+  });
+
+  const { error } = await supabase
+    .from(`${slug}_financials`)
+    .update({
+      source_import_id: refs.source_import_id,
+      source_document_id: refs.source_document_id,
+    })
+    .eq("year", year)
+    .eq("month", month);
+
   if (error) throw new Error(error.message);
 }
 
@@ -3410,6 +3446,8 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
           other_income_budget  NUMERIC(15,2),
           other_expense_actual NUMERIC(15,2) NOT NULL DEFAULT 0,
           other_expense_budget NUMERIC(15,2),
+          source_import_id     UUID,
+          source_document_id   UUID,
           summary              TEXT,
           created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),

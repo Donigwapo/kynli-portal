@@ -73,6 +73,7 @@ import {
   deleteCoachingItem,
   upsertFinancial,
   updateFinancialSummary,
+  updateFinancialSourceReferences,
   upsertKpiMetric,
   upsertPortalTenant,
   provisionTenant,
@@ -2875,6 +2876,8 @@ export const appRouter = router({
           other_income_budget: otherIncomeBudget,
           other_expense_actual: otherExpenseActual,
           other_expense_budget: otherExpenseBudget,
+          source_import_id: (existing[0] as any)?.source_import_id == null ? null : String((existing[0] as any).source_import_id),
+          source_document_id: (existing[0] as any)?.source_document_id == null ? null : String((existing[0] as any).source_document_id),
           summary: financialSummary || null,
         });
 
@@ -3085,6 +3088,8 @@ export const appRouter = router({
           other_income_budget: otherIncomeBudget,
           other_expense_actual: otherExpenseActual,
           other_expense_budget: otherExpenseBudget,
+          source_import_id: String(job.import_id),
+          source_document_id: (job as any)?.document_id == null ? null : String((job as any).document_id),
           summary: financialSummary || null,
         });
 
@@ -3415,15 +3420,78 @@ export const appRouter = router({
           periodMonth = Number(input.month);
 
           const periodRows = await getFinancials(requestedTenant, periodYear, periodMonth);
-          if (!periodRows.length) {
+          const period = periodRows[0] as any;
+          if (!period) {
             throw new TRPCError({ code: "NOT_FOUND", message: "Published financial period not found." });
           }
+
+          let sourceImportId = period?.source_import_id ? String(period.source_import_id) : null;
+          let sourceDocumentId = period?.source_document_id ? String(period.source_document_id) : null;
+          let sourceLookupFallbackUsed = false;
+          let sourceLookupCandidateCount = 0;
+          let sourceBackfilled = false;
+
+          if (!sourceImportId || !sourceDocumentId) {
+            sourceLookupFallbackUsed = true;
+
+            const { data: candidates, error: candidatesError } = await supabase
+              .from("financial_import_jobs")
+              .select("import_id, document_id, saved_at, updated_at")
+              .eq("tenant_slug", requestedTenant)
+              .eq("year", periodYear)
+              .eq("month", periodMonth)
+              .not("saved_at", "is", null)
+              .order("saved_at", { ascending: false })
+              .order("updated_at", { ascending: false });
+
+            if (candidatesError) {
+              throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to resolve original financial import linkage." });
+            }
+
+            const validCandidates = (candidates ?? []).filter((row: any) => row?.import_id && row?.document_id);
+            sourceLookupCandidateCount = validCandidates.length;
+
+            if (validCandidates.length === 1) {
+              sourceImportId = String(validCandidates[0].import_id);
+              sourceDocumentId = String(validCandidates[0].document_id);
+            } else if (validCandidates.length > 1) {
+              const newestSavedAt = String(validCandidates[0].saved_at || "");
+              const secondSavedAt = String(validCandidates[1].saved_at || "");
+              if (newestSavedAt && secondSavedAt && newestSavedAt !== secondSavedAt) {
+                sourceImportId = String(validCandidates[0].import_id);
+                sourceDocumentId = String(validCandidates[0].document_id);
+              } else {
+                throw new TRPCError({ code: "CONFLICT", message: "Multiple historical imports match this published period. Please contact support to resolve source linkage." });
+              }
+            }
+
+            if (sourceImportId && sourceDocumentId) {
+              await updateFinancialSourceReferences(requestedTenant, periodYear, periodMonth, {
+                source_import_id: sourceImportId,
+                source_document_id: sourceDocumentId,
+              });
+              sourceBackfilled = true;
+            }
+          }
+
+          if (!sourceImportId || !sourceDocumentId) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "The original financial import could not be identified for this published period." });
+          }
+
+          importIdForWebhook = sourceImportId;
+          documentIdForWebhook = sourceDocumentId;
 
           console.info("[financials.rewriteSummaryWithAi] published period validated", {
             mode,
             tenantSlug: requestedTenant,
             year: periodYear,
             month: periodMonth,
+            periodFound: true,
+            sourceImportIdPresent: !!sourceImportId,
+            sourceDocumentIdPresent: !!sourceDocumentId,
+            sourceLookupFallbackUsed,
+            sourceLookupCandidateCount,
+            sourceBackfilled,
           });
         }
 
@@ -3517,7 +3585,7 @@ export const appRouter = router({
             expenses: cleanExpenses.map((r) => ({ category: r.category, actual: r.actual, budget: r.budget })),
           },
           metadata: {
-            source: mode === "edit_published" ? "financial_published_period_edit" : "financial_import_review",
+            source: mode === "edit_published" ? "published_financial_summary_edit" : "financial_import_review",
             mode,
             requested_at: new Date().toISOString(),
             summary_character_limit: 10000,
