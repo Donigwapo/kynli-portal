@@ -41,22 +41,51 @@ const webhookPayloadSchema = z.object({
   generated_at: z.string().optional(),
 }).passthrough();
 
+const LOG_PREFIX = "[CoachingTriggersWebhook]";
+
+function formatZodIssues(issues: z.ZodIssue[]) {
+  return issues.map((issue) => ({
+    path: issue.path.join("."),
+    message: issue.message,
+    code: issue.code,
+  }));
+}
+
+function formatError(err: unknown): { message: string; code?: string; details?: string } {
+  if (err && typeof err === "object") {
+    const anyErr = err as any;
+    return {
+      message: String(anyErr.message || "Unknown error"),
+      code: typeof anyErr.code === "string" ? anyErr.code : undefined,
+      details: typeof anyErr.details === "string" ? anyErr.details : undefined,
+    };
+  }
+  return { message: String(err || "Unknown error") };
+}
+
 export async function handleCoachingTriggersWebhook(req: Request, res: Response): Promise<void> {
   const secretHeader = String(req.header("X-Kynli-Webhook-Secret") || "").trim();
   const expectedSecret = String(process.env.N8N_COACHING_TRIGGERS_WEBHOOK_SECRET || "").trim();
 
   if (!expectedSecret || !secretHeader || secretHeader !== expectedSecret) {
+    console.warn(`${LOG_PREFIX} Unauthorized`);
     res.status(401).json({ received: false });
     return;
   }
 
   if (!req.is("application/json")) {
+    console.warn(`${LOG_PREFIX} Invalid content type`, {
+      contentType: req.header("content-type") || null,
+    });
     res.status(400).json({ received: false });
     return;
   }
 
   const parsed = webhookPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
+    console.warn(`${LOG_PREFIX} Invalid payload`, {
+      issues: formatZodIssues(parsed.error.issues),
+    });
     res.status(400).json({ received: false });
     return;
   }
@@ -64,6 +93,10 @@ export async function handleCoachingTriggersWebhook(req: Request, res: Response)
   const body = parsed.data;
   const unsupportedTrigger = body.triggers.find((t) => !FINANCIAL_TRIGGER_KEY_SET.has(String(t.trigger_key)));
   if (unsupportedTrigger) {
+    console.warn(`${LOG_PREFIX} Invalid payload`, {
+      reason: "unsupported_trigger_key",
+      triggerKey: String(unsupportedTrigger.trigger_key || ""),
+    });
     res.status(400).json({ received: false });
     return;
   }
@@ -77,12 +110,19 @@ export async function handleCoachingTriggersWebhook(req: Request, res: Response)
   ].find((key) => !payloadKeys.has(key));
 
   if (invalidSummaryKey) {
+    console.warn(`${LOG_PREFIX} Invalid payload`, {
+      reason: "summary_key_not_present_in_triggers",
+      triggerKey: String(invalidSummaryKey),
+    });
     res.status(400).json({ received: false });
     return;
   }
 
   const duplicateKeys = body.triggers.map((t) => t.trigger_key);
   if (new Set(duplicateKeys).size !== duplicateKeys.length) {
+    console.warn(`${LOG_PREFIX} Invalid payload`, {
+      reason: "duplicate_trigger_keys",
+    });
     res.status(400).json({ received: false });
     return;
   }
@@ -94,7 +134,23 @@ export async function handleCoachingTriggersWebhook(req: Request, res: Response)
       .eq("import_id", body.source_import_id)
       .maybeSingle();
 
-    if (error || !job) {
+    if (error) {
+      const formatted = formatError(error);
+      console.warn(`${LOG_PREFIX} Import validation failed`, {
+        reason: "import_lookup_error",
+        importId: body.source_import_id,
+        errorMessage: formatted.message,
+        errorCode: formatted.code,
+      });
+      res.status(400).json({ received: false });
+      return;
+    }
+
+    if (!job) {
+      console.warn(`${LOG_PREFIX} Import validation failed`, {
+        reason: "import_not_found",
+        importId: body.source_import_id,
+      });
       res.status(400).json({ received: false });
       return;
     }
@@ -103,13 +159,42 @@ export async function handleCoachingTriggersWebhook(req: Request, res: Response)
     const jobMonth = Number((job as any).month || 0);
     const jobYear = Number((job as any).year || 0);
 
-    if (jobTenantSlug !== tenantSlug || jobMonth !== body.period_month || jobYear !== body.period_year) {
+    if (jobTenantSlug !== tenantSlug) {
+      console.warn(`${LOG_PREFIX} Import validation failed`, {
+        reason: "tenant_mismatch",
+        importId: body.source_import_id,
+        expectedTenantSlug: tenantSlug,
+        actualTenantSlug: jobTenantSlug,
+      });
+      res.status(400).json({ received: false });
+      return;
+    }
+
+    if (jobYear !== body.period_year) {
+      console.warn(`${LOG_PREFIX} Import validation failed`, {
+        reason: "period_year_mismatch",
+        importId: body.source_import_id,
+        expectedPeriodYear: body.period_year,
+        actualPeriodYear: jobYear,
+      });
+      res.status(400).json({ received: false });
+      return;
+    }
+
+    if (jobMonth !== body.period_month) {
+      console.warn(`${LOG_PREFIX} Import validation failed`, {
+        reason: "period_month_mismatch",
+        importId: body.source_import_id,
+        expectedPeriodMonth: body.period_month,
+        actualPeriodMonth: jobMonth,
+      });
       res.status(400).json({ received: false });
       return;
     }
   }
 
-  await upsertCfoTriggerSnapshot({
+  try {
+    await upsertCfoTriggerSnapshot({
     tenant_slug: tenantSlug,
     period_year: body.period_year,
     period_month: body.period_month,
@@ -130,7 +215,17 @@ export async function handleCoachingTriggersWebhook(req: Request, res: Response)
     })),
     raw_payload: req.body as Record<string, unknown>,
     received_at: new Date().toISOString(),
-  });
+    });
+  } catch (error) {
+    const formatted = formatError(error);
+    console.error(`${LOG_PREFIX} Persistence failed`, {
+      errorMessage: formatted.message,
+      errorCode: formatted.code,
+      errorDetails: formatted.details,
+    });
+    res.status(400).json({ received: false });
+    return;
+  }
 
   res.status(200).json({ received: true });
 }
