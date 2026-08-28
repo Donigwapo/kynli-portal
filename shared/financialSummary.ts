@@ -1,0 +1,1 @@
+export const FINANCIAL_SUMMARY_MAX_LENGTH = 25_000;

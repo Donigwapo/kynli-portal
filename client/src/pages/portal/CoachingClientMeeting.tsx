@@ -85,11 +85,7 @@ function fmtRoleLabel(role?: string | null): string {
   return value.replace(/_/g, " ");
 }
 
-type CoachingClientMeetingProps = {
-  mode?: "clientMeeting" | "checkInCalls";
-};
-
-export default function CoachingClientMeeting({ mode = "clientMeeting" }: CoachingClientMeetingProps) {
+export default function CoachingClientMeeting() {
   const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
   const tenantSlug = impersonatingTenantSlug ?? undefined;
@@ -98,14 +94,12 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     const id = Number(user?.id);
     return Number.isFinite(id) && id > 0 ? id : null;
   }, [user?.id]);
-  const meetingMode = mode === "checkInCalls" ? "check_in_call" : "client_meeting";
-
   const utils = trpc.useUtils();
   const {
     data: meetings = [],
     isLoading: isMeetingsLoading,
     isError: isMeetingsError,
-  } = trpc.coaching.meetingsList.useQuery({ tenantSlug, mode: meetingMode });
+  } = trpc.coaching.meetingsList.useQuery({ tenantSlug });
 
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -135,7 +129,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
   const pendingStatusSnapshotRef = useRef<{ id: number; previousStatus: "open" | "in_progress" | "completed" } | null>(null);
 
   const detailQuery = trpc.coaching.meetingsGet.useQuery(
-    { id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode },
+    { id: selectedMeetingId ?? 0, tenantSlug },
     { enabled: !!selectedMeetingId && !isCreating }
   );
 
@@ -146,7 +140,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
   const createMutation = trpc.coaching.meetingsCreate.useMutation({
     onSuccess: async (res) => {
-      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug });
       setIsCreating(false);
       setSelectedMeetingId(res.meeting.id);
       setEditMeta(false);
@@ -157,8 +151,8 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
   const updateMutation = trpc.coaching.meetingsUpdate.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug });
       setEditMeta(false);
       setEditNotes(false);
     },
@@ -166,7 +160,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
   const deleteMutation = trpc.coaching.meetingsDelete.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug });
       setSelectedMeetingId(null);
       setIsCreating(false);
       setEditMeta(false);
@@ -177,8 +171,8 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
   const upsertItemsMutation = trpc.coaching.meetingActionItemsUpsertBatch.useMutation({
     onSuccess: async () => {
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug });
       setEditItems(false);
     },
   });
@@ -192,8 +186,8 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       }
       pendingStatusSnapshotRef.current = null;
       setStatusUpdatingItemId(null);
-      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug, mode: meetingMode });
-      await utils.coaching.meetingsList.invalidate({ tenantSlug, mode: meetingMode });
+      await utils.coaching.meetingsGet.invalidate({ id: selectedMeetingId ?? 0, tenantSlug });
+      await utils.coaching.meetingsList.invalidate({ tenantSlug });
     },
     onError: (error, variables) => {
       const snap = pendingStatusSnapshotRef.current;
@@ -355,7 +349,6 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     if (isCreating) {
       createMutation.mutate({
         tenantSlug,
-        mode: meetingMode,
         title: title.trim(),
         meetingDate,
         meetingType,
@@ -368,7 +361,6 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     updateMutation.mutate({
       id: selectedMeetingId,
       tenantSlug,
-      mode: meetingMode,
       title: title.trim(),
       meetingDate,
       meetingType,
@@ -382,7 +374,6 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     upsertItemsMutation.mutate({
       meetingId: selectedMeetingId,
       tenantSlug,
-      mode: meetingMode,
       items: normalizeItems(items).map((it) => ({
         title: it.title,
         details: it.details,
@@ -439,7 +430,6 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       id: target.id,
       status: nextStatus,
       tenantSlug,
-      mode: meetingMode,
     });
   };
 
@@ -457,7 +447,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
     setIsExportingDocx(true);
     try {
-      const kindLabel = mode === "checkInCalls" ? "Check-in Call" : "Client Meeting";
+      const kindLabel = "Client Meeting";
       const heading = `${kindLabel}: ${String(meeting.title || "Untitled")}`;
       const meetingDateText = fmtDate(meeting.meeting_date);
       const meetingTypeText = String(meeting.meeting_type || "other");
@@ -517,7 +507,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
       const link = document.createElement("a");
       const titlePart = safeExportSlug(String(meeting.title || "Meeting")) || "Meeting";
       const datePart = exportDateStamp(meeting.meeting_date);
-      const prefix = mode === "checkInCalls" ? "Check-in-Call" : "Client-Meeting";
+      const prefix = "Client-Meeting";
       link.href = url;
       link.download = `${prefix}-${titlePart}-${datePart}.docx`;
       document.body.appendChild(link);
@@ -544,7 +534,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
     setIsExportingPdf(true);
     try {
-      const kindLabel = mode === "checkInCalls" ? "Check-in Call" : "Client Meeting";
+      const kindLabel = "Client Meeting";
       const titleText = String(meeting.title || "Untitled");
       const meetingDateText = fmtDate(meeting.meeting_date);
       const meetingTypeText = String(meeting.meeting_type || "other");
@@ -605,7 +595,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
 
       const titlePart = safeExportSlug(titleText) || "Meeting";
       const datePart = exportDateStamp(meeting.meeting_date);
-      const prefix = mode === "checkInCalls" ? "Check-in-Call" : "Client-Meeting";
+      const prefix = "Client-Meeting";
       doc.save(`${prefix}-${titlePart}-${datePart}.pdf`);
       toast.success("PDF export downloaded.");
     } catch (error: any) {
@@ -615,7 +605,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
     }
   };
 
-  const pageTitle = mode === "checkInCalls" ? "Check-in Calls" : "Client Meeting";
+  const pageTitle = "Client Meeting";
 
   return (
     <div className="p-6 space-y-5">
@@ -786,7 +776,7 @@ export default function CoachingClientMeeting({ mode = "clientMeeting" }: Coachi
                             onClick={() => {
                               if (!selectedMeetingId) return;
                               if (!window.confirm("Delete this meeting? This cannot be undone.")) return;
-                              deleteMutation.mutate({ id: selectedMeetingId, tenantSlug, mode: meetingMode });
+                              deleteMutation.mutate({ id: selectedMeetingId, tenantSlug });
                             }}
                           >
                             <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete

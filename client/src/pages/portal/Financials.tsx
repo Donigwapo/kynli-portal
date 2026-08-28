@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { FINANCIAL_SUMMARY_MAX_LENGTH } from "@shared/financialSummary";
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const TEAL = "oklch(0.75 0.15 192)";
@@ -1685,13 +1686,13 @@ export default function Financials() {
                         value={cameronSummary}
                         onChange={(e) => setCameronSummary(e.target.value)}
                         onBlur={handleSummaryBlurSnapshot}
-                        maxLength={10000}
+                        maxLength={FINANCIAL_SUMMARY_MAX_LENGTH}
                         className="w-full min-h-[160px] bg-muted/30 border-border/70"
                         placeholder="Cameron's financial summary"
                       />
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>This summary will be visible in the saved financial period after approval.</span>
-                        <span>{cameronSummary.length.toLocaleString()} / 10,000</span>
+                        <span>{cameronSummary.length.toLocaleString()} / {FINANCIAL_SUMMARY_MAX_LENGTH.toLocaleString()}</span>
                       </div>
                       {historyWarning && <p className="text-xs text-amber-300">{historyWarning}</p>}
                     </div>

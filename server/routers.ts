@@ -10,6 +10,12 @@ import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
 import { PACKAGE_TIERS, TAB_ACCESS, PACKAGE_LABELS, type PackageTier } from "../shared/tiers";
 import {
+  COACHING_TRIGGERS,
+  COACHING_TRIGGER_KEYS,
+  type CoachingTriggerKey,
+} from "../shared/coachingTriggers";
+import { FINANCIAL_SUMMARY_MAX_LENGTH } from "../shared/financialSummary";
+import {
   getTeamMembersDb,
   addTeamMemberDb,
   deleteTeamMemberDb,
@@ -78,8 +84,6 @@ import {
   upsertPortalTenant,
   provisionTenant,
   upsertSalesTracker,
-  getCoachingNote,
-  upsertCoachingNote,
   getLineItemsByYear,
   getChatMessages,
   getChatUnreadCount,
@@ -129,12 +133,12 @@ import {
   deleteClientMeeting,
   replaceClientMeetingActionItems,
   updateClientMeetingActionItemStatus,
-  listCoachingNextSteps,
-  createCoachingNextStep,
-  updateCoachingNextStep,
-  deleteCoachingNextStep,
-  type CoachingNextStepStatus,
-  type CoachingNextStepPriority,
+  getLatestCfoTriggerSnapshot,
+  listCoachingPriorities,
+  createCoachingPriority,
+  updateCoachingPriorityCompletion,
+  deleteCoachingPriority,
+  reorderCoachingPriorities,
   type WorkspaceNote,
   type WorkspaceNoteCategory,
   type WorkspaceNoteComment,
@@ -349,7 +353,7 @@ const createSummaryVersionRecord = async (args: {
   if (!normalizedSummary) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Summary is required." });
   }
-  if (normalizedSummary.length > 10_000) {
+  if (normalizedSummary.length > FINANCIAL_SUMMARY_MAX_LENGTH) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Summary is too long." });
   }
 
@@ -861,18 +865,12 @@ const INTERNAL_NOTES_ALLOWED_ROLES = new Set<PortalUser["role"]>([
   "accountant",
 ]);
 
-const MEETING_MODE_VALUES = ["client_meeting", "check_in_call"] as const;
+const MEETING_MODE_VALUES = ["client_meeting"] as const;
 const meetingModeSchema = z.enum(MEETING_MODE_VALUES);
 
-function resolveMeetingMode(mode?: string | null): ClientMeetingMode {
-  return mode === "check_in_call" ? "check_in_call" : "client_meeting";
+function resolveMeetingMode(_mode?: string | null): ClientMeetingMode {
+  return "client_meeting";
 }
-
-const NEXT_STEP_STATUS_VALUES = ["not_started", "in_progress", "waiting", "blocked", "completed"] as const;
-const nextStepStatusSchema = z.enum(NEXT_STEP_STATUS_VALUES);
-
-const NEXT_STEP_PRIORITY_VALUES = ["low", "medium", "high", "urgent"] as const;
-const nextStepPrioritySchema = z.enum(NEXT_STEP_PRIORITY_VALUES);
 
 function isStaffActor(user: PortalUser): boolean {
   return user.role !== "client";
@@ -2781,7 +2779,7 @@ export const appRouter = router({
           budget: z.number().finite().nullable(),
         })),
         specialTotals: SpecialTotalsSchema,
-        financialSummary: z.string().max(10000),
+        financialSummary: z.string().max(FINANCIAL_SUMMARY_MAX_LENGTH),
         notes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
@@ -2970,7 +2968,7 @@ export const appRouter = router({
           budget: z.number().finite().nullable(),
         })),
         specialTotals: SpecialTotalsSchema,
-        financialSummary: z.string().max(10000),
+        financialSummary: z.string().max(FINANCIAL_SUMMARY_MAX_LENGTH),
         notes: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
@@ -3221,7 +3219,7 @@ export const appRouter = router({
     createSummaryVersion: protectedProcedure
       .input(z.object({
         importId: z.string().uuid(),
-        summary: z.string().max(10000),
+        summary: z.string().max(FINANCIAL_SUMMARY_MAX_LENGTH),
         changeSource: SummaryVersionSourceSchema.exclude(["initial_extraction"]),
         changeNote: z.string().max(500).optional(),
         restoredFromVersionId: z.string().uuid().optional(),
@@ -3313,7 +3311,7 @@ export const appRouter = router({
         month: z.number().int().min(1).max(12).optional(),
         year: z.number().int().min(2000).max(2100).optional(),
         instruction: z.string().max(2000),
-        currentSummary: z.string().max(10000),
+        currentSummary: z.string().max(FINANCIAL_SUMMARY_MAX_LENGTH),
         incomeSources: z.array(z.object({
           id: z.string().optional(),
           category: z.string(),
@@ -3352,7 +3350,7 @@ export const appRouter = router({
         }
 
         const currentSummary = String(input.currentSummary ?? "");
-        if (currentSummary.length > 10000) {
+        if (currentSummary.length > FINANCIAL_SUMMARY_MAX_LENGTH) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Current summary is too long." });
         }
 
@@ -3588,7 +3586,7 @@ export const appRouter = router({
             source: mode === "edit_published" ? "published_financial_summary_edit" : "financial_import_review",
             mode,
             requested_at: new Date().toISOString(),
-            summary_character_limit: 10000,
+            summary_character_limit: FINANCIAL_SUMMARY_MAX_LENGTH,
             instruction_character_limit: 2000,
           },
         };
@@ -3651,7 +3649,7 @@ export const appRouter = router({
           if (!normalizedRevised) {
             throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service returned an empty revision." });
           }
-          if (normalizedRevised.length > 10000) {
+          if (normalizedRevised.length > FINANCIAL_SUMMARY_MAX_LENGTH) {
             throw new TRPCError({ code: "BAD_GATEWAY", message: "AI summary service returned a revision that is too long." });
           }
 
@@ -5480,6 +5478,159 @@ export const appRouter = router({
   }),
 
   coaching: router({
+    triggerMonitorLatest: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
+
+        const financialByKey = new Map<string, any>();
+        const rawTriggers = Array.isArray((latest as any)?.triggers) ? ((latest as any).triggers as Array<any>) : [];
+        for (const row of rawTriggers) {
+          const key = String(row?.trigger_key || "").trim() as CoachingTriggerKey;
+          if (!COACHING_TRIGGER_KEYS.includes(key)) continue;
+          financialByKey.set(key, row);
+        }
+
+        const items = COACHING_TRIGGERS
+          .slice()
+          .sort((a, b) => a.order - b.order)
+          .map((def) => {
+            if (def.source_type === "operational") {
+              return {
+                trigger_key: def.trigger_key,
+                label: def.label,
+                order: def.order,
+                source_type: def.source_type,
+                status: "unknown" as const,
+                display_value: "Not enough data",
+                actual_value: null,
+                threshold_value: null,
+                reason: "Operational evidence has not yet been evaluated.",
+                source_report: null,
+                source_field: null,
+                evidence: null,
+              };
+            }
+
+            const row = financialByKey.get(def.trigger_key);
+            const statusRaw = String(row?.status || "unknown").trim().toLowerCase();
+            const status = statusRaw === "triggered" || statusRaw === "clear" || statusRaw === "unknown"
+              ? statusRaw
+              : "unknown";
+
+            return {
+              trigger_key: def.trigger_key,
+              label: def.label,
+              order: def.order,
+              source_type: def.source_type,
+              status,
+              display_value: row?.display_value == null || String(row.display_value).trim() === ""
+                ? (status === "unknown" ? "Not enough data" : "—")
+                : String(row.display_value),
+              actual_value: row?.actual_value ?? null,
+              threshold_value: row?.threshold_value ?? null,
+              reason: row?.reason ?? null,
+              source_report: row?.source_report ?? null,
+              source_field: row?.source_field ?? null,
+              evidence: row?.evidence ?? null,
+            };
+          });
+
+        const totals = items.reduce((acc, item) => {
+          if (item.status === "triggered") acc.triggered += 1;
+          else if (item.status === "clear") acc.clear += 1;
+          else acc.unknown += 1;
+          return acc;
+        }, { total: items.length, triggered: 0, clear: 0, unknown: 0 });
+
+        return {
+          tenantSlug: slug,
+          latestSnapshot: latest ? {
+            id: (latest as any).id,
+            periodYear: Number((latest as any).period_year),
+            periodMonth: Number((latest as any).period_month),
+            reportMonthLabel: (latest as any).report_month_label ?? null,
+            triggerEngineVersion: (latest as any).trigger_engine_version,
+            sourceImportId: (latest as any).source_import_id ?? null,
+            receivedAt: (latest as any).received_at,
+          } : null,
+          summary: totals,
+          items,
+        };
+      }),
+    prioritiesList: protectedProcedure
+      .input(z.object({ year: z.number().int().min(2000).max(2100), tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        return listCoachingPriorities(slug, input.year);
+      }),
+    prioritiesCreate: protectedProcedure
+      .input(z.object({
+        year: z.number().int().min(2000).max(2100),
+        title: z.string().min(1),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create priorities." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const existing = await listCoachingPriorities(slug, input.year);
+        const sortOrder = existing.filter((i) => !i.completed).length;
+        const row = await createCoachingPriority({
+          tenant_slug: slug,
+          year: input.year,
+          title: input.title,
+          created_by_user_id: Number(ctx.user.id) || null,
+          sort_order: sortOrder,
+        });
+        return { success: true, item: row };
+      }),
+    prioritiesToggle: protectedProcedure
+      .input(z.object({ id: z.string().uuid(), completed: z.boolean(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot update priorities." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const row = await updateCoachingPriorityCompletion({
+          tenant_slug: slug,
+          id: input.id,
+          completed: input.completed,
+        });
+        return { success: true, item: row };
+      }),
+    prioritiesDelete: protectedProcedure
+      .input(z.object({ id: z.string().uuid(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete priorities." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        await deleteCoachingPriority(slug, input.id);
+        return { success: true };
+      }),
+    prioritiesReorder: protectedProcedure
+      .input(z.object({
+        year: z.number().int().min(2000).max(2100),
+        itemIds: z.array(z.string().uuid()).min(1),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot reorder priorities." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        await reorderCoachingPriorities({ tenant_slug: slug, year: input.year, item_ids: input.itemIds });
+        return { success: true };
+      }),
     list: protectedProcedure
       .input(z.object({ year: z.number().optional(), quarter: z.number().optional(), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
@@ -5534,38 +5685,14 @@ export const appRouter = router({
         await deleteCoachingItem(input.tenantSlug, input.id);
         return { success: true };
       }),
-    getNote: protectedProcedure
-      .input(z.object({ year: z.number(), quarter: z.number(), tenantSlug: z.string().optional() }))
-      .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        return getCoachingNote(slug, input.year, input.quarter);
-      }),
-    saveNote: protectedProcedure
-      .input(z.object({ year: z.number(), quarter: z.number(), content: z.string(), tenantSlug: z.string().optional() }))
-      .mutation(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug);
-        await upsertCoachingNote(slug, input.year, input.quarter, input.content);
-        return { success: true };
-      }),
-    nextStepsList: protectedProcedure
-      .input(z.object({ year: z.number().int().min(2000).max(2100), quarter: z.number().int().min(1).max(4), tenantSlug: z.string().optional() }))
-      .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
-        return listCoachingNextSteps(slug, input.year, input.quarter);
-      }),
     overviewTasks: protectedProcedure
       .input(z.object({ year: z.number().int().min(2000).max(2100), quarter: z.number().int().min(1).max(4), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
-        const [deepDiveSteps, clientMeetings, checkInMeetings, tenantMembers] = await Promise.all([
-          listCoachingNextSteps(slug, input.year, input.quarter),
+        const [clientMeetings, tenantMembers] = await Promise.all([
           listClientMeetings(slug, "client_meeting"),
-          listClientMeetings(slug, "check_in_call"),
           listTenantMembers(slug),
         ]);
 
@@ -5577,8 +5704,8 @@ export const appRouter = router({
         type OverviewTask = {
           id: string;
           title: string;
-          source: "deep_dive" | "client_meeting" | "check_in_call";
-          sourceLabel: "Deep Dive" | "Client Meeting" | "Check-in Calls";
+          source: "client_meeting";
+          sourceLabel: "Client Meeting";
           dueDate: string | null;
           assignedToUserId: number | null;
           assignedToName: string | null;
@@ -5592,30 +5719,10 @@ export const appRouter = router({
         let order = 0;
         const tasks: OverviewTask[] = [];
 
-        for (const step of deepDiveSteps) {
-          if (step.status === "completed") continue;
-          const normalizedStatus: "open" | "in_progress" = step.status === "in_progress" ? "in_progress" : "open";
-          const dueDate = step.due_date ? String(step.due_date).slice(0, 10) : null;
-          const assignedToUserId = step.assigned_to != null ? Number(step.assigned_to) : null;
-          tasks.push({
-            id: `deep_dive:${step.id}`,
-            title: String(step.title || "Untitled task"),
-            source: "deep_dive",
-            sourceLabel: "Deep Dive",
-            dueDate,
-            assignedToUserId,
-            assignedToName: assignedToUserId != null ? (assigneeById.get(assignedToUserId) || "Former member") : null,
-            status: normalizedStatus,
-            isAssignedToCurrentUser: assignedToUserId != null && assignedToUserId === Number(ctx.user.id),
-            isOverdue: !!(dueDate && dueDate < today),
-            originalOrder: order++,
-          });
-        }
-
         async function appendMeetingTasks(
           meetings: Array<{ id: number }>,
-          source: "client_meeting" | "check_in_call",
-          sourceLabel: "Client Meeting" | "Check-in Calls",
+          source: "client_meeting",
+          sourceLabel: "Client Meeting",
         ) {
           const grouped = await Promise.all(meetings.map(async (meeting) => ({
             meetingId: meeting.id,
@@ -5648,7 +5755,6 @@ export const appRouter = router({
         }
 
         await appendMeetingTasks(clientMeetings, "client_meeting", "Client Meeting");
-        await appendMeetingTasks(checkInMeetings, "check_in_call", "Check-in Calls");
 
         const prioritized = [...tasks].sort((a, b) => {
           if (a.isAssignedToCurrentUser !== b.isAssignedToCurrentUser) return a.isAssignedToCurrentUser ? -1 : 1;
@@ -5676,122 +5782,6 @@ export const appRouter = router({
             isOverdue: task.isOverdue,
           })),
         };
-      }),
-    nextStepsCreate: protectedProcedure
-      .input(z.object({
-        year: z.number().int().min(2000).max(2100),
-        quarter: z.number().int().min(1).max(4),
-        tenantSlug: z.string().optional(),
-        title: z.string().min(1),
-        description: z.string().optional().nullable(),
-        status: nextStepStatusSchema.optional(),
-        priority: nextStepPrioritySchema.optional(),
-        assignedTo: z.number().int().optional().nullable(),
-        dueDate: z.string().optional().nullable(),
-        sortOrder: z.number().int().optional(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        if (!isStaffActor(ctx.user)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create next steps." });
-        }
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
-        if (input.assignedTo != null) {
-          await assertUserBelongsToTenantWorkspaceMember(slug, Number(input.assignedTo));
-        }
-        const row = await createCoachingNextStep({
-          tenant_slug: slug,
-          year: input.year,
-          quarter: input.quarter,
-          title: input.title,
-          description: input.description ?? null,
-          status: input.status as CoachingNextStepStatus | undefined,
-          priority: input.priority as CoachingNextStepPriority | undefined,
-          assigned_to: input.assignedTo ?? null,
-          due_date: input.dueDate ?? null,
-          sort_order: input.sortOrder,
-          created_by: ctx.user.id,
-        });
-        return { success: true, item: row };
-      }),
-    nextStepsUpdate: protectedProcedure
-      .input(z.object({
-        id: z.number().int(),
-        tenantSlug: z.string().optional(),
-        title: z.string().min(1).optional(),
-        description: z.string().optional().nullable(),
-        status: nextStepStatusSchema.optional(),
-        priority: nextStepPrioritySchema.optional(),
-        assignedTo: z.number().int().optional().nullable(),
-        dueDate: z.string().optional().nullable(),
-        sortOrder: z.number().int().optional(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
-
-        const isStaff = isStaffActor(ctx.user);
-        if (!isStaff) {
-          const hasRestrictedPatch =
-            input.title !== undefined ||
-            input.description !== undefined ||
-            input.priority !== undefined ||
-            input.assignedTo !== undefined ||
-            input.dueDate !== undefined ||
-            input.sortOrder !== undefined;
-          if (hasRestrictedPatch) {
-            throw new TRPCError({ code: "FORBIDDEN", message: "Clients can only update status." });
-          }
-          if (input.status === undefined) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "Status is required." });
-          }
-        }
-
-        if (input.assignedTo !== undefined && input.assignedTo !== null) {
-          await assertUserBelongsToTenantWorkspaceMember(slug, Number(input.assignedTo));
-        }
-
-        const row = await updateCoachingNextStep({
-          tenant_slug: slug,
-          id: input.id,
-          title: input.title,
-          description: input.description,
-          status: input.status as CoachingNextStepStatus | undefined,
-          priority: input.priority as CoachingNextStepPriority | undefined,
-          assigned_to: input.assignedTo,
-          due_date: input.dueDate,
-          sort_order: input.sortOrder,
-          completed_by: input.status === undefined ? undefined : (input.status === "completed" ? ctx.user.id : null),
-        });
-        return { success: true, item: row };
-      }),
-    nextStepsDelete: protectedProcedure
-      .input(z.object({ id: z.number().int(), tenantSlug: z.string().optional() }))
-      .mutation(async ({ ctx, input }) => {
-        if (!isStaffActor(ctx.user)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete next steps." });
-        }
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
-        await deleteCoachingNextStep(slug, input.id);
-        return { success: true };
-      }),
-    nextStepsReorder: protectedProcedure
-      .input(z.object({
-        tenantSlug: z.string().optional(),
-        itemIds: z.array(z.number().int()).min(1),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        if (!isStaffActor(ctx.user)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot reorder next steps." });
-        }
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
-        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
-        const updates = input.itemIds.map((id, idx) =>
-          updateCoachingNextStep({ tenant_slug: slug, id, sort_order: idx }),
-        );
-        await Promise.all(updates);
-        return { success: true };
       }),
     meetingsList: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))

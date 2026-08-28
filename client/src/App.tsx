@@ -17,9 +17,8 @@ import Profile from "./pages/portal/Profile";
 import Financials from "./pages/portal/Financials";
 import Reports from "./pages/portal/Reports";
 import Documents from "./pages/portal/Documents";
-import Coaching from "./pages/portal/Coaching";
+import CoachingDashboard from "./pages/portal/CoachingDashboard";
 import CoachingClientMeeting from "./pages/portal/CoachingClientMeeting";
-import CoachingCheckInCalls from "./pages/portal/CoachingCheckInCalls";
 import CoachingClientMeetingDetail from "./pages/portal/CoachingClientMeetingDetail";
 import KpiDashboard from "./pages/portal/KpiDashboard";
 import TimeIntelligence from "./pages/portal/TimeIntelligence";
@@ -83,11 +82,9 @@ function Router() {
       <Route path="/portal/financials"   component={() => <PortalRoute component={Financials}       featureKey="financials" />} />
       <Route path="/portal/reports"      component={() => <PortalRoute component={Reports}          featureKey="reports" />} />
       <Route path="/portal/documents"    component={() => <PortalRoute component={Documents}        featureKey="documents" />} />
-      <Route path="/portal/coaching"     component={() => <PortalRoute component={Coaching}         featureKey="coaching" />} />
-      <Route path="/portal/coaching/deep-dive" component={() => <PortalRoute component={Coaching} featureKey="coaching" />} />
+      <Route path="/portal/coaching"     component={() => <PortalRoute component={CoachingDashboard} featureKey="coaching" />} />
       <Route path="/portal/coaching/client-meeting" component={() => <PortalRoute component={CoachingClientMeeting} featureKey="coaching" />} />
       <Route path="/portal/coaching/client-meeting/:meetingId" component={() => <PortalRoute component={CoachingClientMeetingDetail} featureKey="coaching" />} />
-      <Route path="/portal/coaching/check-in-calls" component={() => <PortalRoute component={CoachingCheckInCalls} featureKey="coaching" />} />
       <Route path="/portal/kpi"          component={() => <PortalRoute component={KpiDashboard}     featureKey="kpi_dashboard" />} />
       <Route path="/portal/time"         component={() => <PortalRoute component={TimeIntelligence} featureKey="time_intelligence" />} />
       <Route path="/portal/sales"        component={() => <PortalRoute component={SalesTracker}     featureKey="sales_tracker" />} />

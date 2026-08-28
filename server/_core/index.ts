@@ -6,9 +6,11 @@ import cookieParser from "cookie-parser";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerAuthRoutes } from "../auth";
 import { appRouter } from "../routers";
+import { FINANCIAL_SUMMARY_MAX_LENGTH } from "../../shared/financialSummary";
 import { supabase } from "../supabase";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { handleCoachingTriggersWebhook } from "../webhooks/coachingTriggers";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -125,26 +127,73 @@ async function startServer() {
   // Supabase email+password auth routes
   registerAuthRoutes(app);
 
+  app.post("/api/webhooks/coaching-triggers", express.json({ limit: "256kb" }), async (req, res) => {
+    try {
+      await handleCoachingTriggersWebhook(req, res);
+    } catch {
+      if (!res.headersSent) {
+        res.status(500).json({ received: false });
+      }
+    }
+  });
+
   app.post("/api/financials/import-result", express.json({ limit: "256kb" }), async (req, res) => {
     try {
       const secretHeader = String(req.header("X-Kynli-Webhook-Secret") || "").trim();
       const expectedSecret = String(process.env.N8N_FINANCIAL_IMPORT_WEBHOOK_SECRET || "").trim();
 
+      const reject400 = (reason: string, context?: Record<string, unknown>) => {
+        console.warn("[financial-import-result] rejected", {
+          reason,
+          ...(context || {}),
+        });
+        return res.status(400).json({ received: false });
+      };
+
       if (!expectedSecret || !secretHeader || secretHeader !== expectedSecret) {
+        console.warn("[financial-import-result] rejected", {
+          reason: "authentication_failed",
+        });
         return res.status(401).json({ received: false });
       }
 
       if (!req.is("application/json")) {
-        return res.status(400).json({ received: false });
+        return reject400("invalid_body_shape", { contentType: req.header("content-type") || null });
       }
 
       const body = req.body as Record<string, unknown>;
       const importId = typeof body.import_id === "string" ? body.import_id.trim() : "";
       const status = typeof body.status === "string" ? body.status.trim().toLowerCase() : "";
+      const businessSlug = typeof body.business_slug === "string" ? body.business_slug.trim() : "";
+      const month = body.month;
+      const year = body.year;
+      const hasFinancialSummaryField = Object.prototype.hasOwnProperty.call(body, "financial_summary");
+      const financialSummaryRaw = body.financial_summary;
+      const financialSummaryLength = typeof financialSummaryRaw === "string" ? financialSummaryRaw.trim().length : null;
+
+      console.info("[financial-import-result] request_summary", {
+        importId: importId || null,
+        businessSlug: businessSlug || null,
+        status: status || null,
+        month: typeof month === "number" || typeof month === "string" ? month : null,
+        year: typeof year === "number" || typeof year === "string" ? year : null,
+        hasIncomeSources: Array.isArray(body.income_sources),
+        incomeSourceCount: Array.isArray(body.income_sources) ? body.income_sources.length : null,
+        hasExpenses: Array.isArray(body.expenses),
+        expenseCount: Array.isArray(body.expenses) ? body.expenses.length : null,
+        hasSpecialTotals: body.special_totals != null,
+        hasFinancialSummary: hasFinancialSummaryField,
+        financialSummaryLength,
+        hasNotes: Object.prototype.hasOwnProperty.call(body, "notes"),
+      });
 
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
       if (!importId || !uuidRegex.test(importId)) {
-        return res.status(400).json({ received: false });
+        return reject400("missing_import_id", {
+          importId: importId || null,
+          businessSlug: businessSlug || null,
+          status: status || null,
+        });
       }
 
       const { data: job, error: jobError } = await supabase
@@ -181,21 +230,38 @@ async function startServer() {
       }
 
       if (status !== "completed") {
-        return res.status(400).json({ received: false });
+        return reject400("invalid_status", {
+          importId,
+          businessSlug: businessSlug || null,
+          status: status || null,
+        });
       }
-
-      const businessSlug = typeof body.business_slug === "string" ? body.business_slug.trim() : "";
-      const month = body.month;
-      const year = body.year;
 
       if (!businessSlug || businessSlug !== String(job.tenant_slug || "")) {
-        return res.status(400).json({ received: false });
+        return reject400("tenant_mismatch", {
+          importId,
+          businessSlug: businessSlug || null,
+          status,
+          jobTenantSlug: String(job.tenant_slug || "") || null,
+        });
       }
       if (typeof month !== "number" || !Number.isInteger(month) || month !== Number(job.month)) {
-        return res.status(400).json({ received: false });
+        return reject400("period_mismatch", {
+          importId,
+          businessSlug,
+          status,
+          receivedMonth: month ?? null,
+          expectedMonth: Number(job.month),
+        });
       }
       if (typeof year !== "number" || !Number.isInteger(year) || year !== Number(job.year)) {
-        return res.status(400).json({ received: false });
+        return reject400("period_mismatch", {
+          importId,
+          businessSlug,
+          status,
+          receivedYear: year ?? null,
+          expectedYear: Number(job.year),
+        });
       }
 
       let incomeSources: Array<{ category: string; actual: number | null; budget: number | null }>;
@@ -203,20 +269,26 @@ async function startServer() {
       let specialTotals: SpecialTotalsShape;
       try {
         incomeSources = normalizeCallbackRows(body.income_sources);
+      } catch {
+        return reject400("invalid_income_sources", { importId, businessSlug, status });
+      }
+      try {
         expenses = normalizeCallbackRows(body.expenses);
+      } catch {
+        return reject400("invalid_expenses", { importId, businessSlug, status });
+      }
+      try {
         specialTotals = normalizeSpecialTotalsFromCallback(body.special_totals);
       } catch {
-        return res.status(400).json({ received: false });
+        return reject400("invalid_special_totals", { importId, businessSlug, status });
       }
 
       const notesRaw = body.notes;
       const notes = notesRaw == null ? null : (typeof notesRaw === "string" ? notesRaw : undefined);
       if (notesRaw !== undefined && notes === undefined) {
-        return res.status(400).json({ received: false });
+        return reject400("invalid_notes", { importId, businessSlug, status });
       }
 
-      const hasFinancialSummaryField = Object.prototype.hasOwnProperty.call(body, "financial_summary");
-      const financialSummaryRaw = body.financial_summary;
       const financialSummaryType = financialSummaryRaw === null ? "null" : typeof financialSummaryRaw;
       const financialSummary =
         financialSummaryRaw == null
@@ -232,17 +304,23 @@ async function startServer() {
           financialSummaryType,
           normalizedFinancialSummaryLength: null,
         });
-        return res.status(400).json({ received: false });
-      }
-      if (financialSummary.length > 10_000) {
-        console.info("[financials.import-result] financial_summary too long", {
+        return reject400("invalid_financial_summary", {
           importId,
+          businessSlug,
           status,
-          hasFinancialSummaryField,
-          financialSummaryType,
-          normalizedFinancialSummaryLength: financialSummary.length,
+          financialSummaryLength: null,
+          maxAllowedLength: FINANCIAL_SUMMARY_MAX_LENGTH,
         });
-        return res.status(400).json({ received: false });
+      }
+      if (financialSummary.length > FINANCIAL_SUMMARY_MAX_LENGTH) {
+        console.info("[financials.import-result] financial_summary too long", {
+          financialSummaryLength: financialSummary.length,
+          maxAllowedLength: FINANCIAL_SUMMARY_MAX_LENGTH,
+        });
+        return reject400("invalid_financial_summary", {
+          financialSummaryLength: financialSummary.length,
+          maxAllowedLength: FINANCIAL_SUMMARY_MAX_LENGTH,
+        });
       }
 
       const normalized = {

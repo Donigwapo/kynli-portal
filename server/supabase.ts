@@ -3224,159 +3224,6 @@ export async function deleteFocusArea(slug: string, id: number): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-// ─── Coaching Notes (free-text per quarter) ───────────────────────────────────
-
-export type CoachingNote = {
-  id: number;
-  year: number;
-  quarter: number;
-  content: string;
-  created_at?: string;
-  updated_at?: string;
-};
-
-export type CoachingNextStepStatus = "not_started" | "in_progress" | "waiting" | "blocked" | "completed";
-export type CoachingNextStepPriority = "low" | "medium" | "high" | "urgent";
-
-export type CoachingNextStep = {
-  id: number;
-  tenant_slug: string;
-  quarter: number;
-  year: number;
-  title: string;
-  description: string | null;
-  status: CoachingNextStepStatus;
-  priority: CoachingNextStepPriority;
-  assigned_to: number | null;
-  due_date: string | null;
-  completed_at: string | null;
-  completed_by: number | null;
-  sort_order: number;
-  created_by: number | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export async function getCoachingNote(slug: string, year: number, quarter: number): Promise<CoachingNote | null> {
-  const { data, error } = await supabase
-    .from(`${slug}_coaching_notes`)
-    .select("*")
-    .eq("year", year)
-    .eq("quarter", quarter)
-    .single();
-  if (error || !data) return null;
-  return data as CoachingNote;
-}
-
-export async function upsertCoachingNote(slug: string, year: number, quarter: number, content: string): Promise<void> {
-  const { error } = await supabase
-    .from(`${slug}_coaching_notes`)
-    .upsert({ year, quarter, content, updated_at: new Date().toISOString() }, { onConflict: "year,quarter" });
-  if (error) throw new Error(error.message);
-}
-
-// ─── Coaching Next Steps ──────────────────────────────────────────────────────
-
-export async function listCoachingNextSteps(tenantSlug: string, year: number, quarter: number): Promise<CoachingNextStep[]> {
-  const { data, error } = await supabase
-    .from("coaching_next_steps")
-    .select("*")
-    .eq("tenant_slug", tenantSlug)
-    .eq("year", year)
-    .eq("quarter", quarter)
-    .order("sort_order", { ascending: true })
-    .order("id", { ascending: true });
-  if (error) throw new Error(error.message);
-  return (data || []) as CoachingNextStep[];
-}
-
-export async function createCoachingNextStep(input: {
-  tenant_slug: string;
-  quarter: number;
-  year: number;
-  title: string;
-  description?: string | null;
-  status?: CoachingNextStepStatus;
-  priority?: CoachingNextStepPriority;
-  assigned_to?: number | null;
-  due_date?: string | null;
-  sort_order?: number;
-  created_by?: number | null;
-}): Promise<CoachingNextStep> {
-  const payload = {
-    tenant_slug: input.tenant_slug,
-    quarter: input.quarter,
-    year: input.year,
-    title: input.title,
-    description: input.description ?? null,
-    status: input.status ?? "not_started",
-    priority: input.priority ?? "medium",
-    assigned_to: input.assigned_to ?? null,
-    due_date: input.due_date ?? null,
-    sort_order: input.sort_order ?? 0,
-    created_by: input.created_by ?? null,
-  };
-
-  const { data, error } = await supabase
-    .from("coaching_next_steps")
-    .insert(payload)
-    .select("*")
-    .single();
-  if (error || !data) throw new Error(error?.message || "Failed to create coaching next step");
-  return data as CoachingNextStep;
-}
-
-export async function updateCoachingNextStep(input: {
-  tenant_slug: string;
-  id: number;
-  title?: string;
-  description?: string | null;
-  status?: CoachingNextStepStatus;
-  priority?: CoachingNextStepPriority;
-  assigned_to?: number | null;
-  due_date?: string | null;
-  sort_order?: number;
-  completed_by?: number | null;
-}): Promise<CoachingNextStep> {
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
-
-  if (input.title !== undefined) patch.title = input.title;
-  if (input.description !== undefined) patch.description = input.description;
-  if (input.priority !== undefined) patch.priority = input.priority;
-  if (input.assigned_to !== undefined) patch.assigned_to = input.assigned_to;
-  if (input.due_date !== undefined) patch.due_date = input.due_date;
-  if (input.sort_order !== undefined) patch.sort_order = input.sort_order;
-  if (input.status !== undefined) {
-    patch.status = input.status;
-    if (input.status === "completed") {
-      patch.completed_at = new Date().toISOString();
-      patch.completed_by = input.completed_by ?? null;
-    } else {
-      patch.completed_at = null;
-      patch.completed_by = null;
-    }
-  }
-
-  const { data, error } = await supabase
-    .from("coaching_next_steps")
-    .update(patch)
-    .eq("tenant_slug", input.tenant_slug)
-    .eq("id", input.id)
-    .select("*")
-    .single();
-  if (error || !data) throw new Error(error?.message || "Failed to update coaching next step");
-  return data as CoachingNextStep;
-}
-
-export async function deleteCoachingNextStep(tenantSlug: string, id: number): Promise<void> {
-  const { error } = await supabase
-    .from("coaching_next_steps")
-    .delete()
-    .eq("tenant_slug", tenantSlug)
-    .eq("id", id);
-  if (error) throw new Error(error.message);
-}
-
 // ─── Tenant Provisioning ──────────────────────────────────────────────────────
 
 export type ProvisionResult = {
@@ -4238,6 +4085,235 @@ export async function updateClientMeetingActionItemStatus(input: {
     .single();
   if (error) throw new Error(error.message);
   return data as ClientMeetingActionItem;
+}
+
+export type CfoTriggerSnapshot = {
+  id: string;
+  tenant_slug: string;
+  period_year: number;
+  period_month: number;
+  report_month_label: string | null;
+  trigger_engine_version: string;
+  source_import_id: string | null;
+  source_document_id: string | null;
+  snapshot_source: "financial_pdf" | "operational";
+  metrics_used: Record<string, unknown>;
+  trigger_summary: Record<string, unknown>;
+  triggered_keys: string[];
+  clear_keys: string[];
+  unknown_keys: string[];
+  triggers: Array<Record<string, unknown>>;
+  raw_payload: Record<string, unknown>;
+  received_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function upsertCfoTriggerSnapshot(input: {
+  tenant_slug: string;
+  period_year: number;
+  period_month: number;
+  report_month_label?: string | null;
+  trigger_engine_version: string;
+  source_import_id?: string | null;
+  source_document_id?: string | null;
+  snapshot_source?: "financial_pdf" | "operational";
+  metrics_used?: Record<string, unknown>;
+  trigger_summary?: Record<string, unknown>;
+  triggered_keys?: string[];
+  clear_keys?: string[];
+  unknown_keys?: string[];
+  triggers?: Array<Record<string, unknown>>;
+  raw_payload: Record<string, unknown>;
+  received_at?: string;
+}): Promise<CfoTriggerSnapshot> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const snapshotSource = input.snapshot_source ?? "financial_pdf";
+  const receivedAt = input.received_at ?? new Date().toISOString();
+
+  let existing: { id: string } | null = null;
+
+  if (input.source_import_id) {
+    const { data, error } = await supabase
+      .from("cfo_trigger_snapshots")
+      .select("id")
+      .eq("source_import_id", input.source_import_id)
+      .eq("trigger_engine_version", input.trigger_engine_version)
+      .eq("snapshot_source", snapshotSource)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    existing = (data as { id: string } | null) ?? null;
+  } else {
+    const { data, error } = await supabase
+      .from("cfo_trigger_snapshots")
+      .select("id")
+      .eq("tenant_slug", safeSlug)
+      .eq("period_year", input.period_year)
+      .eq("period_month", input.period_month)
+      .eq("trigger_engine_version", input.trigger_engine_version)
+      .eq("snapshot_source", snapshotSource)
+      .is("source_import_id", null)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    existing = (data as { id: string } | null) ?? null;
+  }
+
+  const payload = {
+    tenant_slug: safeSlug,
+    period_year: input.period_year,
+    period_month: input.period_month,
+    report_month_label: input.report_month_label ?? null,
+    trigger_engine_version: input.trigger_engine_version,
+    source_import_id: input.source_import_id ?? null,
+    source_document_id: input.source_document_id ?? null,
+    snapshot_source: snapshotSource,
+    metrics_used: input.metrics_used ?? {},
+    trigger_summary: input.trigger_summary ?? {},
+    triggered_keys: input.triggered_keys ?? [],
+    clear_keys: input.clear_keys ?? [],
+    unknown_keys: input.unknown_keys ?? [],
+    triggers: input.triggers ?? [],
+    raw_payload: input.raw_payload,
+    received_at: receivedAt,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (existing?.id) {
+    const { data, error } = await supabase
+      .from("cfo_trigger_snapshots")
+      .update(payload)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error || !data) throw new Error(error?.message || "Failed to update CFO trigger snapshot");
+    return data as CfoTriggerSnapshot;
+  }
+
+  const { data, error } = await supabase
+    .from("cfo_trigger_snapshots")
+    .insert(payload)
+    .select("*")
+    .single();
+  if (error || !data) throw new Error(error?.message || "Failed to insert CFO trigger snapshot");
+  return data as CfoTriggerSnapshot;
+}
+
+export async function getLatestCfoTriggerSnapshot(
+  tenantSlug: string,
+  snapshotSource: "financial_pdf" | "operational" = "financial_pdf",
+): Promise<CfoTriggerSnapshot | null> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("cfo_trigger_snapshots")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .eq("snapshot_source", snapshotSource)
+    .order("period_year", { ascending: false })
+    .order("period_month", { ascending: false })
+    .order("received_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as CfoTriggerSnapshot | null) ?? null;
+}
+
+export type CoachingPriority = {
+  id: string;
+  tenant_slug: string;
+  year: number;
+  title: string;
+  completed: boolean;
+  sort_order: number;
+  created_by_user_id: number | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listCoachingPriorities(tenantSlug: string, year: number): Promise<CoachingPriority[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("coaching_priorities")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .eq("year", year)
+    .order("completed", { ascending: true })
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []) as CoachingPriority[];
+}
+
+export async function createCoachingPriority(input: {
+  tenant_slug: string;
+  year: number;
+  title: string;
+  created_by_user_id?: number | null;
+  sort_order?: number;
+}): Promise<CoachingPriority> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const payload = {
+    tenant_slug: safeSlug,
+    year: input.year,
+    title: input.title.trim(),
+    completed: false,
+    sort_order: input.sort_order ?? 0,
+    created_by_user_id: input.created_by_user_id ?? null,
+  };
+  const { data, error } = await supabase
+    .from("coaching_priorities")
+    .insert(payload)
+    .select("*")
+    .single();
+  if (error || !data) throw new Error(error?.message || "Failed to create coaching priority");
+  return data as CoachingPriority;
+}
+
+export async function updateCoachingPriorityCompletion(input: {
+  tenant_slug: string;
+  id: string;
+  completed: boolean;
+}): Promise<CoachingPriority> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const completedAt = input.completed ? new Date().toISOString() : null;
+  const { data, error } = await supabase
+    .from("coaching_priorities")
+    .update({ completed: input.completed, completed_at: completedAt, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", safeSlug)
+    .eq("id", input.id)
+    .select("*")
+    .single();
+  if (error || !data) throw new Error(error?.message || "Failed to update coaching priority");
+  return data as CoachingPriority;
+}
+
+export async function deleteCoachingPriority(tenantSlug: string, id: string): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { error } = await supabase
+    .from("coaching_priorities")
+    .delete()
+    .eq("tenant_slug", safeSlug)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+export async function reorderCoachingPriorities(input: {
+  tenant_slug: string;
+  year: number;
+  item_ids: string[];
+}): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const updates = input.item_ids.map((id, index) =>
+    supabase
+      .from("coaching_priorities")
+      .update({ sort_order: index, updated_at: new Date().toISOString() })
+      .eq("tenant_slug", safeSlug)
+      .eq("year", input.year)
+      .eq("id", id)
+  );
+  const results = await Promise.all(updates);
+  const failure = results.find((r) => !!r.error);
+  if (failure?.error) throw new Error(failure.error.message);
 }
 
 export type WorkspaceNoteCategory =

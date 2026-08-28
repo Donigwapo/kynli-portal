@@ -8,7 +8,7 @@ import {
 } from "recharts";
 import {
   TrendingUp, TrendingDown, DollarSign, Percent, Users,
-  ArrowUpRight, ArrowDownRight, CheckCircle2, Circle,
+  ArrowUpRight, ArrowDownRight,
   FileText, FileSpreadsheet, Image as ImageIcon, File, Clock3,
 } from "lucide-react";
 import { useState, useMemo } from "react";
@@ -77,10 +77,8 @@ function statusLabel(value?: string | null): string {
   return "Open";
 }
 
-function sourceBadgeClass(source?: string | null): string {
+function sourceBadgeClass(_source?: string | null): string {
   const base = "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium";
-  if (source === "deep_dive") return `${base} border-cyan-800/70 text-cyan-300`;
-  if (source === "check_in_call") return `${base} border-amber-800/70 text-amber-300`;
   return `${base} border-emerald-800/70 text-emerald-300`;
 }
 
@@ -139,10 +137,6 @@ export default function Overview() {
     { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
   );
   const currentQ = Math.ceil((now.getMonth() + 1) / 3);
-  const { data: coachingItems = [] } = trpc.coaching.list.useQuery(
-    { year, quarter: currentQ, tenantSlug: tslug ?? undefined },
-    { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
-  );
   const { data: rosterData = [] } = trpc.roster.list.useQuery(
     { tenantSlug: tslug ?? undefined },
     { enabled: isStaffPortfolioUser || !!tslug, staleTime: 30_000 }
@@ -241,9 +235,6 @@ export default function Overview() {
   const expVariancePct = ytdBudgetExpenses > 0 ? ((ytdExpenses / ytdBudgetExpenses) * 100 - 100) : 0;
   const profitVariancePct = ytdBudgetProfit > 0 ? ((ytdProfit / ytdBudgetProfit) * 100 - 100) : 0;
 
-  const completedGoals = coachingItems.filter(g => g.completed).length;
-  const totalGoals = coachingItems.length;
-  const goalPct = totalGoals > 0 ? (completedGoals / totalGoals) * 100 : 0;
 
   return (
     <>
@@ -352,9 +343,9 @@ export default function Overview() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-sm font-semibold text-foreground">Open Coaching Tasks</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Tasks from Deep Dive, Client Meeting, and Check-in Calls</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Active Client Meeting action items</p>
             </div>
-            <Link href="/portal/coaching" className="text-xs text-primary hover:underline">View Coaching →</Link>
+            <Link href="/portal/coaching/client-meeting" className="text-xs text-primary hover:underline">View Client Meeting →</Link>
           </div>
 
           {!(coachingOverviewTasks?.items?.length) ? (
@@ -560,7 +551,7 @@ export default function Overview() {
           )}
         </div>
 
-        {/* Revenue & Profit Trend + Active Clients by Tier + Coaching Goals */}
+        {/* Revenue & Profit Trend + Active Clients by Tier */}
         <div className="grid grid-cols-3 gap-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-semibold text-foreground mb-4">Revenue & Profit Trend</h2>
@@ -642,49 +633,6 @@ export default function Overview() {
             )}
           </div>
 
-          <div className="bg-card border border-border rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h2 className="text-sm font-semibold text-foreground">Q{currentQ} {year} — Coaching Goals</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">{completedGoals}/{totalGoals} completed</p>
-              </div>
-              <Link href="/portal/coaching" className="text-xs text-primary hover:underline">View All →</Link>
-            </div>
-            {totalGoals > 0 && (
-              <div className="mb-4">
-                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                  <div className="h-1.5 rounded-full transition-all duration-500"
-                    style={{ width: `${goalPct}%`, backgroundColor: goalPct >= 100 ? GREEN : TEAL }} />
-                </div>
-              </div>
-            )}
-            {coachingItems.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No coaching goals set for this quarter.</p>
-            ) : (
-              <ul className="space-y-2.5">
-                {coachingItems.slice(0, 6).map((goal) => (
-                  <li key={goal.id} className="flex items-start gap-2.5 text-sm">
-                    {goal.completed ? (
-                      <CheckCircle2 size={15} className="mt-0.5 shrink-0" style={{ color: TEAL }} />
-                    ) : (
-                      <Circle size={15} className="mt-0.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <div>
-                      <p className={`text-xs ${goal.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
-                        {goal.title}
-                      </p>
-                      {goal.description && (
-                        <p className="text-xs text-muted-foreground mt-0.5">{goal.description}</p>
-                      )}
-                    </div>
-                  </li>
-                ))}
-                {coachingItems.length > 6 && (
-                  <li className="text-xs text-muted-foreground pl-6">+{coachingItems.length - 6} more goals</li>
-                )}
-              </ul>
-            )}
-          </div>
         </div>
       </div>
     </>
