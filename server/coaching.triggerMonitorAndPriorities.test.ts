@@ -98,6 +98,110 @@ describe("coaching trigger monitor + priorities", () => {
     expect(latestSpy).toHaveBeenCalledWith("acme_llc", "financial_pdf");
   });
 
+  it("lists trigger periods in chronological order with latest flag", async () => {
+    const user = makeUser({ id: 1006, role: "admin", email: "admin4@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(user));
+
+    vi.spyOn(supabaseModule, "listCfoTriggerSnapshotPeriods").mockResolvedValue([
+      {
+        period_year: 2025,
+        period_month: 12,
+        report_month_label: "Dec 25",
+        trigger_engine_version: "v1",
+        received_at: "2025-12-31T00:00:00.000Z",
+        triggered_count: 3,
+        clear_count: 9,
+        unknown_count: 5,
+      },
+      {
+        period_year: 2026,
+        period_month: 1,
+        report_month_label: "Jan 26",
+        trigger_engine_version: "v1",
+        received_at: "2026-01-31T00:00:00.000Z",
+        triggered_count: 4,
+        clear_count: 8,
+        unknown_count: 5,
+      },
+      {
+        period_year: 2026,
+        period_month: 2,
+        report_month_label: "Feb 26",
+        trigger_engine_version: "v2",
+        received_at: "2026-02-20T00:00:00.000Z",
+        triggered_count: 6,
+        clear_count: 6,
+        unknown_count: 5,
+      },
+    ] as any);
+
+    const out = await caller.coaching.triggerMonitorPeriods({ tenantSlug: "acme_llc" });
+
+    expect(out.periods).toHaveLength(3);
+    expect(out.periods[0]).toMatchObject({ periodYear: 2025, periodMonth: 12, isLatest: false });
+    expect(out.periods[1]).toMatchObject({ periodYear: 2026, periodMonth: 1, isLatest: false });
+    expect(out.periods[2]).toMatchObject({ periodYear: 2026, periodMonth: 2, isLatest: true });
+  });
+
+  it("retrieves historical period and returns canonical 17-card merge", async () => {
+    const user = makeUser({ id: 1007, role: "admin", email: "admin5@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(user));
+
+    vi.spyOn(supabaseModule, "getCfoTriggerSnapshotByPeriod").mockResolvedValue({
+      id: "snap-feb",
+      tenant_slug: "acme_llc",
+      period_year: 2026,
+      period_month: 2,
+      report_month_label: "Feb 26",
+      trigger_engine_version: "phase_5_v1",
+      source_import_id: null,
+      source_document_id: null,
+      snapshot_source: "financial_pdf",
+      metrics_used: {},
+      trigger_summary: {},
+      triggered_keys: ["low_cash_balance"],
+      clear_keys: [],
+      unknown_keys: [],
+      triggers: [{ trigger_key: "low_cash_balance", status: "triggered", display_value: "$7,749" }],
+      raw_payload: {},
+      received_at: "2026-02-28T00:00:00.000Z",
+      created_at: "2026-02-28T00:00:00.000Z",
+      updated_at: "2026-02-28T00:00:00.000Z",
+    } as any);
+
+    vi.spyOn(supabaseModule, "getLatestCfoTriggerSnapshot").mockResolvedValue({
+      id: "snap-jun",
+      tenant_slug: "acme_llc",
+      period_year: 2026,
+      period_month: 6,
+      report_month_label: "Jun 26",
+      trigger_engine_version: "phase_5_v1",
+      source_import_id: null,
+      source_document_id: null,
+      snapshot_source: "financial_pdf",
+      metrics_used: {},
+      trigger_summary: {},
+      triggered_keys: [],
+      clear_keys: [],
+      unknown_keys: [],
+      triggers: [],
+      raw_payload: {},
+      received_at: "2026-06-30T00:00:00.000Z",
+      created_at: "2026-06-30T00:00:00.000Z",
+      updated_at: "2026-06-30T00:00:00.000Z",
+    } as any);
+
+    const out = await caller.coaching.triggerMonitorByPeriod({ tenantSlug: "acme_llc", periodYear: 2026, periodMonth: 2 });
+
+    expect(out.items).toHaveLength(17);
+    expect(out.selectedSnapshot?.reportMonthLabel).toBe("Feb 26");
+    expect(out.isLatest).toBe(false);
+    const triggered = out.items.find((i: any) => i.trigger_key === "low_cash_balance");
+    expect(triggered?.status).toBe("triggered");
+    const operational = out.items.find((i: any) => i.trigger_key === "churn_not_improving");
+    expect(operational?.status).toBe("unknown");
+  });
+
   it("enforces staff assignment restrictions", async () => {
     const staff = makeUser({ id: 1003, role: "accountant", email: "acct@firm.com", tenant_slug: null as any });
     const caller = appRouter.createCaller(makeCtx(staff));
@@ -106,7 +210,7 @@ describe("coaching trigger monitor + priorities", () => {
       { staff_user_id: 1003, tenant_slug: "beta_llc" },
     ] as any);
 
-    await expect(caller.coaching.triggerMonitorLatest({ tenantSlug: "acme_llc" })).rejects.toThrow(
+    await expect(caller.coaching.triggerMonitorPeriods({ tenantSlug: "acme_llc" })).rejects.toThrow(
       "Tenant is not assigned to this staff member.",
     );
   });
@@ -120,9 +224,9 @@ describe("coaching trigger monitor + priorities", () => {
     vi.spyOn(supabaseModule, "getStaffAssignments").mockResolvedValue([
       { staff_user_id: 1004, tenant_slug: "acme_llc" },
     ] as any);
-    vi.spyOn(supabaseModule, "getLatestCfoTriggerSnapshot").mockResolvedValue(null as any);
+    vi.spyOn(supabaseModule, "listCfoTriggerSnapshotPeriods").mockResolvedValue([] as any);
 
-    await expect(caller.coaching.triggerMonitorLatest({})).resolves.toMatchObject({ tenantSlug: "acme_llc" });
+    await expect(caller.coaching.triggerMonitorPeriods({})).resolves.toMatchObject({ tenantSlug: "acme_llc" });
   });
 
   it("priorities create/complete/reopen/delete are tenant-scoped", async () => {

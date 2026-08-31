@@ -4217,6 +4217,93 @@ export async function getLatestCfoTriggerSnapshot(
   return (data as CfoTriggerSnapshot | null) ?? null;
 }
 
+export type CfoTriggerSnapshotPeriod = {
+  period_year: number;
+  period_month: number;
+  report_month_label: string | null;
+  trigger_engine_version: string;
+  received_at: string;
+  triggered_count: number;
+  clear_count: number;
+  unknown_count: number;
+};
+
+export async function listCfoTriggerSnapshotPeriods(
+  tenantSlug: string,
+  snapshotSource: "financial_pdf" | "operational" = "financial_pdf",
+): Promise<CfoTriggerSnapshotPeriod[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("cfo_trigger_snapshots")
+    .select("period_year, period_month, report_month_label, trigger_engine_version, received_at, trigger_summary, triggered_keys, clear_keys, unknown_keys")
+    .eq("tenant_slug", safeSlug)
+    .eq("snapshot_source", snapshotSource)
+    .order("period_year", { ascending: true })
+    .order("period_month", { ascending: true })
+    .order("received_at", { ascending: false });
+  if (error) throw new Error(error.message);
+
+  const perMonth = new Map<string, CfoTriggerSnapshotPeriod>();
+
+  for (const row of (data || []) as Array<Record<string, unknown>>) {
+    const year = Number(row.period_year || 0);
+    const month = Number(row.period_month || 0);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) continue;
+    const key = `${year}-${month}`;
+    if (perMonth.has(key)) continue;
+
+    const summary = row.trigger_summary && typeof row.trigger_summary === "object"
+      ? (row.trigger_summary as Record<string, unknown>)
+      : {};
+
+    const triggeredKeys = Array.isArray(row.triggered_keys) ? row.triggered_keys : [];
+    const clearKeys = Array.isArray(row.clear_keys) ? row.clear_keys : [];
+    const unknownKeys = Array.isArray(row.unknown_keys) ? row.unknown_keys : [];
+
+    const triggeredCountRaw = Number(summary.triggered);
+    const clearCountRaw = Number(summary.clear);
+    const unknownCountRaw = Number(summary.unknown);
+
+    perMonth.set(key, {
+      period_year: year,
+      period_month: month,
+      report_month_label: row.report_month_label == null ? null : String(row.report_month_label),
+      trigger_engine_version: String(row.trigger_engine_version || ""),
+      received_at: String(row.received_at || ""),
+      triggered_count: Number.isFinite(triggeredCountRaw) ? triggeredCountRaw : triggeredKeys.length,
+      clear_count: Number.isFinite(clearCountRaw) ? clearCountRaw : clearKeys.length,
+      unknown_count: Number.isFinite(unknownCountRaw) ? unknownCountRaw : unknownKeys.length,
+    });
+  }
+
+  return Array.from(perMonth.values()).sort((a, b) => {
+    if (a.period_year !== b.period_year) return a.period_year - b.period_year;
+    return a.period_month - b.period_month;
+  });
+}
+
+export async function getCfoTriggerSnapshotByPeriod(
+  tenantSlug: string,
+  periodYear: number,
+  periodMonth: number,
+  snapshotSource: "financial_pdf" | "operational" = "financial_pdf",
+): Promise<CfoTriggerSnapshot | null> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("cfo_trigger_snapshots")
+    .select("*")
+    .eq("tenant_slug", safeSlug)
+    .eq("snapshot_source", snapshotSource)
+    .eq("period_year", periodYear)
+    .eq("period_month", periodMonth)
+    .order("received_at", { ascending: false })
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as CfoTriggerSnapshot | null) ?? null;
+}
+
 export type CoachingPriority = {
   id: string;
   tenant_slug: string;

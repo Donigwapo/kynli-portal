@@ -134,6 +134,8 @@ import {
   replaceClientMeetingActionItems,
   updateClientMeetingActionItemStatus,
   getLatestCfoTriggerSnapshot,
+  listCfoTriggerSnapshotPeriods,
+  getCfoTriggerSnapshotByPeriod,
   listCoachingPriorities,
   createCoachingPriority,
   updateCoachingPriorityCompletion,
@@ -195,6 +197,114 @@ function getPortalPublicBaseUrl(): string {
 }
 
 const normalizeSummaryText = (value: unknown): string => String(value ?? "").trim();
+
+const MONTH_LABELS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+function fallbackPeriodLabel(periodYear: number, periodMonth: number): string {
+  const monthName = MONTH_LABELS_SHORT[Math.max(1, Math.min(12, periodMonth)) - 1] ?? "";
+  const yy = String(periodYear).slice(-2);
+  return `${monthName} ${yy}`.trim();
+}
+
+function buildCanonicalTriggerMonitorResponse(
+  slug: string,
+  snapshot: any | null,
+  latestForTenant: any | null,
+) {
+  const financialByKey = new Map<string, any>();
+  const rawTriggers = Array.isArray(snapshot?.triggers) ? (snapshot.triggers as Array<any>) : [];
+  for (const row of rawTriggers) {
+    const key = String(row?.trigger_key || "").trim() as CoachingTriggerKey;
+    if (!COACHING_TRIGGER_KEYS.includes(key)) continue;
+    financialByKey.set(key, row);
+  }
+
+  const items = COACHING_TRIGGERS
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((def) => {
+      if (def.source_type === "operational") {
+        return {
+          trigger_key: def.trigger_key,
+          label: def.label,
+          order: def.order,
+          source_type: def.source_type,
+          status: "unknown" as const,
+          display_value: "Not enough data",
+          actual_value: null,
+          threshold_value: null,
+          reason: "Operational evidence has not yet been evaluated.",
+          source_report: null,
+          source_field: null,
+          evidence: null,
+        };
+      }
+
+      const row = financialByKey.get(def.trigger_key);
+      const statusRaw = String(row?.status || "unknown").trim().toLowerCase();
+      const status = statusRaw === "triggered" || statusRaw === "clear" || statusRaw === "unknown"
+        ? statusRaw
+        : "unknown";
+
+      return {
+        trigger_key: def.trigger_key,
+        label: def.label,
+        order: def.order,
+        source_type: def.source_type,
+        status,
+        display_value: row?.display_value == null || String(row.display_value).trim() === ""
+          ? (status === "unknown" ? "Not enough data" : "—")
+          : String(row.display_value),
+        actual_value: row?.actual_value ?? null,
+        threshold_value: row?.threshold_value ?? null,
+        reason: row?.reason ?? null,
+        source_report: row?.source_report ?? null,
+        source_field: row?.source_field ?? null,
+        evidence: row?.evidence ?? null,
+      };
+    });
+
+  const totals = items.reduce((acc, item) => {
+    if (item.status === "triggered") acc.triggered += 1;
+    else if (item.status === "clear") acc.clear += 1;
+    else acc.unknown += 1;
+    return acc;
+  }, { total: items.length, triggered: 0, clear: 0, unknown: 0 });
+
+  const selectedSnapshot = snapshot ? {
+    id: snapshot.id,
+    periodYear: Number(snapshot.period_year),
+    periodMonth: Number(snapshot.period_month),
+    reportMonthLabel: snapshot.report_month_label ?? fallbackPeriodLabel(Number(snapshot.period_year), Number(snapshot.period_month)),
+    triggerEngineVersion: snapshot.trigger_engine_version,
+    sourceImportId: snapshot.source_import_id ?? null,
+    receivedAt: snapshot.received_at,
+  } : null;
+
+  const latestSnapshot = latestForTenant ? {
+    id: latestForTenant.id,
+    periodYear: Number(latestForTenant.period_year),
+    periodMonth: Number(latestForTenant.period_month),
+    reportMonthLabel: latestForTenant.report_month_label ?? fallbackPeriodLabel(Number(latestForTenant.period_year), Number(latestForTenant.period_month)),
+    triggerEngineVersion: latestForTenant.trigger_engine_version,
+    sourceImportId: latestForTenant.source_import_id ?? null,
+    receivedAt: latestForTenant.received_at,
+  } : null;
+
+  const isLatest = !!selectedSnapshot && !!latestSnapshot
+    && selectedSnapshot.periodYear === latestSnapshot.periodYear
+    && selectedSnapshot.periodMonth === latestSnapshot.periodMonth
+    && selectedSnapshot.id === latestSnapshot.id;
+
+  return {
+    tenantSlug: slug,
+    selectedSnapshot,
+    latestSnapshot,
+    isLatest,
+    summary: totals,
+    items,
+  };
+}
 
 type FinancialSpecialTotals = {
   totalCostOfGoodsSold: { actual: number; budget: number | null };
@@ -5478,87 +5588,53 @@ export const appRouter = router({
   }),
 
   coaching: router({
+    triggerMonitorPeriods: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const periods = await listCfoTriggerSnapshotPeriods(slug, "financial_pdf");
+
+        const latest = periods.length > 0 ? periods[periods.length - 1] : null;
+
+        return {
+          tenantSlug: slug,
+          periods: periods.map((p) => ({
+            periodYear: p.period_year,
+            periodMonth: p.period_month,
+            reportMonthLabel: p.report_month_label ?? fallbackPeriodLabel(p.period_year, p.period_month),
+            triggeredCount: p.triggered_count,
+            clearCount: p.clear_count,
+            unknownCount: p.unknown_count,
+            triggerEngineVersion: p.trigger_engine_version,
+            receivedAt: p.received_at,
+            isLatest: !!latest
+              && p.period_year === latest.period_year
+              && p.period_month === latest.period_month
+              && p.received_at === latest.received_at,
+          })),
+        };
+      }),
+    triggerMonitorByPeriod: protectedProcedure
+      .input(z.object({
+        tenantSlug: z.string().optional(),
+        periodYear: z.number().int().min(2000).max(2100),
+        periodMonth: z.number().int().min(1).max(12),
+      }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const snapshot = await getCfoTriggerSnapshotByPeriod(slug, input.periodYear, input.periodMonth, "financial_pdf");
+        const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
+        return buildCanonicalTriggerMonitorResponse(slug, snapshot, latest);
+      }),
     triggerMonitorLatest: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
-
-        const financialByKey = new Map<string, any>();
-        const rawTriggers = Array.isArray((latest as any)?.triggers) ? ((latest as any).triggers as Array<any>) : [];
-        for (const row of rawTriggers) {
-          const key = String(row?.trigger_key || "").trim() as CoachingTriggerKey;
-          if (!COACHING_TRIGGER_KEYS.includes(key)) continue;
-          financialByKey.set(key, row);
-        }
-
-        const items = COACHING_TRIGGERS
-          .slice()
-          .sort((a, b) => a.order - b.order)
-          .map((def) => {
-            if (def.source_type === "operational") {
-              return {
-                trigger_key: def.trigger_key,
-                label: def.label,
-                order: def.order,
-                source_type: def.source_type,
-                status: "unknown" as const,
-                display_value: "Not enough data",
-                actual_value: null,
-                threshold_value: null,
-                reason: "Operational evidence has not yet been evaluated.",
-                source_report: null,
-                source_field: null,
-                evidence: null,
-              };
-            }
-
-            const row = financialByKey.get(def.trigger_key);
-            const statusRaw = String(row?.status || "unknown").trim().toLowerCase();
-            const status = statusRaw === "triggered" || statusRaw === "clear" || statusRaw === "unknown"
-              ? statusRaw
-              : "unknown";
-
-            return {
-              trigger_key: def.trigger_key,
-              label: def.label,
-              order: def.order,
-              source_type: def.source_type,
-              status,
-              display_value: row?.display_value == null || String(row.display_value).trim() === ""
-                ? (status === "unknown" ? "Not enough data" : "—")
-                : String(row.display_value),
-              actual_value: row?.actual_value ?? null,
-              threshold_value: row?.threshold_value ?? null,
-              reason: row?.reason ?? null,
-              source_report: row?.source_report ?? null,
-              source_field: row?.source_field ?? null,
-              evidence: row?.evidence ?? null,
-            };
-          });
-
-        const totals = items.reduce((acc, item) => {
-          if (item.status === "triggered") acc.triggered += 1;
-          else if (item.status === "clear") acc.clear += 1;
-          else acc.unknown += 1;
-          return acc;
-        }, { total: items.length, triggered: 0, clear: 0, unknown: 0 });
-
-        return {
-          tenantSlug: slug,
-          latestSnapshot: latest ? {
-            id: (latest as any).id,
-            periodYear: Number((latest as any).period_year),
-            periodMonth: Number((latest as any).period_month),
-            reportMonthLabel: (latest as any).report_month_label ?? null,
-            triggerEngineVersion: (latest as any).trigger_engine_version,
-            sourceImportId: (latest as any).source_import_id ?? null,
-            receivedAt: (latest as any).received_at,
-          } : null,
-          summary: totals,
-          items,
-        };
+        return buildCanonicalTriggerMonitorResponse(slug, latest, latest);
       }),
     prioritiesList: protectedProcedure
       .input(z.object({ year: z.number().int().min(2000).max(2100), tenantSlug: z.string().optional() }))

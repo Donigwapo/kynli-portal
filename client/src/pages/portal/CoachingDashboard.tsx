@@ -9,6 +9,16 @@ import { AlertTriangle, CheckSquare, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+type TriggerPeriodTile = {
+  periodYear: number;
+  periodMonth: number;
+  reportMonthLabel: string;
+  triggeredCount: number;
+  clearCount: number;
+  unknownCount: number;
+  isLatest: boolean;
+};
+
 export default function CoachingDashboard() {
   const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
@@ -39,9 +49,49 @@ export default function CoachingDashboard() {
 
   const tenantSlug = impersonatingTenantSlug ?? selectedTenantSlug ?? undefined;
 
-  const triggerQuery = trpc.coaching.triggerMonitorLatest.useQuery(
+  const periodsQuery = trpc.coaching.triggerMonitorPeriods.useQuery(
     { tenantSlug },
     { enabled: !allowClientSelector || !!tenantSlug, staleTime: 30_000 },
+  );
+
+  const periodTiles = (periodsQuery.data?.periods as TriggerPeriodTile[] | undefined) ?? [];
+
+  const [selectedPeriod, setSelectedPeriod] = useState<{ year: number; month: number } | null>(null);
+
+  useEffect(() => {
+    setSelectedPeriod(null);
+  }, [tenantSlug]);
+
+  useEffect(() => {
+    if (!periodTiles.length) {
+      setSelectedPeriod(null);
+      return;
+    }
+
+    const latest = periodTiles.find((p) => p.isLatest) ?? periodTiles[periodTiles.length - 1];
+    if (!latest) {
+      setSelectedPeriod(null);
+      return;
+    }
+
+    setSelectedPeriod((prev) => {
+      if (prev && periodTiles.some((p) => p.periodYear === prev.year && p.periodMonth === prev.month)) {
+        return prev;
+      }
+      return { year: latest.periodYear, month: latest.periodMonth };
+    });
+  }, [periodTiles]);
+
+  const selectedTriggerQuery = trpc.coaching.triggerMonitorByPeriod.useQuery(
+    {
+      tenantSlug,
+      periodYear: selectedPeriod?.year ?? currentYear,
+      periodMonth: selectedPeriod?.month ?? now.getMonth() + 1,
+    },
+    {
+      enabled: (!!selectedPeriod) && (!allowClientSelector || !!tenantSlug),
+      staleTime: 30_000,
+    },
   );
 
   const prioritiesQuery = trpc.coaching.prioritiesList.useQuery(
@@ -77,14 +127,21 @@ export default function CoachingDashboard() {
   const openPriorities = priorities.filter((p) => !p.completed);
   const completedPriorities = priorities.filter((p) => !!p.completed);
 
-  const monitorItems = (triggerQuery.data?.items as Array<any>) || [];
-  const monitorSummary = triggerQuery.data?.summary || { total: 17, triggered: 0, clear: 0, unknown: 17 };
-
   const activeWorkspaceName = useMemo(() => {
     if (!allowClientSelector) return null;
     const hit = (staffWorkspaces as Array<any>).find((w) => String(w.slug) === String(selectedTenantSlug || ""));
     return hit?.company_name || hit?.slug || null;
   }, [allowClientSelector, selectedTenantSlug, staffWorkspaces]);
+
+  const selectedSnapshot = selectedTriggerQuery.data?.selectedSnapshot ?? null;
+  const latestSnapshot = selectedTriggerQuery.data?.latestSnapshot ?? null;
+  const monitorItems = (selectedTriggerQuery.data?.items as Array<any>) || [];
+  const monitorSummary = selectedTriggerQuery.data?.summary || { total: 17, triggered: 0, clear: 0, unknown: 17 };
+
+  const selectedPeriodLabel = selectedSnapshot?.reportMonthLabel || null;
+  const isSelectedLatest = !!selectedTriggerQuery.data?.isLatest;
+
+  const selectedPeriodKey = selectedPeriod ? `${selectedPeriod.year}-${selectedPeriod.month}` : null;
 
   return (
     <div className="px-6 py-8 xl:px-10">
@@ -120,9 +177,13 @@ export default function CoachingDashboard() {
                 <span className="inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/50 px-2.5 py-1 text-[11px] font-medium text-zinc-300">
                   {monitorSummary.unknown} unknown
                 </span>
-                {triggerQuery.data?.latestSnapshot?.reportMonthLabel ? (
+                {selectedPeriodLabel ? (
                   <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
-                    Latest: {triggerQuery.data.latestSnapshot.reportMonthLabel}
+                    Showing results for {selectedPeriodLabel}{isSelectedLatest ? " · Latest" : ""}
+                  </span>
+                ) : latestSnapshot?.reportMonthLabel ? (
+                  <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+                    Latest: {latestSnapshot.reportMonthLabel}
                   </span>
                 ) : activeWorkspaceName ? (
                   <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
@@ -150,10 +211,75 @@ export default function CoachingDashboard() {
             ) : null}
           </div>
 
-          {triggerQuery.isLoading ? (
+          {periodsQuery.isSuccess && periodTiles.length > 0 ? (
+            <div className="mb-5 space-y-3">
+              <p className="text-xs uppercase tracking-[0.16em] text-zinc-500">Trigger history</p>
+              <div className="overflow-x-auto">
+                <div className="inline-flex gap-2.5 min-w-full pb-1">
+                  {periodTiles.map((period) => {
+                    const key = `${period.periodYear}-${period.periodMonth}`;
+                    const selected = key === selectedPeriodKey;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSelectedPeriod({ year: period.periodYear, month: period.periodMonth })}
+                        className={`min-w-[116px] rounded-xl border px-3 py-2 text-left transition-colors ${selected
+                          ? "border-teal-400/70 bg-teal-950/25"
+                          : "border-zinc-700/80 bg-zinc-900/35 hover:bg-zinc-900/55"}`}
+                      >
+                        <p className={`text-xs font-medium ${selected ? "text-teal-200" : "text-zinc-200"}`}>
+                          {period.reportMonthLabel}
+                        </p>
+                        <p className={`text-[11px] mt-1 ${selected ? "text-teal-300/90" : "text-zinc-500"}`}>
+                          {period.triggeredCount} triggered
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/20 p-3">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500 mb-2">Monthly trigger summary</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs min-w-[420px]">
+                    <thead>
+                      <tr className="text-zinc-500 border-b border-zinc-800">
+                        <th className="text-left font-medium py-1.5">Month</th>
+                        <th className="text-left font-medium py-1.5">Triggered</th>
+                        <th className="text-left font-medium py-1.5">Clear</th>
+                        <th className="text-left font-medium py-1.5">Unknown</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {periodTiles.map((p) => {
+                        const key = `${p.periodYear}-${p.periodMonth}`;
+                        const selected = key === selectedPeriodKey;
+                        return (
+                          <tr key={`summary-${key}`} className={`border-b border-zinc-900/80 ${selected ? "bg-teal-950/15" : ""}`}>
+                            <td className="py-1.5 text-zinc-300">{p.reportMonthLabel}</td>
+                            <td className="py-1.5 text-red-200">{p.triggeredCount}</td>
+                            <td className="py-1.5 text-emerald-200">{p.clearCount}</td>
+                            <td className="py-1.5 text-zinc-400">{p.unknownCount}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {periodsQuery.isLoading || (selectedPeriod && selectedTriggerQuery.isLoading) ? (
             <div className="text-sm text-muted-foreground py-6">Loading trigger monitor…</div>
-          ) : triggerQuery.isError ? (
+          ) : periodsQuery.isError || selectedTriggerQuery.isError ? (
             <div className="text-sm text-red-300 py-6">Unable to load trigger monitor.</div>
+          ) : periodTiles.length === 0 ? (
+            <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/25 px-5 py-6 text-sm text-zinc-400">
+              No trigger snapshots have been received for this client yet.
+            </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(185px,1fr))] gap-3.5 xl:gap-4">
               {monitorItems.map((item) => {
@@ -182,7 +308,7 @@ export default function CoachingDashboard() {
                 return (
                   <div
                     key={item.trigger_key}
-                    className={`min-h-[132px] rounded-2xl border p-4 xl:p-4.5 flex flex-col justify-between ${toneClass}`}
+                    className={`min-h-[132px] rounded-2xl border p-4 flex flex-col justify-between ${toneClass}`}
                   >
                     <p className={`text-sm font-semibold leading-snug ${titleClass}`}>{item.label}</p>
                     <p className={`text-xs sm:text-sm mt-3 leading-relaxed ${valueClass}`}>
