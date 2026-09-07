@@ -19,13 +19,15 @@ import {
   CalendarDays,
   ShieldAlert,
 } from "lucide-react";
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
 import { trpc } from "../lib/trpc";
 import { PACKAGE_TIERS, TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import FloatingTimerWidget from "./FloatingTimerWidget";
+import PortalAiLauncher from "./portal-ai/PortalAiLauncher";
+import PortalAiPanel from "./portal-ai/PortalAiPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import {
   Dialog,
@@ -81,7 +83,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const { impersonatingTenantSlug, setImpersonatingTenantSlug } = usePortal();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug, aiCoachingPeriod } = usePortal();
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
@@ -138,6 +140,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const [pendingSwitchCurrentName, setPendingSwitchCurrentName] = useState<string | null>(null);
   const [pendingSwitchTargetName, setPendingSwitchTargetName] = useState<string | null>(null);
   const [pendingSwitchTimerEntryId, setPendingSwitchTimerEntryId] = useState<string | null>(null);
+
+  const [portalAiOpen, setPortalAiOpen] = useState(false);
+  const portalAiPanelRef = useRef<HTMLDivElement | null>(null);
+  const portalAiLauncherRef = useRef<HTMLDivElement | null>(null);
 
   const runningTimerQuery = trpc.time.timerRunning.useQuery(
     impersonatingTenantSlug ? { tenantSlug: impersonatingTenantSlug } : undefined,
@@ -266,6 +272,39 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   }, [workspaceOptions, activeWorkspaceSlug]);
 
   const canSwitchWorkspace = workspaceOptions.length > 1;
+
+  const isPortalChatPage = location === "/portal/chat" || location.startsWith("/portal/chat/");
+
+  // Collision strategy:
+  // - default: bottom-right with standard margin
+  // - timer present in view-as-client: move AI up to avoid overlap with timer widget area
+  // - /portal/chat: move AI up further to keep floating DM window usable
+  const aiBottomOffset = isPortalChatPage
+    ? 420
+    : impersonatingTenantSlug
+      ? 120
+      : 16;
+
+  useEffect(() => {
+    if (!portalAiOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+
+      const insidePanel = !!portalAiPanelRef.current?.contains(target);
+      const insideLauncher = !!portalAiLauncherRef.current?.contains(target);
+
+      if (!insidePanel && !insideLauncher) {
+        setPortalAiOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [portalAiOpen]);
 
   console.log("[PortalShellScope]", {
     userId: user?.id,
@@ -763,6 +802,24 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         <div className="flex-1 overflow-y-auto">
           {children}
         </div>
+
+        <PortalAiPanel
+          ref={portalAiPanelRef}
+          isOpen={portalAiOpen}
+          pathname={location}
+          bottomOffset={aiBottomOffset}
+          aiUserId={user?.id != null ? String(user.id) : null}
+          coachingSelectedPeriod={location.startsWith("/portal/coaching") ? aiCoachingPeriod : null}
+          onClose={() => setPortalAiOpen(false)}
+        />
+        <div ref={portalAiLauncherRef}>
+          <PortalAiLauncher
+            isOpen={portalAiOpen}
+            onClick={() => setPortalAiOpen((prev) => !prev)}
+            bottomOffset={aiBottomOffset}
+          />
+        </div>
+
         <FloatingTimerWidget />
       </main>
     </div>

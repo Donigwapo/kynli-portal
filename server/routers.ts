@@ -7,6 +7,15 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
+import {
+  buildCoachingIntentResolutionMessages,
+  buildPortalAiMessages,
+  MAX_TRIGGER_PERIODS_PER_REQUEST,
+  PORTAL_AI_MAX_CONTEXT_MESSAGES,
+  PORTAL_AI_MAX_MESSAGE_LENGTH,
+  type CoachingIntentResolution,
+  type PortalAiTriggerContext,
+} from "./ai/portalAi";
 import { storagePut } from "./storage";
 import { PACKAGE_TIERS, TAB_ACCESS, PACKAGE_LABELS, type PackageTier } from "../shared/tiers";
 import {
@@ -7118,6 +7127,388 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
          const content = typeof rawContent === "string" ? rawContent : "Summary unavailable.";
         await upsertAiSummary(input.tenantSlug, input.year, input.month, content);
         return { success: true, content };
+      }),
+  }),
+
+  portalAi: router({
+    ask: protectedProcedure
+      .input(z.object({
+        message: z.string().trim().min(1).max(PORTAL_AI_MAX_MESSAGE_LENGTH),
+        pageContext: z.object({
+          route: z.string().trim().max(300).optional(),
+          pageType: z.string().trim().max(80).optional(),
+          year: z.number().int().min(2000).max(2100).optional(),
+          month: z.number().int().min(1).max(12).optional(),
+        }).optional(),
+        history: z.array(z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string().trim().min(1).max(PORTAL_AI_MAX_MESSAGE_LENGTH),
+        })).max(PORTAL_AI_MAX_CONTEXT_MESSAGES).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const startedAt = Date.now();
+        try {
+          const boundedHistory = (input.history ?? []).slice(-PORTAL_AI_MAX_CONTEXT_MESSAGES);
+
+          const route = (input.pageContext?.route || "").trim();
+          const pageType = (input.pageContext?.pageType || "").trim().toLowerCase();
+          const year = input.pageContext?.year;
+          const month = input.pageContext?.month;
+
+          let triggerContexts: PortalAiTriggerContext[] = [];
+          let triggerContextMissing = false;
+          let selectedPeriodKey: string | null = null;
+          let triggerClarificationMessage: string | null = null;
+          let comparisonLimitExceeded = false;
+
+          const isCoachingContext = route.startsWith("/portal/coaching") || pageType === "coaching";
+          const hasValidSelectedPeriod = Number.isFinite(year) && Number.isFinite(month);
+
+          const toPeriodKey = (y: number, m: number): string => `${y}-${m}`;
+          const normalizePeriodKey = (value: string): string | null => {
+            const trimmed = String(value || "").trim();
+            const match = trimmed.match(/^(\d{4})[-/](\d{1,2})$/);
+            if (!match) return null;
+            const y = Number(match[1]);
+            const m = Number(match[2]);
+            if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null;
+            return toPeriodKey(y, m);
+          };
+
+          const coachingDiag: {
+            selectedPeriodKey: string | null;
+            availablePeriodKeys: string[];
+            resolver: {
+              mode: string | null;
+              periodKeys: string[];
+              useSelectedPeriodAsBaseline: boolean | null;
+            } | null;
+            normalizedPeriodKeys: string[];
+            retrievedPeriodKeys: string[];
+            finalContextPeriodKeys: string[];
+            finalContextPeriods: Array<{ key: string; label: string | null }>;
+            snapshotSource: "financial_pdf";
+          } = {
+            selectedPeriodKey: null,
+            availablePeriodKeys: [],
+            resolver: null,
+            normalizedPeriodKeys: [],
+            retrievedPeriodKeys: [],
+            finalContextPeriodKeys: [],
+            finalContextPeriods: [],
+            snapshotSource: "financial_pdf",
+          };
+
+          const buildSanitizedTriggerContext = (canonical: any): PortalAiTriggerContext | null => {
+            if (!canonical?.selectedSnapshot) return null;
+            const snap = canonical.selectedSnapshot;
+            return {
+              period: {
+                year: Number(snap.periodYear),
+                month: Number(snap.periodMonth),
+                key: toPeriodKey(Number(snap.periodYear), Number(snap.periodMonth)),
+                label: snap.reportMonthLabel ? String(snap.reportMonthLabel) : null,
+              },
+              summary: {
+                total: Number(canonical.summary?.total ?? 0),
+                triggered: Number(canonical.summary?.triggered ?? 0),
+                clear: Number(canonical.summary?.clear ?? 0),
+                unknown: Number(canonical.summary?.unknown ?? 0),
+              },
+              triggers: ((canonical.items as Array<any>) || []).map((item) => ({
+                key: String(item.trigger_key || ""),
+                label: String(item.label || ""),
+                status: item.status === "triggered" || item.status === "clear" || item.status === "unknown"
+                  ? item.status
+                  : "unknown",
+                value: item.display_value ?? null,
+                reason: item.reason == null ? null : String(item.reason),
+              })),
+            };
+          };
+
+          const isExplicitCompareRequest = (() => {
+            const t = String(input.message || "").toLowerCase();
+            return /\b(whole\s+year|all\s+months|every\s+month|year\s+to\s+date|ytd)\b/.test(t);
+          })();
+
+          if (isCoachingContext) {
+            try {
+              const tenantHint = (ctx.viewAsClientTenantSlug || ctx.clientWorkspaceTenantSlug || "").trim() || undefined;
+
+              // Do not guess tenant for staff/admin without an active client scope.
+              if (!tenantHint && (STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin")) {
+                triggerContextMissing = true;
+                triggerClarificationMessage = "Please open a specific client workspace in Coaching to compare trigger periods.";
+              } else {
+                const slug = await resolveChatTenantSlug(ctx.user, tenantHint, ctx.clientWorkspaceTenantSlug);
+                const periods = await listCfoTriggerSnapshotPeriods(slug, "financial_pdf");
+                const availableKeys = periods.map((p) => toPeriodKey(Number(p.period_year), Number(p.period_month)));
+                const availableSet = new Set(availableKeys);
+                coachingDiag.availablePeriodKeys = [...availableKeys];
+
+                if (hasValidSelectedPeriod) {
+                  const selectedKeyCandidate = toPeriodKey(Number(year), Number(month));
+                  if (availableSet.has(selectedKeyCandidate)) {
+                    selectedPeriodKey = selectedKeyCandidate;
+                  }
+                }
+                coachingDiag.selectedPeriodKey = selectedPeriodKey;
+
+                if (!availableKeys.length) {
+                  triggerContextMissing = true;
+                  triggerClarificationMessage = "I couldn't find Trigger Monitor data for this client yet.";
+                } else if (isExplicitCompareRequest) {
+                  triggerContextMissing = true;
+                  comparisonLimitExceeded = true;
+                  triggerClarificationMessage = `I can currently compare up to ${MAX_TRIGGER_PERIODS_PER_REQUEST} trigger-monitor periods. Which months would you like to compare?`;
+                } else {
+                  const intentSchema = {
+                    name: "coaching_intent_resolution",
+                    strict: true,
+                    schema: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["mode", "periodKeys", "useSelectedPeriodAsBaseline"],
+                      properties: {
+                        mode: { type: "string", enum: ["single_period", "compare_periods", "clarify"] },
+                        periodKeys: {
+                          type: "array",
+                          items: { type: "string" },
+                          minItems: 0,
+                          maxItems: MAX_TRIGGER_PERIODS_PER_REQUEST,
+                        },
+                        useSelectedPeriodAsBaseline: { type: "boolean" },
+                        clarificationMessage: { type: "string" },
+                      },
+                    },
+                  } as const;
+
+                  let resolved: CoachingIntentResolution | null = null;
+                  try {
+                    const intentResponse = await invokeLLM({
+                      messages: buildCoachingIntentResolutionMessages({
+                        userMessage: input.message,
+                        selectedPeriodKey,
+                        availablePeriodKeys: availableKeys,
+                        availablePeriodHints: periods.map((p) => ({
+                          key: toPeriodKey(Number(p.period_year), Number(p.period_month)),
+                          label: p.report_month_label || `${Number(p.period_month)}/${Number(p.period_year)}`,
+                        })),
+                      }),
+                      outputSchema: intentSchema,
+                      max_tokens: 220,
+                    });
+
+                    const rawIntent = intentResponse.choices?.[0]?.message?.content;
+                    const intentText = typeof rawIntent === "string"
+                      ? rawIntent
+                      : Array.isArray(rawIntent)
+                        ? rawIntent
+                            .map((part: any) => (part?.type === "text" ? String(part.text || "") : ""))
+                            .join("\n")
+                            .trim()
+                        : "";
+
+                    if (intentText) {
+                      resolved = JSON.parse(intentText) as CoachingIntentResolution;
+                    }
+                  } catch {
+                    resolved = null;
+                  }
+
+                  coachingDiag.resolver = {
+                    mode: resolved?.mode ?? null,
+                    periodKeys: Array.isArray(resolved?.periodKeys)
+                      ? resolved!.periodKeys.map((k) => String(k))
+                      : [],
+                    useSelectedPeriodAsBaseline: typeof resolved?.useSelectedPeriodAsBaseline === "boolean"
+                      ? resolved.useSelectedPeriodAsBaseline
+                      : null,
+                  };
+
+                  const baseRequestedKeys = Array.isArray(resolved?.periodKeys)
+                    ? resolved!
+                        .periodKeys
+                        .map((k) => normalizePeriodKey(String(k)))
+                        .filter((k): k is string => k !== null && availableSet.has(k))
+                        .slice(0, MAX_TRIGGER_PERIODS_PER_REQUEST)
+                    : [];
+
+                  const mode = resolved?.mode;
+                  const useSelectedPeriodAsBaseline = Boolean(resolved?.useSelectedPeriodAsBaseline);
+
+                  const requestedKeys = (() => {
+                    if (!useSelectedPeriodAsBaseline && mode !== "compare_periods") return baseRequestedKeys;
+                    const keys = [...baseRequestedKeys];
+                    if (selectedPeriodKey && availableSet.has(selectedPeriodKey) && !keys.includes(selectedPeriodKey)) {
+                      if (keys.length < MAX_TRIGGER_PERIODS_PER_REQUEST) {
+                        keys.unshift(selectedPeriodKey);
+                      }
+                    }
+                    return keys.slice(0, MAX_TRIGGER_PERIODS_PER_REQUEST);
+                  })();
+                  coachingDiag.normalizedPeriodKeys = [...requestedKeys];
+
+                  if (mode === "clarify") {
+                    triggerContextMissing = true;
+                    triggerClarificationMessage = typeof resolved?.clarificationMessage === "string" && resolved.clarificationMessage.trim()
+                      ? resolved.clarificationMessage.trim()
+                      : "Please clarify which trigger-monitor periods you want to compare.";
+                  } else if (requestedKeys.length) {
+                    const uniqueKeys: string[] = [];
+                    for (const key of requestedKeys) {
+                      if (!uniqueKeys.includes(key)) uniqueKeys.push(key);
+                    }
+
+                    const contexts: PortalAiTriggerContext[] = [];
+                    for (const key of uniqueKeys.slice(0, MAX_TRIGGER_PERIODS_PER_REQUEST)) {
+                      const normalizedKey = normalizePeriodKey(key);
+                      if (!normalizedKey) continue;
+
+                      const [ys, ms] = normalizedKey.split("-");
+                      const py = Number(ys);
+                      const pm = Number(ms);
+                      if (!Number.isFinite(py) || !Number.isFinite(pm)) continue;
+
+                      const snapshot = await getCfoTriggerSnapshotByPeriod(slug, py, pm, "financial_pdf");
+                      const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
+                      const canonical = buildCanonicalTriggerMonitorResponse(slug, snapshot, latest);
+                      const shaped = buildSanitizedTriggerContext(canonical);
+                      if (shaped) {
+                        contexts.push(shaped);
+                        coachingDiag.retrievedPeriodKeys.push(shaped.period.key);
+                      }
+                    }
+
+                    if (contexts.length > 0) {
+                      triggerContexts = contexts;
+                    } else {
+                      triggerContextMissing = true;
+                      triggerClarificationMessage = "I couldn't find Trigger Monitor data for the requested period(s). Please choose available months from Trigger history.";
+                    }
+                  } else if (selectedPeriodKey && availableSet.has(selectedPeriodKey)) {
+                    const normalizedSelectedKey = normalizePeriodKey(selectedPeriodKey);
+                    if (!normalizedSelectedKey) {
+                      triggerContextMissing = true;
+                      triggerClarificationMessage = "I couldn't understand the selected Trigger Monitor period.";
+                    } else {
+                      const [ys, ms] = normalizedSelectedKey.split("-");
+                      const py = Number(ys);
+                      const pm = Number(ms);
+                      const snapshot = await getCfoTriggerSnapshotByPeriod(slug, py, pm, "financial_pdf");
+                      const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
+                      const canonical = buildCanonicalTriggerMonitorResponse(slug, snapshot, latest);
+                      const shaped = buildSanitizedTriggerContext(canonical);
+                      if (shaped) {
+                        triggerContexts = [shaped];
+                        coachingDiag.retrievedPeriodKeys.push(shaped.period.key);
+                      } else {
+                        triggerContextMissing = true;
+                        triggerClarificationMessage = "I couldn't find Trigger Monitor data for the selected period.";
+                      }
+                    }
+                  } else {
+                    const latestPeriod = periods[periods.length - 1];
+                    if (latestPeriod) {
+                      const py = Number(latestPeriod.period_year);
+                      const pm = Number(latestPeriod.period_month);
+                      const snapshot = await getCfoTriggerSnapshotByPeriod(slug, py, pm, "financial_pdf");
+                      const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
+                      const canonical = buildCanonicalTriggerMonitorResponse(slug, snapshot, latest);
+                      const shaped = buildSanitizedTriggerContext(canonical);
+                      if (shaped) {
+                        triggerContexts = [shaped];
+                        selectedPeriodKey = shaped.period.key;
+                        coachingDiag.retrievedPeriodKeys.push(shaped.period.key);
+                      } else {
+                        triggerContextMissing = true;
+                        triggerClarificationMessage = "I couldn't find Trigger Monitor data for that period.";
+                      }
+                    } else {
+                      triggerContextMissing = true;
+                      triggerClarificationMessage = "I couldn't find Trigger Monitor data for this client yet.";
+                    }
+                  }
+                }
+              }
+            } catch {
+              triggerContextMissing = true;
+              triggerClarificationMessage = triggerClarificationMessage || "I couldn't load Trigger Monitor data right now. Please try again.";
+            }
+          }
+
+          coachingDiag.finalContextPeriodKeys = triggerContexts.map((c) => c.period.key);
+          coachingDiag.finalContextPeriods = triggerContexts.map((c) => ({
+            key: c.period.key,
+            label: c.period.label ?? null,
+          }));
+
+          if (isCoachingContext) {
+            console.info("[portalAi.ask][diag]", {
+              message: input.message,
+              selectedPeriodKey: coachingDiag.selectedPeriodKey,
+              availablePeriodKeys: coachingDiag.availablePeriodKeys,
+              resolver: coachingDiag.resolver,
+              normalizedPeriodKeys: coachingDiag.normalizedPeriodKeys,
+              retrievedPeriodKeys: coachingDiag.retrievedPeriodKeys,
+              finalContextPeriodKeys: coachingDiag.finalContextPeriodKeys,
+              finalContextPeriods: coachingDiag.finalContextPeriods,
+              snapshotSource: coachingDiag.snapshotSource,
+            });
+          }
+
+          const llmMessages = buildPortalAiMessages({
+            message: input.message,
+            route,
+            pageType,
+            year,
+            month,
+            history: boundedHistory,
+            triggerContexts,
+            triggerContextMissing,
+            selectedPeriodKey,
+            triggerClarificationMessage,
+            comparisonLimitExceeded,
+          });
+
+          const response = await invokeLLM({
+            messages: llmMessages,
+            max_tokens: 600,
+          });
+
+          const rawContent = response.choices?.[0]?.message?.content;
+          const message = typeof rawContent === "string"
+            ? rawContent.trim()
+            : Array.isArray(rawContent)
+              ? rawContent
+                  .map((part: any) => (part?.type === "text" ? String(part.text || "") : ""))
+                  .join("\n")
+                  .trim()
+              : "";
+
+          if (!message) {
+            throw new Error("empty_ai_response");
+          }
+
+          return { message };
+        } catch (error: any) {
+          console.error("[portalAi.ask] failed", {
+            userId: ctx.user.id,
+            role: ctx.user.role,
+            route: input.pageContext?.route ?? null,
+            pageType: input.pageContext?.pageType ?? null,
+            year: input.pageContext?.year ?? null,
+            month: input.pageContext?.month ?? null,
+            durationMs: Date.now() - startedAt,
+            error: error?.message || "unknown_error",
+          });
+
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Kynli AI couldn't respond right now. Please try again.",
+          });
+        }
       }),
   }),
 

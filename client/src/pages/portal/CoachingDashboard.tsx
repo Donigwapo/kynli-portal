@@ -21,7 +21,7 @@ type TriggerPeriodTile = {
 
 export default function CoachingDashboard() {
   const { user } = useAuth();
-  const { impersonatingTenantSlug } = usePortal();
+  const { impersonatingTenantSlug, setAiCoachingPeriod } = usePortal();
   const now = new Date();
   const currentYear = now.getFullYear();
 
@@ -142,6 +142,27 @@ export default function CoachingDashboard() {
   const isSelectedLatest = !!selectedTriggerQuery.data?.isLatest;
 
   const selectedPeriodKey = selectedPeriod ? `${selectedPeriod.year}-${selectedPeriod.month}` : null;
+
+  useEffect(() => {
+    const path = typeof window !== "undefined" ? window.location.pathname : "";
+    if (!path.startsWith("/portal/coaching")) {
+      setAiCoachingPeriod(null);
+      return;
+    }
+
+    if (selectedPeriod && Number.isFinite(selectedPeriod.year) && Number.isFinite(selectedPeriod.month)) {
+      setAiCoachingPeriod({ year: selectedPeriod.year, month: selectedPeriod.month });
+      return;
+    }
+
+    setAiCoachingPeriod(null);
+  }, [selectedPeriod?.year, selectedPeriod?.month, setAiCoachingPeriod]);
+
+  useEffect(() => {
+    return () => {
+      setAiCoachingPeriod(null);
+    };
+  }, [setAiCoachingPeriod]);
 
   return (
     <div className="px-6 py-8 xl:px-10">
