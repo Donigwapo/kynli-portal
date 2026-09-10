@@ -847,6 +847,36 @@ export async function getFinancials(slug: string, year: number, month?: number):
   })) as Financial[];
 }
 
+export type FinancialPeriod = {
+  year: number;
+  month: number;
+};
+
+export async function listFinancialPeriods(slug: string): Promise<FinancialPeriod[]> {
+  const { data, error } = await supabase
+    .from(`${slug}_financials`)
+    .select("year,month")
+    .order("year", { ascending: true })
+    .order("month", { ascending: true });
+
+  if (error) return [];
+
+  const seen = new Set<string>();
+  const periods: FinancialPeriod[] = [];
+
+  for (const row of (data || []) as Array<Record<string, unknown>>) {
+    const year = Number(row.year);
+    const month = Number(row.month);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) continue;
+    const key = `${year}-${month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    periods.push({ year, month });
+  }
+
+  return periods;
+}
+
 export async function upsertFinancial(slug: string, data: Omit<Financial, "id">): Promise<void> {
   if (!/^[a-z0-9_]+$/.test(slug)) {
     throw new Error(`Invalid slug: "${slug}".`);
@@ -4302,6 +4332,27 @@ export async function getCfoTriggerSnapshotByPeriod(
     .maybeSingle();
   if (error) throw new Error(error.message);
   return (data as CfoTriggerSnapshot | null) ?? null;
+}
+
+export async function deleteCfoTriggerSnapshotPeriod(
+  tenantSlug: string,
+  periodYear: number,
+  periodMonth: number,
+  snapshotSource: "financial_pdf" | "operational" = "financial_pdf",
+): Promise<number> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+
+  const { data, error } = await supabase
+    .from("cfo_trigger_snapshots")
+    .delete()
+    .eq("tenant_slug", safeSlug)
+    .eq("snapshot_source", snapshotSource)
+    .eq("period_year", periodYear)
+    .eq("period_month", periodMonth)
+    .select("id");
+
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data.length : 0;
 }
 
 export type CoachingPriority = {

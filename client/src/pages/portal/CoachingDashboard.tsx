@@ -3,11 +3,24 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, CheckSquare, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckSquare, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import type { TRPCClientErrorLike } from "@trpc/client";
+import type { AppRouter } from "../../../../server/routers";
 
 type TriggerPeriodTile = {
   periodYear: number;
@@ -27,6 +40,7 @@ export default function CoachingDashboard() {
 
   const isStaff = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const canEditPriorities = user?.role !== "client";
+  const canManageTriggerSnapshots = user?.role !== "client";
   const allowClientSelector = isStaff && !impersonatingTenantSlug;
 
   const { data: staffWorkspaces = [] } = trpc.tenant.list.useQuery(undefined, {
@@ -48,6 +62,8 @@ export default function CoachingDashboard() {
   }, [allowClientSelector, selectedTenantSlug, staffWorkspaces]);
 
   const tenantSlug = impersonatingTenantSlug ?? selectedTenantSlug ?? undefined;
+
+  const utils = trpc.useUtils();
 
   const periodsQuery = trpc.coaching.triggerMonitorPeriods.useQuery(
     { tenantSlug },
@@ -121,7 +137,33 @@ export default function CoachingDashboard() {
     onError: (err) => toast.error(err.message || "Unable to delete priority."),
   });
 
+  const deleteTriggerPeriodMutation = trpc.coaching.deleteTriggerMonitorPeriod.useMutation({
+    onSuccess: async () => {
+      setDeletePeriodDialogOpen(false);
+      setPendingDeletePeriod(null);
+      await Promise.all([
+        utils.coaching.triggerMonitorPeriods.invalidate({ tenantSlug }),
+        utils.coaching.triggerMonitorLatest.invalidate({ tenantSlug }),
+        selectedPeriod
+          ? utils.coaching.triggerMonitorByPeriod.invalidate({
+              tenantSlug,
+              periodYear: selectedPeriod.year,
+              periodMonth: selectedPeriod.month,
+            })
+          : Promise.resolve(),
+      ]);
+      await periodsQuery.refetch();
+      toast.success("Trigger snapshot deleted.");
+    },
+    onError: (err: TRPCClientErrorLike<AppRouter>) => {
+      console.error("[TriggerMonitorDelete] UI mutation failed", { message: err.message });
+      toast.error(err.message || "Unable to delete trigger snapshot.");
+    },
+  });
+
   const [newTitle, setNewTitle] = useState("");
+  const [deletePeriodDialogOpen, setDeletePeriodDialogOpen] = useState(false);
+  const [pendingDeletePeriod, setPendingDeletePeriod] = useState<TriggerPeriodTile | null>(null);
 
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
@@ -142,6 +184,10 @@ export default function CoachingDashboard() {
   const isSelectedLatest = !!selectedTriggerQuery.data?.isLatest;
 
   const selectedPeriodKey = selectedPeriod ? `${selectedPeriod.year}-${selectedPeriod.month}` : null;
+
+  const pendingDeleteLabel = pendingDeletePeriod
+    ? `${pendingDeletePeriod.reportMonthLabel}`
+    : "selected";
 
   useEffect(() => {
     const path = typeof window !== "undefined" ? window.location.pathname : "";
@@ -241,21 +287,53 @@ export default function CoachingDashboard() {
                     const key = `${period.periodYear}-${period.periodMonth}`;
                     const selected = key === selectedPeriodKey;
                     return (
-                      <button
+                      <div
                         key={key}
-                        type="button"
-                        onClick={() => setSelectedPeriod({ year: period.periodYear, month: period.periodMonth })}
-                        className={`min-w-[116px] rounded-xl border px-3 py-2 text-left transition-colors ${selected
+                        className={`min-w-[140px] rounded-xl border px-3 py-2 transition-colors ${selected
                           ? "border-teal-400/70 bg-teal-950/25"
-                          : "border-zinc-700/80 bg-zinc-900/35 hover:bg-zinc-900/55"}`}
+                          : "border-zinc-700/80 bg-zinc-900/35"}`}
                       >
-                        <p className={`text-xs font-medium ${selected ? "text-teal-200" : "text-zinc-200"}`}>
-                          {period.reportMonthLabel}
-                        </p>
-                        <p className={`text-[11px] mt-1 ${selected ? "text-teal-300/90" : "text-zinc-500"}`}>
-                          {period.triggeredCount} triggered
-                        </p>
-                      </button>
+                        <div className="flex items-start justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPeriod({ year: period.periodYear, month: period.periodMonth })}
+                            className="flex-1 min-w-0 text-left"
+                          >
+                            <p className={`text-xs font-medium ${selected ? "text-teal-200" : "text-zinc-200"}`}>
+                              {period.reportMonthLabel}
+                            </p>
+                            <p className={`text-[11px] mt-1 ${selected ? "text-teal-300/90" : "text-zinc-500"}`}>
+                              {period.triggeredCount} triggered
+                            </p>
+                          </button>
+
+                          {canManageTriggerSnapshots ? (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="mt-0.5 p-1 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60"
+                                  aria-label={`Trigger period actions for ${period.reportMonthLabel}`}
+                                >
+                                  <MoreHorizontal className="w-3.5 h-3.5" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-52 bg-zinc-950 border-zinc-800 text-zinc-100">
+                                <DropdownMenuItem disabled className="text-zinc-500">Regenerate triggers (coming soon)</DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="text-red-300 focus:text-red-200 focus:bg-red-950/40"
+                                  onClick={() => {
+                                    setPendingDeletePeriod(period);
+                                    setDeletePeriodDialogOpen(true);
+                                  }}
+                                >
+                                  Delete trigger snapshot
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          ) : null}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -465,6 +543,46 @@ export default function CoachingDashboard() {
             </div>
           )}
         </section>
+
+        <AlertDialog open={deletePeriodDialogOpen} onOpenChange={setDeletePeriodDialogOpen}>
+          <AlertDialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Delete {pendingDeleteLabel} trigger snapshot?
+              </AlertDialogTitle>
+              <AlertDialogDescription className="text-zinc-400 leading-relaxed">
+                This will remove the CFO Trigger Monitor results for {pendingDeleteLabel}.
+                <br />
+                The underlying financial data and submitted financial report will not be deleted.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                className="border-zinc-700 text-zinc-200 hover:bg-zinc-900"
+                onClick={() => {
+                  setDeletePeriodDialogOpen(false);
+                  setPendingDeletePeriod(null);
+                }}
+              >
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-red-600 hover:bg-red-500 text-white"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!pendingDeletePeriod || deleteTriggerPeriodMutation.isPending) return;
+                  deleteTriggerPeriodMutation.mutate({
+                    year: pendingDeletePeriod.periodYear,
+                    month: pendingDeletePeriod.periodMonth,
+                    tenantSlug,
+                  });
+                }}
+              >
+                {deleteTriggerPeriodMutation.isPending ? "Deleting..." : "Delete snapshot"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

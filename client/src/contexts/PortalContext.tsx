@@ -10,6 +10,9 @@ interface PortalContextValue {
   /** Optional AI context derived from currently selected Coaching trigger period */
   aiCoachingPeriod: { year: number; month: number } | null;
   setAiCoachingPeriod: (value: { year: number; month: number } | null) => void;
+  /** Optional AI context derived from currently expanded Financials period */
+  aiFinancialPeriod: { year: number; month: number } | null;
+  setAiFinancialPeriod: (value: { year: number; month: number } | null) => void;
 }
 const PortalContext = createContext<PortalContextValue>({
   impersonatingTenantSlug: null,
@@ -18,11 +21,14 @@ const PortalContext = createContext<PortalContextValue>({
   setEffectiveTier: () => {},
   aiCoachingPeriod: null,
   setAiCoachingPeriod: () => {},
+  aiFinancialPeriod: null,
+  setAiFinancialPeriod: () => {},
 });
 export function PortalProvider({ children }: { children: ReactNode }) {
   const [impersonatingTenantSlug, setImpersonatingTenantSlug] = useState<string | null>(null);
   const [effectiveTier, setEffectiveTier] = useState<PackageTier>("cfo");
   const [aiCoachingPeriod, setAiCoachingPeriod] = useState<{ year: number; month: number } | null>(null);
+  const [aiFinancialPeriod, setAiFinancialPeriod] = useState<{ year: number; month: number } | null>(null);
   return (
     <PortalContext.Provider
       value={{
@@ -32,6 +38,8 @@ export function PortalProvider({ children }: { children: ReactNode }) {
         setEffectiveTier,
         aiCoachingPeriod,
         setAiCoachingPeriod,
+        aiFinancialPeriod,
+        setAiFinancialPeriod,
       }}
     >
       {children}

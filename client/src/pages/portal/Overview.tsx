@@ -1,16 +1,13 @@
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import {
   TrendingUp,
   TrendingDown,
   DollarSign,
   Percent,
   Users,
-  Plus,
   ArrowUpRight,
   ArrowDownRight,
 } from "lucide-react";
@@ -28,7 +25,7 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
 
@@ -37,6 +34,16 @@ const TEAL = "oklch(0.75 0.15 192)";
 const GREEN = "oklch(0.68 0.18 145)";
 const RED = "oklch(0.62 0.22 25)";
 const MUTED_FG = "oklch(0.50 0.008 240)";
+const OPEN_ITEMS_DISPLAY_LIMIT = 5;
+
+type OpenActionItemRow = {
+  actionItemId: number;
+  title: string;
+  status: "open" | "in_progress";
+  meetingId: number;
+  meetingTitle: string;
+  meetingDate: string | null;
+};
 
 function fmtD(n: number) {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -55,11 +62,6 @@ function fmtDate(value?: string | null) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-function toDateInputValue(value?: string | null): string {
-  if (!value) return "";
-  return String(value).slice(0, 10);
-}
-
 function KpiCard({
   label,
   value,
@@ -74,7 +76,7 @@ function KpiCard({
   budget?: string;
   variance?: number;
   variancePct?: number;
-  icon: React.ReactNode;
+  icon: ReactNode;
   invertGood?: boolean;
 }) {
   const isGood = invertGood ? (variance ?? 0) <= 0 : (variance ?? 0) >= 0;
@@ -107,12 +109,13 @@ function KpiCard({
 export default function Overview() {
   const { user } = useAuth();
   const { impersonatingTenantSlug } = usePortal();
+  const utils = trpc.useUtils();
+
   const now = new Date();
   const [year] = useState(now.getFullYear());
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const canEditPriorities = user?.role !== "client";
-  const canEditActionItems = user?.role !== "client";
 
   const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
     enabled: !impersonatingTenantSlug && !isStaffPortfolioUser,
@@ -154,14 +157,6 @@ export default function Overview() {
     { enabled: coachingCardsEnabled, staleTime: 10_000 },
   );
 
-  const createPriorityMutation = trpc.coaching.prioritiesCreate.useMutation({
-    onSuccess: async () => {
-      await prioritiesQuery.refetch();
-      setNewPriorityTitle("");
-    },
-    onError: (err) => toast.error(err.message || "Unable to create priority."),
-  });
-
   const togglePriorityMutation = trpc.coaching.prioritiesToggle.useMutation({
     onSuccess: async () => {
       await prioritiesQuery.refetch();
@@ -174,21 +169,77 @@ export default function Overview() {
     { enabled: coachingCardsEnabled, staleTime: 30_000 },
   );
 
-  const createMeetingMutation = trpc.coaching.meetingsCreate.useMutation();
-  const upsertItemsMutation = trpc.coaching.meetingActionItemsUpsertBatch.useMutation();
-
-  const [newPriorityTitle, setNewPriorityTitle] = useState("");
-  const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
-  const [selectedMeetingDate, setSelectedMeetingDate] = useState(new Date().toISOString().slice(0, 10));
-  const [actionItemText, setActionItemText] = useState("");
-  const [actionSaveStatus, setActionSaveStatus] = useState<string | null>(null);
+  const actionItemStatusMutation = trpc.coaching.meetingActionItemsUpdateStatus.useMutation({
+    onSuccess: async () => {
+      await meetingsQuery.refetch();
+    },
+    onError: (err) => toast.error(err.message || "Unable to update action item status."),
+  });
 
   const meetings = (meetingsQuery.data as Array<any>) || [];
+  const [openActionItems, setOpenActionItems] = useState<OpenActionItemRow[]>([]);
+  const [openItemsLoading, setOpenItemsLoading] = useState(false);
 
-  const detailQuery = trpc.coaching.meetingsGet.useQuery(
-    { id: selectedMeetingId ?? 0, tenantSlug: coachingTenantSlug },
-    { enabled: coachingCardsEnabled && !!selectedMeetingId },
-  );
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadOpenItems() {
+      if (!coachingCardsEnabled || !coachingTenantSlug) {
+        setOpenActionItems([]);
+        return;
+      }
+      if (!meetings.length) {
+        setOpenActionItems([]);
+        return;
+      }
+
+      setOpenItemsLoading(true);
+      try {
+        const details = await Promise.all(
+          meetings.map((m) =>
+            utils.coaching.meetingsGet.fetch({ id: Number(m.id), tenantSlug: coachingTenantSlug }),
+          ),
+        );
+
+        if (cancelled) return;
+
+        const rows: OpenActionItemRow[] = [];
+        for (const detail of details) {
+          const meeting = (detail as any)?.meeting;
+          const actionItems = Array.isArray((detail as any)?.actionItems) ? (detail as any).actionItems : [];
+
+          for (const item of actionItems) {
+            const status = String(item?.status || "open");
+            if (status === "completed") continue;
+
+            rows.push({
+              actionItemId: Number(item.id),
+              title: String(item.title || "Untitled action item"),
+              status: status === "in_progress" ? "in_progress" : "open",
+              meetingId: Number(meeting?.id ?? 0),
+              meetingTitle: String(meeting?.title || "Client Meeting"),
+              meetingDate: meeting?.meeting_date ? String(meeting.meeting_date) : null,
+            });
+          }
+        }
+
+        setOpenActionItems(rows);
+      } catch (err: any) {
+        if (!cancelled) {
+          setOpenActionItems([]);
+          toast.error(err?.message || "Unable to load open action items.");
+        }
+      } finally {
+        if (!cancelled) setOpenItemsLoading(false);
+      }
+    }
+
+    void loadOpenItems();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [coachingCardsEnabled, coachingTenantSlug, meetings, utils.coaching.meetingsGet]);
 
   const ytdRevenue = useMemo(() => financials.reduce((s, f) => s + (f.revenue ?? 0), 0), [financials]);
   const ytdExpenses = useMemo(() => financials.reduce((s, f) => s + (f.expenses ?? 0), 0), [financials]);
@@ -270,79 +321,9 @@ export default function Overview() {
 
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
-  const completedPriorities = priorities.filter((p) => !!p.completed);
+  const displayedOpenPriorities = openPriorities.slice(0, OPEN_ITEMS_DISPLAY_LIMIT);
 
-  const selectedMeetingActionItems = (detailQuery.data?.actionItems as Array<any> | undefined) ?? [];
-  const selectedMeetingSavedCount = selectedMeetingActionItems.length;
-
-  const savingActionItems = createMeetingMutation.isPending || upsertItemsMutation.isPending;
-
-  async function handleSaveActionItem() {
-    if (!canEditActionItems) return;
-
-    const date = String(selectedMeetingDate || "").trim();
-    const title = String(actionItemText || "").trim();
-    if (!date || !title) return;
-
-    if (selectedMeetingId && detailQuery.isLoading) {
-      toast.error("Meeting details are still loading.");
-      return;
-    }
-
-    try {
-      let meetingId = selectedMeetingId;
-
-      if (!meetingId) {
-        const created = await createMeetingMutation.mutateAsync({
-          tenantSlug: coachingTenantSlug,
-          title: `Client Meeting · ${date}`,
-          meetingDate: date,
-          meetingType: "other",
-          status: "completed",
-          notes: null,
-        });
-        meetingId = Number(created.meeting.id);
-        setSelectedMeetingId(meetingId);
-      }
-
-      const baseItems = meetingId
-        ? selectedMeetingActionItems
-            .map((it: any, idx: number) => ({
-              title: String(it.title || "").trim(),
-              details: it.details == null ? null : String(it.details),
-              status: (it.status ?? "open") as "open" | "in_progress" | "completed",
-              dueDate: it.due_date ? String(it.due_date).slice(0, 10) : null,
-              assignedToUserId: it.assigned_to_user_id == null ? null : Number(it.assigned_to_user_id),
-              sortOrder: idx,
-            }))
-            .filter((it: any) => it.title.length > 0)
-        : [];
-
-      const nextItems = [
-        ...baseItems,
-        {
-          title,
-          details: null,
-          status: "open" as const,
-          dueDate: null,
-          assignedToUserId: null,
-          sortOrder: baseItems.length,
-        },
-      ];
-
-      await upsertItemsMutation.mutateAsync({
-        meetingId: Number(meetingId),
-        tenantSlug: coachingTenantSlug,
-        items: nextItems,
-      });
-
-      await Promise.all([meetingsQuery.refetch(), detailQuery.refetch()]);
-      setActionItemText("");
-      setActionSaveStatus(`Saved to ${fmtDate(date)}`);
-    } catch (error: any) {
-      toast.error(error?.message || "Unable to save action item.");
-    }
-  }
+  const displayedOpenActionItems = openActionItems.slice(0, OPEN_ITEMS_DISPLAY_LIMIT);
 
   return (
     <div className="p-6 space-y-5">
@@ -459,7 +440,7 @@ export default function Overview() {
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold text-foreground">{year} Coaching Priorities</h2>
-            <span className="text-xs text-muted-foreground">{openPriorities.length} open · {completedPriorities.length} complete</span>
+            <span className="text-xs text-muted-foreground">{openPriorities.length} open</span>
           </div>
 
           {!coachingCardsEnabled ? (
@@ -471,39 +452,11 @@ export default function Overview() {
           ) : prioritiesQuery.isError ? (
             <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Unable to load priorities for this client.</div>
           ) : (
-            <>
-              <div className="flex items-center gap-2 mb-4">
-                <Input
-                  value={newPriorityTitle}
-                  onChange={(e) => setNewPriorityTitle(e.target.value)}
-                  placeholder="Add a coaching priority..."
-                  className="h-10"
-                  disabled={!canEditPriorities}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    e.preventDefault();
-                    if (!canEditPriorities || !newPriorityTitle.trim() || createPriorityMutation.isPending) return;
-                    createPriorityMutation.mutate({ year, tenantSlug: coachingTenantSlug, title: newPriorityTitle.trim() });
-                  }}
-                />
-                <Button
-                  type="button"
-                  className="h-10 w-10 shrink-0"
-                  disabled={!canEditPriorities || !newPriorityTitle.trim() || createPriorityMutation.isPending}
-                  onClick={() => {
-                    if (!canEditPriorities || !newPriorityTitle.trim()) return;
-                    createPriorityMutation.mutate({ year, tenantSlug: coachingTenantSlug, title: newPriorityTitle.trim() });
-                  }}
-                  aria-label="Add priority"
-                >
-                  <Plus className="w-4 h-4" />
-                </Button>
-              </div>
-
-              <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
-                {openPriorities.length > 0 ? (
-                  openPriorities.map((p) => (
-                    <label key={p.id} className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2 cursor-pointer">
+            <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+              {openPriorities.length > 0 ? (
+                <>
+                  {displayedOpenPriorities.map((p) => (
+                    <div key={p.id} className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2">
                       <Checkbox
                         checked={!!p.completed}
                         onCheckedChange={(checked) => {
@@ -512,166 +465,94 @@ export default function Overview() {
                         }}
                         disabled={!canEditPriorities || togglePriorityMutation.isPending}
                       />
-                      <span className="text-sm text-foreground truncate">{p.title}</span>
-                    </label>
-                  ))
-                ) : (
-                  <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No open priorities yet.</div>
-                )}
-
-                <div className="pt-2">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Completed</p>
-                  {completedPriorities.length > 0 ? (
-                    completedPriorities.map((p) => (
-                      <label key={p.id} className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/70 px-3 py-2 cursor-pointer mb-2">
-                        <Checkbox
-                          checked={!!p.completed}
-                          onCheckedChange={(checked) => {
-                            if (!canEditPriorities) return;
-                            togglePriorityMutation.mutate({ id: p.id, completed: checked === true, tenantSlug: coachingTenantSlug });
-                          }}
-                          disabled={!canEditPriorities || togglePriorityMutation.isPending}
-                        />
-                        <span className="text-sm text-muted-foreground line-through truncate">{p.title}</span>
-                      </label>
-                    ))
-                  ) : (
-                    <div className="rounded-lg border border-border/70 bg-background/70 p-3 text-sm text-muted-foreground">No completed priorities yet.</div>
-                  )}
-                </div>
-              </div>
-            </>
+                      <Link
+                        href="/portal/coaching"
+                        className="text-sm text-foreground hover:text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm truncate"
+                        title={p.title}
+                      >
+                        {p.title}
+                      </Link>
+                    </div>
+                  ))}
+                  {openPriorities.length > OPEN_ITEMS_DISPLAY_LIMIT ? (
+                    <div className="pt-1">
+                      <Link
+                        href="/portal/coaching"
+                        className="text-xs text-primary hover:text-primary/90 hover:underline"
+                      >
+                        View all {openPriorities.length} open priorities →
+                      </Link>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No open coaching priorities.</div>
+              )}
+            </div>
           )}
         </div>
 
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold text-foreground">Client Action Items</h2>
-            <span className="text-xs text-muted-foreground">{selectedMeetingId ? `${selectedMeetingSavedCount} saved` : "No meeting selected"}</span>
+            <span className="text-xs text-muted-foreground">{openActionItems.length} open</span>
           </div>
 
           {!coachingCardsEnabled ? (
             <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
-              Select a client via “Viewing as client” to manage action items.
+              Select a client via “Viewing as client” to view open client action items.
             </div>
-          ) : meetingsQuery.isLoading ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Loading action items…</div>
+          ) : meetingsQuery.isLoading || openItemsLoading ? (
+            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Loading open action items…</div>
           ) : meetingsQuery.isError ? (
             <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Unable to load client meetings.</div>
           ) : (
-            <>
-              <div className="space-y-2 mb-4">
-                <label className="text-xs text-muted-foreground">Meeting Date</label>
-                <Input
-                  type="date"
-                  value={selectedMeetingDate}
-                  onChange={(e) => {
-                    const nextDate = e.target.value;
-                    setSelectedMeetingDate(nextDate);
-                    setActionSaveStatus(null);
-                    const match = meetings.find((m: any) => toDateInputValue(m.meeting_date) === nextDate) || null;
-                    setSelectedMeetingId(match ? Number(match.id) : null);
-                  }}
-                  className="h-10"
-                  disabled={!canEditActionItems}
-                />
-              </div>
-
-              <div className="space-y-2 mb-4">
-                <label className="text-xs text-muted-foreground">Action Item</label>
-                <textarea
-                  value={actionItemText}
-                  onChange={(e) => setActionItemText(e.target.value)}
-                  placeholder="Enter one action item to save for this meeting date..."
-                  className="w-full min-h-[92px] rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
-                  disabled={!canEditActionItems}
-                />
-                <div className="flex items-center justify-between gap-2">
-                  <Button
-                    type="button"
-                    className="h-9"
-                    disabled={
-                      !canEditActionItems ||
-                      !selectedMeetingDate ||
-                      !actionItemText.trim() ||
-                      savingActionItems ||
-                      (selectedMeetingId != null && detailQuery.isLoading)
-                    }
-                    onClick={() => {
-                      void handleSaveActionItem();
-                    }}
-                  >
-                    {savingActionItems ? "Saving..." : "Save"}
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {actionSaveStatus || (selectedMeetingId ? "Connected to saved meeting" : "Will create a new meeting for this date")}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Action Item History</p>
-                  <div className="max-h-[140px] overflow-y-auto pr-1 space-y-1.5">
-                    {meetings.length === 0 ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No saved meetings yet.</div>
-                    ) : (
-                      meetings.map((m: any) => {
-                        const isSelected = Number(m.id) === selectedMeetingId;
-                        return (
-                          <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedMeetingId(Number(m.id));
-                              setSelectedMeetingDate(toDateInputValue(m.meeting_date));
-                              setActionSaveStatus(null);
-                            }}
-                            className={`w-full text-left rounded-lg border px-3 py-2 transition ${
-                              isSelected ? "border-primary/60 bg-primary/10" : "border-border bg-background hover:bg-muted/30"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-sm text-foreground truncate">{m.title || "Client Meeting"}</span>
-                              <span className="text-[11px] text-muted-foreground">{m.open_action_items ?? 0} open</span>
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-0.5">{fmtDate(m.meeting_date)}</p>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Selected Meeting Items</p>
-                  <div className="max-h-[140px] overflow-y-auto pr-1 space-y-1.5">
-                    {!selectedMeetingId ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">
-                        Select a saved meeting to view its action items.
+            <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+              {openActionItems.length === 0 ? (
+                <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No open client action items.</div>
+              ) : (
+                <>
+                  {displayedOpenActionItems.map((row) => (
+                    <div key={row.actionItemId} className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
+                      <Checkbox
+                        checked={false}
+                        onCheckedChange={(checked) => {
+                          if (checked !== true) return;
+                          void actionItemStatusMutation.mutateAsync({
+                            id: row.actionItemId,
+                            status: "completed",
+                            tenantSlug: coachingTenantSlug,
+                          });
+                        }}
+                        disabled={actionItemStatusMutation.isPending}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          href="/portal/coaching/client-meeting"
+                          className="block text-sm text-foreground hover:text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm truncate"
+                          title={row.title}
+                        >
+                          {row.title}
+                        </Link>
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                          {row.meetingTitle} · {fmtDate(row.meetingDate)}
+                        </p>
                       </div>
-                    ) : detailQuery.isLoading ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">Loading items…</div>
-                    ) : detailQuery.isError ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">Unable to load action items.</div>
-                    ) : selectedMeetingActionItems.length === 0 ? (
-                      <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">
-                        No action items saved for this meeting.
-                      </div>
-                    ) : (
-                      selectedMeetingActionItems.map((it: any) => (
-                        <div key={it.id} className="rounded-lg border border-border bg-background px-3 py-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm text-foreground truncate">{it.title}</p>
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{String(it.status || "open").replace("_", " ")}</span>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            </>
+                    </div>
+                  ))}
+                  {openActionItems.length > OPEN_ITEMS_DISPLAY_LIMIT ? (
+                    <div className="pt-1">
+                      <Link
+                        href="/portal/coaching/client-meeting"
+                        className="text-xs text-primary hover:text-primary/90 hover:underline"
+                      >
+                        View all {openActionItems.length} open action items →
+                      </Link>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>

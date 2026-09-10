@@ -16,6 +16,23 @@ export type PortalAiTriggerContext = {
   }>;
 };
 
+export type PortalAiFinancialContext = {
+  period: { year: number; month: number; key: string; label: string };
+  summary: {
+    revenue: number | null;
+    expenses: number | null;
+    cogs: number | null;
+    netProfit: number | null;
+    netMarginPercent: number | null;
+    budgetRevenue: number | null;
+    budgetExpenses: number | null;
+    revenueVsBudget: number | null;
+    revenueVsBudgetPercent: number | null;
+    netVsBudget: number | null;
+    netVsBudgetPercent: number | null;
+  };
+};
+
 export type CoachingIntentResolution = {
   mode: "single_period" | "compare_periods" | "clarify";
   periodKeys: string[];
@@ -30,9 +47,15 @@ export const PORTAL_AI_SYSTEM_PROMPT = [
   "Never invent or guess tenant-specific numbers or outcomes.",
   "Only use portal data that is explicitly provided in this chat context.",
   "If no relevant portal data is provided, clearly say this version has limited connected data.",
+  "Previous conversation messages may be stale or no longer current.",
+  "Never treat prior assistant statements as authoritative tenant data.",
+  "Current canonical data provided in this request always overrides chat history.",
   "When trigger monitor data is provided: treat status=triggered as requires attention, status=clear as condition not met, status=unknown as not enough information.",
   "Do not convert unknown into positive or negative conclusions.",
   "If asked for values not present in the provided snapshot, say that information is unavailable in the current trigger monitor data.",
+  "When financial period summary data is provided, explain only that provided period and metrics.",
+  "Do not claim line-item/category/vendor analysis unless line-item data is explicitly provided.",
+  "If the user asks for month-over-month or multi-period financial comparison, explain that comparison is not connected yet in this phase.",
 ].join(" ");
 
 export function buildCoachingIntentResolutionMessages(input: {
@@ -87,6 +110,10 @@ export function buildPortalAiMessages(input: {
   selectedPeriodKey?: string | null;
   triggerClarificationMessage?: string | null;
   comparisonLimitExceeded?: boolean;
+  financialContext?: PortalAiFinancialContext | null;
+  financialContextMissing?: boolean;
+  financialClarificationMessage?: string | null;
+  financialUsedLatest?: boolean;
 }): Message[] {
   const route = input.route?.trim() || "unknown";
   const pageType = input.pageType?.trim() || "unknown";
@@ -115,6 +142,24 @@ export function buildPortalAiMessages(input: {
     ? `Trigger monitor snapshots:\n${JSON.stringify(input.triggerContexts)}`
     : null;
 
+  const financialContextLine = input.financialContext
+    ? `Financial summary is provided for ${input.financialContext.period.label} (${input.financialContext.period.key}). Use only this period's metrics.`
+    : input.financialContextMissing
+      ? "Financial period data for requested/selected/latest period is unavailable. State this clearly and ask user to choose an available submitted financial period."
+      : null;
+
+  const financialClarificationLine = input.financialClarificationMessage
+    ? `Financial clarification guidance: ${input.financialClarificationMessage}`
+    : null;
+
+  const financialUsedLatestLine = input.financialUsedLatest && input.financialContext
+    ? `Resolution note: this answer should reference that ${input.financialContext.period.label} is the latest available submitted financial period.`
+    : null;
+
+  const financialDataBlock = input.financialContext
+    ? `Financial period summary:\n${JSON.stringify(input.financialContext)}`
+    : null;
+
   const historyMessages: Message[] = (input.history || []).map((m) => ({
     role: m.role,
     content: m.content,
@@ -128,6 +173,10 @@ export function buildPortalAiMessages(input: {
     ...(clarificationLine ? [{ role: "system" as const, content: clarificationLine }] : []),
     ...(coachingContextLine ? [{ role: "system" as const, content: coachingContextLine }] : []),
     ...(triggerDataBlock ? [{ role: "system" as const, content: triggerDataBlock }] : []),
+    ...(financialClarificationLine ? [{ role: "system" as const, content: financialClarificationLine }] : []),
+    ...(financialContextLine ? [{ role: "system" as const, content: financialContextLine }] : []),
+    ...(financialUsedLatestLine ? [{ role: "system" as const, content: financialUsedLatestLine }] : []),
+    ...(financialDataBlock ? [{ role: "system" as const, content: financialDataBlock }] : []),
     ...historyMessages,
     { role: "user", content: input.message },
   ];

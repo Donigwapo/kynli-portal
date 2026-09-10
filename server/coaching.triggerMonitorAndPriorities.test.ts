@@ -229,6 +229,95 @@ describe("coaching trigger monitor + priorities", () => {
     await expect(caller.coaching.triggerMonitorPeriods({})).resolves.toMatchObject({ tenantSlug: "acme_llc" });
   });
 
+  it("allows authorized staff/admin to delete a trigger snapshot with strict period scope", async () => {
+    const admin = makeUser({ id: 1010, role: "admin", email: "admin-delete@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(admin));
+
+    const deleteSnapshotSpy = vi.spyOn(supabaseModule, "deleteCfoTriggerSnapshotPeriod").mockResolvedValue(1);
+    const deleteFinancialPeriodSpy = vi.spyOn(supabaseModule, "deleteFinancialPeriod").mockResolvedValue(undefined as any);
+
+    const out = await caller.coaching.deleteTriggerMonitorPeriod({
+      tenantSlug: "acme_llc",
+      year: 2026,
+      month: 7,
+    });
+
+    expect(out.success).toBe(true);
+    expect(out.deletedCount).toBe(1);
+    expect(deleteSnapshotSpy).toHaveBeenCalledWith("acme_llc", 2026, 7, "financial_pdf");
+    expect(deleteFinancialPeriodSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects trigger snapshot delete for client users", async () => {
+    const clientUser = makeUser({ id: 1011, role: "client", email: "client@acme.com", tenant_slug: "acme_llc" });
+    const caller = appRouter.createCaller(makeCtx(clientUser));
+
+    await expect(
+      caller.coaching.deleteTriggerMonitorPeriod({ year: 2026, month: 7 }),
+    ).rejects.toThrow("Clients cannot delete trigger snapshots.");
+  });
+
+  it("delete + period list reflects removed month while preserving other months", async () => {
+    const admin = makeUser({ id: 1012, role: "admin", email: "admin-periods@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(admin));
+
+    let removed = false;
+
+    vi.spyOn(supabaseModule, "listCfoTriggerSnapshotPeriods").mockImplementation(async () => {
+      if (removed) {
+        return [
+          {
+            period_year: 2026,
+            period_month: 6,
+            report_month_label: "Jun 26",
+            trigger_engine_version: "v1",
+            received_at: "2026-06-30T00:00:00.000Z",
+            triggered_count: 4,
+            clear_count: 8,
+            unknown_count: 5,
+          },
+        ] as any;
+      }
+
+      return [
+        {
+          period_year: 2026,
+          period_month: 6,
+          report_month_label: "Jun 26",
+          trigger_engine_version: "v1",
+          received_at: "2026-06-30T00:00:00.000Z",
+          triggered_count: 4,
+          clear_count: 8,
+          unknown_count: 5,
+        },
+        {
+          period_year: 2026,
+          period_month: 7,
+          report_month_label: "Jul 26",
+          trigger_engine_version: "v1",
+          received_at: "2026-07-31T00:00:00.000Z",
+          triggered_count: 5,
+          clear_count: 7,
+          unknown_count: 5,
+        },
+      ] as any;
+    });
+
+    vi.spyOn(supabaseModule, "deleteCfoTriggerSnapshotPeriod").mockImplementation(async () => {
+      removed = true;
+      return 1;
+    });
+
+    const before = await caller.coaching.triggerMonitorPeriods({ tenantSlug: "acme_llc" });
+    expect(before.periods).toHaveLength(2);
+
+    await caller.coaching.deleteTriggerMonitorPeriod({ tenantSlug: "acme_llc", year: 2026, month: 7 });
+
+    const after = await caller.coaching.triggerMonitorPeriods({ tenantSlug: "acme_llc" });
+    expect(after.periods).toHaveLength(1);
+    expect(after.periods[0]).toMatchObject({ periodYear: 2026, periodMonth: 6 });
+  });
+
   it("priorities create/complete/reopen/delete are tenant-scoped", async () => {
     const admin = makeUser({ id: 1005, role: "admin", email: "admin3@acme.com" });
     const caller = appRouter.createCaller(makeCtx(admin));

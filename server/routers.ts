@@ -14,6 +14,7 @@ import {
   PORTAL_AI_MAX_CONTEXT_MESSAGES,
   PORTAL_AI_MAX_MESSAGE_LENGTH,
   type CoachingIntentResolution,
+  type PortalAiFinancialContext,
   type PortalAiTriggerContext,
 } from "./ai/portalAi";
 import { storagePut } from "./storage";
@@ -62,6 +63,7 @@ import {
   listDocumentFolders,
   createDocumentFolder,
   getFinancials,
+  listFinancialPeriods,
   getKpiMetrics,
   getLineItems,
   getSalesTracker,
@@ -145,6 +147,7 @@ import {
   getLatestCfoTriggerSnapshot,
   listCfoTriggerSnapshotPeriods,
   getCfoTriggerSnapshotByPeriod,
+  deleteCfoTriggerSnapshotPeriod,
   listCoachingPriorities,
   createCoachingPriority,
   updateCoachingPriorityCompletion,
@@ -1821,15 +1824,40 @@ async function authorizeDocumentDeleteScope(
  * Tier guard — throws FORBIDDEN if the resolved tenant's package tier
  * does not include the given feature. Admins bypass all tier checks.
  */
+function requiredTierForFeature(featureKey: string): PackageTier {
+  return (TAB_ACCESS[featureKey] ?? "legacy") as PackageTier;
+}
+
+function hasTierForFeature(tenantTier: PackageTier, featureKey: string): boolean {
+  const tenantTierIdx = PACKAGE_TIERS.indexOf(tenantTier);
+  const requiredTierIdx = PACKAGE_TIERS.indexOf(requiredTierForFeature(featureKey));
+  return tenantTierIdx >= requiredTierIdx;
+}
+
+async function tenantHasFeatureAccess(tenantSlug: string, featureKey: string): Promise<boolean> {
+  const tenant = await getTenantBySlug(tenantSlug);
+  if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+  return hasTierForFeature(tenant.package_tier as PackageTier, featureKey);
+}
+
+async function assertTenantFeatureAccess(tenantSlug: string, featureKey: string): Promise<void> {
+  const allowed = await tenantHasFeatureAccess(tenantSlug, featureKey);
+  if (!allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `This feature requires the ${requiredTierForFeature(featureKey)} tier or above.`,
+    });
+  }
+}
+
 async function assertTierAccess(user: PortalUser, featureKey: string, impersonateSlug?: string): Promise<void> {
   if (user.role === "admin") return; // admins always have access
   const slug = await resolveTenantSlug(user, impersonateSlug);
   const tenant = await getTenantBySlug(slug);
   if (!tenant) throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
-  const tenantTierIdx = PACKAGE_TIERS.indexOf(tenant.package_tier as PackageTier);
-  const requiredTierIdx = PACKAGE_TIERS.indexOf((TAB_ACCESS[featureKey] ?? "legacy") as PackageTier);
-  if (tenantTierIdx < requiredTierIdx) {
-    throw new TRPCError({ code: "FORBIDDEN", message: `This feature requires the ${TAB_ACCESS[featureKey]} tier or above.` });
+  const requiredTier = requiredTierForFeature(featureKey);
+  if (!hasTierForFeature(tenant.package_tier as PackageTier, featureKey)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: `This feature requires the ${requiredTier} tier or above.` });
   }
 }
 
@@ -2715,7 +2743,10 @@ export const appRouter = router({
         });
 
         if (slugs.length === 1) {
-          return getFinancials(slugs[0], input.year, input.month);
+          const rows = await getFinancials(slugs[0], input.year, input.month);
+          const canViewCameronSummary = await tenantHasFeatureAccess(slugs[0], "cameron_summary");
+          if (canViewCameronSummary) return rows;
+          return rows.map((row) => ({ ...row, summary: null }));
         }
 
         const lists = await Promise.all(slugs.map((slug) => getFinancials(slug, input.year, input.month)));
@@ -2848,12 +2879,13 @@ export const appRouter = router({
         summary: z.string().optional().nullable(),
       }))
       .mutation(async ({ input }) => {
+        const canUseCameronSummary = await tenantHasFeatureAccess(input.tenantSlug, "cameron_summary");
         await upsertFinancial(input.tenantSlug, {
           year: input.year, month: input.month,
           revenue: input.revenue, budget_revenue: input.budgetRevenue,
           expenses: input.expenses, budget_expenses: input.budgetExpenses,
           net_profit: input.netProfit, net_profit_margin: input.netProfitMargin,
-          summary: input.summary ?? null,
+          summary: canUseCameronSummary ? (input.summary ?? null) : null,
         });
         return { success: true };
       }),
@@ -2865,6 +2897,7 @@ export const appRouter = router({
         summary: z.string(),
       }))
       .mutation(async ({ input }) => {
+        await assertTenantFeatureAccess(input.tenantSlug, "cameron_summary");
         await updateFinancialSummary(input.tenantSlug, input.year, input.month, input.summary);
         return { success: true };
       }),
@@ -2976,7 +3009,8 @@ export const appRouter = router({
         const budgetNetProfit = budgetRevenue - (cogsBudget ?? 0) - budgetOperatingExpenses + (otherIncomeBudget ?? 0) - (otherExpenseBudget ?? 0);
         const budgetNetMargin = budgetRevenue > 0 ? (budgetNetProfit / budgetRevenue) * 100 : 0;
 
-        const financialSummary = String(input.financialSummary ?? "").trim();
+        const canUseCameronSummary = await tenantHasFeatureAccess(requestedTenant, "cameron_summary");
+        const financialSummary = canUseCameronSummary ? String(input.financialSummary ?? "").trim() : "";
 
         await upsertFinancial(requestedTenant, {
           year: input.year,
@@ -3187,7 +3221,8 @@ export const appRouter = router({
         const budgetOperatingExpenses = cleanExpenses.reduce((sum, row) => sum + (row.budget ?? 0), 0);
         const budgetNetProfit = budgetRevenue - (cogsBudget ?? 0) - budgetOperatingExpenses + (otherIncomeBudget ?? 0) - (otherExpenseBudget ?? 0);
         const budgetNetMargin = budgetRevenue > 0 ? (budgetNetProfit / budgetRevenue) * 100 : 0;
-        const financialSummary = String(input.financialSummary ?? "").trim();
+        const canUseCameronSummary = await tenantHasFeatureAccess(requestedTenant, "cameron_summary");
+        const financialSummary = canUseCameronSummary ? String(input.financialSummary ?? "").trim() : "";
         const notes = String(input.notes ?? "").trim();
 
         await upsertFinancial(requestedTenant, {
@@ -3309,6 +3344,7 @@ export const appRouter = router({
         const job = await loadImportJobForSummaryHistory(input.importId);
         const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
         await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await assertTenantFeatureAccess(tenantSlug, "cameron_summary");
         await ensureInitialSummaryVersion(job as any);
 
         const { data, error } = await supabase
@@ -3347,6 +3383,7 @@ export const appRouter = router({
         const job = await loadImportJobForSummaryHistory(input.importId);
         const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
         await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await assertTenantFeatureAccess(tenantSlug, "cameron_summary");
         await ensureInitialSummaryVersion(job as any);
 
         const status = String(job.status || "").trim().toLowerCase();
@@ -3382,6 +3419,7 @@ export const appRouter = router({
         const job = await loadImportJobForSummaryHistory(input.importId);
         const tenantSlug = sanitizeTenantSlug(String(job.tenant_slug || ""));
         await assertSummaryHistoryAccess(ctx, tenantSlug);
+        await assertTenantFeatureAccess(tenantSlug, "cameron_summary");
         await ensureInitialSummaryVersion(job as any);
 
         const status = String(job.status || "").trim().toLowerCase();
@@ -3632,6 +3670,8 @@ export const appRouter = router({
           tenantSlug: requestedTenant,
           activeTenant: activeTenant || null,
         });
+
+        await assertTenantFeatureAccess(requestedTenant, "cameron_summary");
 
         const cleanIncome = input.incomeSources.map((row) => ({
           category: String(row.category || "").trim(),
@@ -3888,6 +3928,7 @@ export const appRouter = router({
               ? "failed"
               : "processing";
 
+        const canViewCameronSummary = tenantSlug ? await tenantHasFeatureAccess(tenantSlug, "cameron_summary") : false;
         const rawExtracted = (job.extracted_data as any) ?? null;
         const normalizedExtracted = rawExtracted && typeof rawExtracted === "object"
           ? {
@@ -3895,7 +3936,7 @@ export const appRouter = router({
               expenses: Array.isArray(rawExtracted.expenses) ? rawExtracted.expenses : [],
               specialTotals: normalizeSpecialTotals(rawExtracted.specialTotals),
               financialSummary:
-                typeof rawExtracted.financialSummary === "string"
+                canViewCameronSummary && typeof rawExtracted.financialSummary === "string"
                   ? rawExtracted.financialSummary
                   : "",
               notes: typeof rawExtracted.notes === "string" ? rawExtracted.notes : "",
@@ -5645,6 +5686,35 @@ export const appRouter = router({
         const latest = await getLatestCfoTriggerSnapshot(slug, "financial_pdf");
         return buildCanonicalTriggerMonitorResponse(slug, latest, latest);
       }),
+    deleteTriggerMonitorPeriod: protectedProcedure
+      .input(z.object({
+        year: z.number().int().min(2000).max(2100),
+        month: z.number().int().min(1).max(12),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete trigger snapshots." });
+        }
+
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+
+        try {
+          const deletedCount = await deleteCfoTriggerSnapshotPeriod(slug, input.year, input.month, "financial_pdf");
+          return { success: true, deletedCount };
+        } catch (error) {
+          const err = error as any;
+          console.error("[TriggerMonitorDelete] Failed", {
+            tenantSlug: slug,
+            year: input.year,
+            month: input.month,
+            message: String(err?.message || error),
+            code: typeof err?.code === "string" ? err.code : undefined,
+          });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Unable to delete trigger snapshot." });
+        }
+      }),
     prioritiesList: protectedProcedure
       .input(z.object({ year: z.number().int().min(2000).max(2100), tenantSlug: z.string().optional() }))
       .query(async ({ ctx, input }) => {
@@ -5871,7 +5941,7 @@ export const appRouter = router({
     meetingsList: protectedProcedure
       .input(z.object({ tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meetings = await listClientMeetings(slug, mode);
@@ -5911,7 +5981,7 @@ export const appRouter = router({
     meetingsGet: protectedProcedure
       .input(z.object({ id: z.number(), tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .query(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meeting = await getClientMeetingById(slug, input.id, mode);
@@ -5931,7 +6001,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create meetings." });
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meeting = await insertClientMeeting({
@@ -5971,7 +6041,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit meetings." });
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meeting = await updateClientMeeting({
@@ -6002,7 +6072,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number(), tenantSlug: z.string().optional(), mode: meetingModeSchema.optional() }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot delete meetings." });
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const existing = await getClientMeetingById(slug, input.id, mode);
@@ -6038,7 +6108,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot edit action items." });
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const meeting = await getClientMeetingById(slug, input.meetingId, mode);
@@ -6084,7 +6154,7 @@ export const appRouter = router({
         mode: meetingModeSchema.optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
         const actionItemRow = await supabase
@@ -7161,7 +7231,13 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           let triggerClarificationMessage: string | null = null;
           let comparisonLimitExceeded = false;
 
+          let financialContext: PortalAiFinancialContext | null = null;
+          let financialContextMissing = false;
+          let financialClarificationMessage: string | null = null;
+          let financialUsedLatest = false;
+
           const isCoachingContext = route.startsWith("/portal/coaching") || pageType === "coaching";
+          const isFinancialsContext = route.startsWith("/portal/financials") || pageType === "financials";
           const hasValidSelectedPeriod = Number.isFinite(year) && Number.isFinite(month);
 
           const toPeriodKey = (y: number, m: number): string => `${y}-${m}`;
@@ -7174,29 +7250,122 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null;
             return toPeriodKey(y, m);
           };
+          const monthNameToNumber = new Map<string, number>([
+            ["january", 1], ["jan", 1],
+            ["february", 2], ["feb", 2],
+            ["march", 3], ["mar", 3],
+            ["april", 4], ["apr", 4],
+            ["may", 5],
+            ["june", 6], ["jun", 6],
+            ["july", 7], ["jul", 7],
+            ["august", 8], ["aug", 8],
+            ["september", 9], ["sep", 9], ["sept", 9],
+            ["october", 10], ["oct", 10],
+            ["november", 11], ["nov", 11],
+            ["december", 12], ["dec", 12],
+          ]);
+          const monthLabelLong = (m: number): string => ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][Math.max(1, Math.min(12, m)) - 1] || `Month ${m}`;
+          const parseMonthRequests = (rawText: string): number[] => {
+            const text = String(rawText || "").toLowerCase();
+            const found = new Set<number>();
+            const tokens = text.split(/[^a-z0-9]+/g).filter(Boolean);
+            for (const token of tokens) {
+              const monthNumber = monthNameToNumber.get(token);
+              if (monthNumber) found.add(monthNumber);
+            }
+            return Array.from(found);
+          };
+          const resolveRequestedMonthsToPeriods = (
+            requestedMonths: number[],
+            availablePeriodsInput: Array<{ year: number; month: number }>,
+            preferredYear: number | null,
+          ): {
+            matchedPeriods: Array<{ year: number; month: number }>;
+            missingMonths: number[];
+            ambiguousMonths: number[];
+          } => {
+            const matchedPeriods: Array<{ year: number; month: number }> = [];
+            const missingMonths: number[] = [];
+            const ambiguousMonths: number[] = [];
+
+            for (const requestedMonth of requestedMonths) {
+              if (!Number.isFinite(requestedMonth) || requestedMonth < 1 || requestedMonth > 12) continue;
+
+              if (preferredYear != null) {
+                const preferred = availablePeriodsInput.find((p) => Number(p.year) === preferredYear && Number(p.month) === requestedMonth);
+                if (preferred) {
+                  matchedPeriods.push({ year: Number(preferred.year), month: Number(preferred.month) });
+                  continue;
+                }
+              }
+
+              const byMonth = availablePeriodsInput.filter((p) => Number(p.month) === requestedMonth);
+              if (byMonth.length === 1) {
+                matchedPeriods.push({ year: Number(byMonth[0].year), month: Number(byMonth[0].month) });
+              } else if (byMonth.length === 0) {
+                missingMonths.push(requestedMonth);
+              } else {
+                ambiguousMonths.push(requestedMonth);
+              }
+            }
+
+            const unique = new Map<string, { year: number; month: number }>();
+            for (const p of matchedPeriods) {
+              unique.set(toPeriodKey(p.year, p.month), p);
+            }
+
+            return {
+              matchedPeriods: Array.from(unique.values()),
+              missingMonths: Array.from(new Set(missingMonths)),
+              ambiguousMonths: Array.from(new Set(ambiguousMonths)),
+            };
+          };
 
           const coachingDiag: {
             selectedPeriodKey: string | null;
             availablePeriodKeys: string[];
+            resolverStatus: "model_valid" | "fallback_explicit_periods" | "clarify_after_model_failure" | null;
             resolver: {
               mode: string | null;
               periodKeys: string[];
               useSelectedPeriodAsBaseline: boolean | null;
             } | null;
             normalizedPeriodKeys: string[];
+            snapshotLookupResults: Array<{
+              periodKey: string;
+              found: boolean;
+              snapshotIdOrMarker: string;
+              snapshotSource: "financial_pdf";
+            }>;
             retrievedPeriodKeys: string[];
+            canonicalContextPeriodKeys: string[];
+            finalModelContextPeriodKeys: string[];
             finalContextPeriodKeys: string[];
             finalContextPeriods: Array<{ key: string; label: string | null }>;
             snapshotSource: "financial_pdf";
           } = {
             selectedPeriodKey: null,
             availablePeriodKeys: [],
+            resolverStatus: null,
             resolver: null,
             normalizedPeriodKeys: [],
+            snapshotLookupResults: [],
             retrievedPeriodKeys: [],
+            canonicalContextPeriodKeys: [],
+            finalModelContextPeriodKeys: [],
             finalContextPeriodKeys: [],
             finalContextPeriods: [],
             snapshotSource: "financial_pdf",
+          };
+
+          const financialDiag: {
+            availableFinancialPeriodKeys: string[];
+            resolvedFinancialPeriodKey: string | null;
+            financialPeriodFound: boolean;
+          } = {
+            availableFinancialPeriodKeys: [],
+            resolvedFinancialPeriodKey: null,
+            financialPeriodFound: false,
           };
 
           const buildSanitizedTriggerContext = (canonical: any): PortalAiTriggerContext | null => {
@@ -7263,6 +7432,36 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
                   comparisonLimitExceeded = true;
                   triggerClarificationMessage = `I can currently compare up to ${MAX_TRIGGER_PERIODS_PER_REQUEST} trigger-monitor periods. Which months would you like to compare?`;
                 } else {
+                  const monthRequests = parseMonthRequests(input.message);
+                  const selectedYearForRequest = selectedPeriodKey ? Number(selectedPeriodKey.split("-")[0]) : null;
+                  const monthResolution = resolveRequestedMonthsToPeriods(
+                    monthRequests,
+                    periods.map((p) => ({ year: Number(p.period_year), month: Number(p.period_month) })),
+                    Number.isFinite(selectedYearForRequest) ? selectedYearForRequest : null,
+                  );
+
+                  const asksComparisonLike = (() => {
+                    const t = String(input.message || "").toLowerCase();
+                    return /\b(compare|comparison|versus|vs\.?|difference|changed|change|improved|worse|better|previous|next|before|after)\b/.test(t);
+                  })();
+
+                  if (monthRequests.length > 0 && monthResolution.missingMonths.length > 0) {
+                    const missingText = monthResolution.missingMonths.map((m) => monthLabelLong(m)).join(", ");
+                    const availableMatched = monthResolution.matchedPeriods
+                      .map((p) => `${monthLabelLong(p.month)} ${p.year}`)
+                      .join(", ");
+
+                    triggerContextMissing = true;
+                    triggerClarificationMessage = asksComparisonLike
+                      ? `${missingText} is not currently available in Trigger Monitor snapshots. ${availableMatched ? `${availableMatched} is available, but I can't run a verified comparison without all requested periods.` : "I can't run a verified comparison without all requested periods."}`
+                      : `${missingText} is not currently available in Trigger Monitor snapshots.`;
+                  } else if (monthRequests.length > 0 && monthResolution.ambiguousMonths.length > 0) {
+                    const ambiguousText = monthResolution.ambiguousMonths.map((m) => monthLabelLong(m)).join(", ");
+                    triggerContextMissing = true;
+                    triggerClarificationMessage = `${ambiguousText} matches multiple years. Please specify the year.`;
+                  }
+
+                  if (!triggerContextMissing) {
                   const intentSchema = {
                     name: "coaching_intent_resolution",
                     strict: true,
@@ -7430,11 +7629,157 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
                       triggerClarificationMessage = "I couldn't find Trigger Monitor data for this client yet.";
                     }
                   }
+                  }
                 }
               }
             } catch {
               triggerContextMissing = true;
               triggerClarificationMessage = triggerClarificationMessage || "I couldn't load Trigger Monitor data right now. Please try again.";
+            }
+          }
+
+          if (isFinancialsContext && !isCoachingContext) {
+            try {
+              const tenantHint = (ctx.viewAsClientTenantSlug || ctx.clientWorkspaceTenantSlug || "").trim() || undefined;
+
+              if (!tenantHint && (STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin")) {
+                financialContextMissing = true;
+                financialClarificationMessage = "Please open a specific client workspace in Financials to analyze a period.";
+              } else {
+                const slug = await resolveChatTenantSlug(ctx.user, tenantHint, ctx.clientWorkspaceTenantSlug);
+                const availablePeriods = await listFinancialPeriods(slug);
+                const availableKeys = availablePeriods.map((p) => toPeriodKey(Number(p.year), Number(p.month)));
+                const availableSet = new Set(availableKeys);
+                financialDiag.availableFinancialPeriodKeys = [...availableKeys];
+
+                if (!availablePeriods.length) {
+                  financialContextMissing = true;
+                  financialClarificationMessage = "I don't see any submitted financial periods available yet. Once financials are added, I can help analyze them.";
+                } else {
+                  const monthRequests = parseMonthRequests(input.message);
+                  const asksComparison = /\b(compare|comparison|versus|vs\.?|difference|changed|change|improved|worse|better|previous|last\s+month|month\s+over\s+month|mo[m\/-]?|year\s+over\s+year|yoy|trend)\b/.test(String(input.message || "").toLowerCase());
+
+                  const selectedKeyCandidate = (Number.isFinite(year) && Number.isFinite(month))
+                    ? toPeriodKey(Number(year), Number(month))
+                    : null;
+
+                  const selectedPeriod = selectedKeyCandidate && availableSet.has(selectedKeyCandidate)
+                    ? availablePeriods.find((p) => toPeriodKey(Number(p.year), Number(p.month)) === selectedKeyCandidate) || null
+                    : null;
+
+                  const selectedYear = selectedPeriod ? Number(selectedPeriod.year) : null;
+                  const monthResolution = resolveRequestedMonthsToPeriods(
+                    monthRequests,
+                    availablePeriods.map((p) => ({ year: Number(p.year), month: Number(p.month) })),
+                    selectedYear,
+                  );
+
+                  if (monthRequests.length > 0 && monthResolution.missingMonths.length > 0) {
+                    const missingText = monthResolution.missingMonths.map((m) => monthLabelLong(m)).join(", ");
+                    financialContextMissing = true;
+                    financialClarificationMessage = asksComparison
+                      ? `${missingText} is not currently available in submitted financial records, so I can't run a verified comparison.`
+                      : `${missingText} is not currently available in submitted financial records.`;
+                  } else if (monthRequests.length > 0 && monthResolution.ambiguousMonths.length > 0) {
+                    const ambiguousText = monthResolution.ambiguousMonths.map((m) => monthLabelLong(m)).join(", ");
+                    financialContextMissing = true;
+                    financialClarificationMessage = `${ambiguousText} matches multiple years. Please specify the year.`;
+                  } else if (asksComparison) {
+                    financialContextMissing = true;
+                    financialClarificationMessage = "Financial period comparison is not connected yet. I can explain one submitted period at a time (for example: 'Explain July 2026').";
+                  } else {
+                    const latestAvailable = availablePeriods[availablePeriods.length - 1] ?? null;
+                    let resolvedPeriod: { year: number; month: number } | null = null;
+                    let usedLatest = false;
+
+                    if (monthResolution.matchedPeriods.length === 1) {
+                      resolvedPeriod = monthResolution.matchedPeriods[0] ?? null;
+                    } else if (selectedPeriod) {
+                      resolvedPeriod = { year: Number(selectedPeriod.year), month: Number(selectedPeriod.month) };
+                    } else if (latestAvailable) {
+                      resolvedPeriod = { year: Number(latestAvailable.year), month: Number(latestAvailable.month) };
+                      usedLatest = true;
+                    }
+
+                    if (resolvedPeriod) {
+                      financialDiag.resolvedFinancialPeriodKey = toPeriodKey(resolvedPeriod.year, resolvedPeriod.month);
+                      const rows = await getFinancials(slug, resolvedPeriod.year, resolvedPeriod.month);
+                      const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+
+                      if (!row) {
+                        financialContextMissing = true;
+                        financialClarificationMessage = `I couldn't find submitted financial data for ${monthLabelLong(resolvedPeriod.month)} ${resolvedPeriod.year}.`;
+                      } else {
+                        const toNullableNumber = (value: unknown): number | null => {
+                          if (value == null) return null;
+                          const n = Number(value);
+                          return Number.isFinite(n) ? n : null;
+                        };
+
+                        financialDiag.financialPeriodFound = true;
+
+                        const revenue = toNullableNumber((row as any).revenue);
+                        const expenses = toNullableNumber((row as any).expenses);
+                        const cogs = toNullableNumber((row as any).cogs_actual);
+                        const otherIncome = toNullableNumber((row as any).other_income_actual) ?? 0;
+                        const otherExpense = toNullableNumber((row as any).other_expense_actual) ?? 0;
+                        const netProfit = toNullableNumber((row as any).net_profit);
+                        const netMarginRatio = toNullableNumber((row as any).net_profit_margin);
+                        const budgetRevenue = toNullableNumber((row as any).budget_revenue);
+                        const budgetExpenses = toNullableNumber((row as any).budget_expenses);
+                        const budgetCogs = toNullableNumber((row as any).cogs_budget) ?? 0;
+                        const budgetOtherIncome = toNullableNumber((row as any).other_income_budget) ?? 0;
+                        const budgetOtherExpense = toNullableNumber((row as any).other_expense_budget) ?? 0;
+
+                        const revenueVsBudget = (revenue != null && budgetRevenue != null) ? revenue - budgetRevenue : null;
+                        const revenueVsBudgetPercent = (revenue != null && budgetRevenue != null && budgetRevenue !== 0)
+                          ? ((revenue / budgetRevenue) * 100 - 100)
+                          : null;
+
+                        const computedNet = (revenue != null && cogs != null && expenses != null)
+                          ? (revenue - cogs - expenses + otherIncome - otherExpense)
+                          : null;
+
+                        const budgetNet = (budgetRevenue != null && budgetExpenses != null)
+                          ? (budgetRevenue - budgetCogs - budgetExpenses + budgetOtherIncome - budgetOtherExpense)
+                          : null;
+
+                        const resolvedNetProfit = netProfit ?? computedNet;
+                        const netVsBudget = (resolvedNetProfit != null && budgetNet != null) ? resolvedNetProfit - budgetNet : null;
+                        const netVsBudgetPercent = (resolvedNetProfit != null && budgetNet != null && budgetNet !== 0)
+                          ? ((resolvedNetProfit / budgetNet) * 100 - 100)
+                          : null;
+
+                        financialContext = {
+                          period: {
+                            year: resolvedPeriod.year,
+                            month: resolvedPeriod.month,
+                            key: toPeriodKey(resolvedPeriod.year, resolvedPeriod.month),
+                            label: `${monthLabelLong(resolvedPeriod.month)} ${resolvedPeriod.year}`,
+                          },
+                          summary: {
+                            revenue,
+                            expenses,
+                            cogs,
+                            netProfit: resolvedNetProfit,
+                            netMarginPercent: netMarginRatio != null ? netMarginRatio * 100 : null,
+                            budgetRevenue,
+                            budgetExpenses,
+                            revenueVsBudget,
+                            revenueVsBudgetPercent,
+                            netVsBudget,
+                            netVsBudgetPercent,
+                          },
+                        };
+                        financialUsedLatest = usedLatest;
+                      }
+                    }
+                  }
+                }
+              }
+            } catch {
+              financialContextMissing = true;
+              financialClarificationMessage = financialClarificationMessage || "I couldn't load Financials data right now. Please try again.";
             }
           }
 
@@ -7446,17 +7791,29 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
           if (isCoachingContext) {
             console.info("[portalAi.ask][diag]", {
-              message: input.message,
-              selectedPeriodKey: coachingDiag.selectedPeriodKey,
-              availablePeriodKeys: coachingDiag.availablePeriodKeys,
-              resolver: coachingDiag.resolver,
-              normalizedPeriodKeys: coachingDiag.normalizedPeriodKeys,
-              retrievedPeriodKeys: coachingDiag.retrievedPeriodKeys,
+              historyMessageCount: boundedHistory.length,
+              availableCoachingPeriodKeys: coachingDiag.availablePeriodKeys,
+              requestedCoachingPeriodKeys: coachingDiag.normalizedPeriodKeys,
+              retrievedCoachingPeriodKeys: coachingDiag.retrievedPeriodKeys,
               finalContextPeriodKeys: coachingDiag.finalContextPeriodKeys,
               finalContextPeriods: coachingDiag.finalContextPeriods,
               snapshotSource: coachingDiag.snapshotSource,
             });
           }
+
+          if (isFinancialsContext && !isCoachingContext) {
+            console.info("[portalAi.ask][diag]", {
+              historyMessageCount: boundedHistory.length,
+              availableFinancialPeriodKeys: financialDiag.availableFinancialPeriodKeys,
+              resolvedFinancialPeriodKey: financialDiag.resolvedFinancialPeriodKey,
+              financialPeriodFound: financialDiag.financialPeriodFound,
+              finalModelFinancialPeriodKey: financialContext?.period.key ?? null,
+            });
+          }
+
+          const historyForModel = (isCoachingContext || isFinancialsContext)
+            ? boundedHistory.filter((m) => m.role === "user")
+            : boundedHistory;
 
           const llmMessages = buildPortalAiMessages({
             message: input.message,
@@ -7464,12 +7821,16 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
             pageType,
             year,
             month,
-            history: boundedHistory,
+            history: historyForModel,
             triggerContexts,
             triggerContextMissing,
             selectedPeriodKey,
             triggerClarificationMessage,
             comparisonLimitExceeded,
+            financialContext,
+            financialContextMissing,
+            financialClarificationMessage,
+            financialUsedLatest,
           });
 
           const response = await invokeLLM({

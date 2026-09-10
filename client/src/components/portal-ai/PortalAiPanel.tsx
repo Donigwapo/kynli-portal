@@ -13,7 +13,9 @@ type PortalAiPanelProps = {
   pathname: string;
   bottomOffset: number;
   aiUserId?: string | null;
+  aiTenantScopeKey?: string | null;
   coachingSelectedPeriod?: { year: number; month: number } | null;
+  financialSelectedPeriod?: { year: number; month: number } | null;
   onClose: () => void;
 };
 
@@ -34,8 +36,22 @@ const INITIAL_MESSAGES: LocalMessage[] = [
   },
 ];
 
-function getConversationStorageKey(userId: string): string {
-  return `kynli-ai-conversation:${userId}`;
+const PORTAL_AI_STORAGE_PREFIX = "kynli-ai-conversation";
+
+function normalizeStoragePart(value: string): string {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+}
+
+function buildPortalAiStorageKey(userId: string, effectiveTenantKey: string): string {
+  // UX isolation only: this key scopes local browser chat history by user + active tenant context.
+  // It is NOT an authorization boundary; server-side protectedProcedure + tenant resolution remain authoritative.
+  const normalizedUserId = normalizeStoragePart(userId);
+  const normalizedTenantKey = normalizeStoragePart(effectiveTenantKey) || "no-active-tenant";
+  return `${PORTAL_AI_STORAGE_PREFIX}:${normalizedUserId}:${normalizedTenantKey}`;
+}
+
+function getLegacyUnscopedStorageKey(userId: string): string {
+  return `${PORTAL_AI_STORAGE_PREFIX}:${String(userId || "").trim()}`;
 }
 
 function isValidLocalMessage(value: unknown): value is LocalMessage {
@@ -65,7 +81,9 @@ const PortalAiPanel = forwardRef<HTMLDivElement, PortalAiPanelProps>(function Po
   pathname,
   bottomOffset,
   aiUserId,
+  aiTenantScopeKey,
   coachingSelectedPeriod,
+  financialSelectedPeriod,
   onClose,
 }: PortalAiPanelProps, ref) {
   const [input, setInput] = useState("");
@@ -73,13 +91,19 @@ const PortalAiPanel = forwardRef<HTMLDivElement, PortalAiPanelProps>(function Po
   const [messages, setMessages] = useState<LocalMessage[]>(INITIAL_MESSAGES);
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const activeStorageKeyRef = useRef<string | null>(null);
 
   const promptGroup = useMemo(() => getPortalAiPromptGroup(pathname), [pathname]);
   const pageType = useMemo(() => derivePageType(pathname), [pathname]);
   const storageKey = useMemo(() => {
-    const normalized = typeof aiUserId === "string" ? aiUserId.trim() : "";
-    return normalized ? getConversationStorageKey(normalized) : null;
-  }, [aiUserId]);
+    const normalizedUserId = typeof aiUserId === "string" ? aiUserId.trim() : "";
+    if (!normalizedUserId) return null;
+
+    const normalizedScope = typeof aiTenantScopeKey === "string" ? aiTenantScopeKey.trim() : "";
+    const effectiveScope = normalizedScope || "no-active-tenant";
+
+    return buildPortalAiStorageKey(normalizedUserId, effectiveScope);
+  }, [aiUserId, aiTenantScopeKey]);
 
   const askMutation = trpc.portalAi.ask.useMutation({
     onError: (error) => {
@@ -95,12 +119,26 @@ const PortalAiPanel = forwardRef<HTMLDivElement, PortalAiPanelProps>(function Po
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // Prevent stale in-memory messages from a previous user/tenant scope from being persisted
+    // under a newly active storage key during rapid scope transitions.
+    activeStorageKeyRef.current = storageKey;
+
+    // Never rehydrate from prior in-memory state when scope changes.
+    // If scope is unavailable, force a safe fresh thread.
     if (!storageKey) {
       setMessages(INITIAL_MESSAGES);
       return;
     }
 
     try {
+      // Best-effort cleanup of legacy unsafe key shape that lacked tenant scope.
+      // We intentionally do NOT migrate this value because tenant origin cannot be trusted.
+      const legacyUserId = typeof aiUserId === "string" ? aiUserId.trim() : "";
+      if (legacyUserId) {
+        window.localStorage.removeItem(getLegacyUnscopedStorageKey(legacyUserId));
+      }
+
       const raw = window.localStorage.getItem(storageKey);
       if (!raw) {
         setMessages(INITIAL_MESSAGES);
@@ -123,11 +161,12 @@ const PortalAiPanel = forwardRef<HTMLDivElement, PortalAiPanelProps>(function Po
     } catch {
       setMessages(INITIAL_MESSAGES);
     }
-  }, [storageKey]);
+  }, [storageKey, aiUserId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!storageKey) return;
+    if (activeStorageKeyRef.current !== storageKey) return;
 
     const bounded = messages.slice(-MAX_PERSISTED_MESSAGES);
 
@@ -169,13 +208,19 @@ const PortalAiPanel = forwardRef<HTMLDivElement, PortalAiPanelProps>(function Po
         .slice(-MAX_LOCAL_HISTORY_FOR_AI - 1, -1)
         .map((m) => ({ role: m.role as "assistant" | "user", content: m.content }));
 
+      const activePeriod = pageType === "coaching"
+        ? coachingSelectedPeriod
+        : pageType === "financials"
+          ? financialSelectedPeriod
+          : undefined;
+
       const result = await askMutation.mutateAsync({
         message: trimmed,
         pageContext: {
           route: pathname,
           pageType,
-          year: coachingSelectedPeriod?.year,
-          month: coachingSelectedPeriod?.month,
+          year: activePeriod?.year,
+          month: activePeriod?.month,
         },
         history: historyForAi,
       });

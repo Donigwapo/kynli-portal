@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FINANCIAL_SUMMARY_MAX_LENGTH } from "@shared/financialSummary";
+import { hasAccess, PACKAGE_TIERS, TAB_ACCESS, type PackageTier } from "@shared/tiers";
 
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const TEAL = "oklch(0.75 0.15 192)";
@@ -432,9 +433,28 @@ export default function Financials() {
   const [expandedMonth, setExpandedMonth] = useState<number | null>(now.getMonth() + 1);
   const [expandedSavedSummaries, setExpandedSavedSummaries] = useState<Record<string, boolean>>({});
   const { user } = useAuth();
-  const { impersonatingTenantSlug } = usePortal();
+  const { impersonatingTenantSlug, setAiFinancialPeriod } = usePortal();
   const tslug = impersonatingTenantSlug ?? undefined;
+  const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const canImportPeriod = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role) && !!impersonatingTenantSlug;
+
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
+    enabled: !impersonatingTenantSlug && !isStaffOrAdmin,
+  });
+  const { data: staffWorkspaces = [] } = trpc.tenant.list.useQuery(undefined, {
+    enabled: !!impersonatingTenantSlug && !!isStaffOrAdmin,
+    staleTime: 30_000,
+  });
+
+  const matchedImpersonatedTenant = impersonatingTenantSlug
+    ? (staffWorkspaces as any[]).find((t: any) => String(t?.slug ?? "").trim().toLowerCase() === String(impersonatingTenantSlug).trim().toLowerCase())
+    : null;
+  const impersonatedTier = (matchedImpersonatedTenant?.package_tier ?? null) as PackageTier | null;
+  const impersonationTierKnown = !!impersonatedTier && PACKAGE_TIERS.includes(impersonatedTier);
+  const activeTier: PackageTier = impersonatingTenantSlug
+    ? (impersonationTierKnown ? impersonatedTier : "legacy")
+    : (tenant?.package_tier ?? "legacy") as PackageTier;
+  const canViewCameronSummary = hasAccess(activeTier, TAB_ACCESS["cameron_summary"] ?? "legacy");
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string>("");
@@ -1190,6 +1210,24 @@ export default function Financials() {
   const periods = useMemo(() => [...financials].sort((a, b) => b.month - a.month), [financials]);
 
   const expandedPeriod = expandedMonth != null ? financials.find(f => f.month === expandedMonth) : null;
+
+  useEffect(() => {
+    if (expandedPeriod && Number.isFinite(Number(expandedPeriod.year)) && Number.isFinite(Number(expandedPeriod.month))) {
+      setAiFinancialPeriod({
+        year: Number(expandedPeriod.year),
+        month: Number(expandedPeriod.month),
+      });
+      return;
+    }
+
+    setAiFinancialPeriod(null);
+  }, [expandedPeriod, setAiFinancialPeriod]);
+
+  useEffect(() => {
+    return () => {
+      setAiFinancialPeriod(null);
+    };
+  }, [setAiFinancialPeriod]);
   const isReviewState = analysisDispatchResult?.status === "ready_for_review";
 
   const loadPublishedPeriodIntoReview = async (period: any) => {
@@ -1377,7 +1415,7 @@ export default function Financials() {
                           net_profit_margin: fmtN(period.net_profit_margin),
                           budget_revenue: fmtN(period.budget_revenue),
                           budget_expenses: fmtN(period.budget_expenses),
-                          summary: period.summary,
+                          summary: canViewCameronSummary ? period.summary : null,
                         }}
                         isExpanded={expandedMonth === period.month}
                         onExpand={() => setExpandedMonth(expandedMonth === period.month ? null : period.month)}
@@ -1435,7 +1473,7 @@ export default function Financials() {
                         net_profit_margin: fmtN(expandedPeriod.net_profit_margin),
                         budget_revenue: fmtN(expandedPeriod.budget_revenue),
                         budget_expenses: fmtN(expandedPeriod.budget_expenses),
-                        summary: expandedPeriod.summary,
+                        summary: canViewCameronSummary ? expandedPeriod.summary : null,
                       }}
                       summaryExpanded={!!expandedSavedSummaries[String(expandedPeriod.id ?? `${expandedPeriod.year}-${expandedPeriod.month}`)]}
                       onToggleSummaryExpanded={() => {
@@ -1554,209 +1592,211 @@ export default function Financials() {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-primary/30 p-4 space-y-3 bg-primary/5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-semibold text-foreground">Cameron’s Financial Summary</h4>
-                      <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">Draft</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {undoSummaryStack.length > 0 && (
+                {canViewCameronSummary && (
+                  <div className="rounded-lg border border-primary/30 p-4 space-y-3 bg-primary/5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-semibold text-foreground">Cameron’s Financial Summary</h4>
+                        <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">Draft</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {undoSummaryStack.length > 0 && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const prev = undoSummaryStack[undoSummaryStack.length - 1];
+                              setUndoSummaryStack((stack) => stack.slice(0, -1));
+                              setCameronSummary(prev);
+                            }}
+                          >
+                            Undo
+                          </Button>
+                        )}
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
                           onClick={() => {
-                            const prev = undoSummaryStack[undoSummaryStack.length - 1];
-                            setUndoSummaryStack((stack) => stack.slice(0, -1));
-                            setCameronSummary(prev);
+                            setHistoryPanelOpen((v) => !v);
+                            setAiAssistOpen(false);
                           }}
                         >
-                          Undo
+                          <History className="w-4 h-4 mr-1" />
+                          History
                         </Button>
-                      )}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setHistoryPanelOpen((v) => !v);
-                          setAiAssistOpen(false);
-                        }}
-                      >
-                        <History className="w-4 h-4 mr-1" />
-                        History
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setAiAssistOpen((v) => !v);
-                          setHistoryPanelOpen(false);
-                        }}
-                        disabled={rewriteSummaryWithAiMutation.isPending}
-                      >
-                        <Sparkles className="w-4 h-4 mr-1" />
-                        AI Assist
-                      </Button>
-                    </div>
-                  </div>
-
-                  {aiAssistOpen && (
-                    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-2">
-                      <label className="text-xs font-medium text-foreground">Tell AI what to improve</label>
-                      <Textarea
-                        value={aiInstruction}
-                        onChange={(e) => setAiInstruction(e.target.value)}
-                        maxLength={2000}
-                        className="w-full min-h-[96px] bg-muted/35 border-border/60"
-                        placeholder="Example: Make this easier for the client to understand and clarify that payroll remained within budget."
-                      />
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>AI will rewrite only Cameron’s Financial Summary. Financial figures and rows will not be changed.</span>
-                        <span>{aiInstruction.length.toLocaleString()} / 2,000</span>
-                      </div>
-                      {aiRevisionError && <p className="text-xs text-red-300">{aiRevisionError}</p>}
-                      <div className="flex items-center justify-end gap-2">
                         <Button
                           type="button"
+                          size="sm"
                           variant="outline"
                           onClick={() => {
-                            setAiAssistOpen(false);
-                            setAiInstruction("");
-                            setAiSuggestedSummary("");
-                            setAiRevisionError(null);
+                            setAiAssistOpen((v) => !v);
+                            setHistoryPanelOpen(false);
                           }}
                           disabled={rewriteSummaryWithAiMutation.isPending}
                         >
-                          Cancel
-                        </Button>
-                        <Button type="button" onClick={handleGenerateAiRevision} disabled={rewriteSummaryWithAiMutation.isPending}>
-                          {rewriteSummaryWithAiMutation.isPending ? "Generating Revision..." : "Generate Revision"}
+                          <Sparkles className="w-4 h-4 mr-1" />
+                          AI Assist
                         </Button>
                       </div>
                     </div>
-                  )}
 
-                  {aiSuggestedSummary && (
-                    <div className="rounded-md border border-primary/25 bg-primary/10 p-3 space-y-2">
-                      <h5 className="text-xs font-semibold text-primary">AI Suggested Revision</h5>
-                      <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words">{aiSuggestedSummary}</p>
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => {
-                            setAiSuggestedSummary("");
-                            setAiRevisionError(null);
-                          }}
-                          disabled={rewriteSummaryWithAiMutation.isPending}
-                        >
-                          Keep Current Summary
-                        </Button>
-                        <Button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              await persistSummaryVersion({ summary: aiSuggestedSummary, changeSource: "ai_revision" });
-                            } catch {
-                              setAiRevisionError("We couldn’t store this revision in history yet. Please try again.");
-                              return;
-                            }
-                            setUndoSummaryStack((prev) => [...prev, cameronSummary]);
-                            setCameronSummary(aiSuggestedSummary);
-                            setAiSuggestedSummary("");
-                            setAiInstruction("");
-                            setAiRevisionError(null);
-                            setAiAssistOpen(false);
-                          }}
-                          disabled={rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending}
-                        >
-                          Apply Revision
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className={historyPanelOpen ? "grid grid-cols-1 lg:grid-cols-12 gap-3" : "space-y-2"}>
-                    <div className={historyPanelOpen ? "lg:col-span-7 space-y-2" : "space-y-2"}>
-                      <p className="text-xs text-muted-foreground">Review and edit this summary before saving.</p>
-                      <Textarea
-                        value={cameronSummary}
-                        onChange={(e) => setCameronSummary(e.target.value)}
-                        onBlur={handleSummaryBlurSnapshot}
-                        maxLength={FINANCIAL_SUMMARY_MAX_LENGTH}
-                        className="w-full min-h-[160px] bg-muted/30 border-border/70"
-                        placeholder="Cameron's financial summary"
-                      />
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>This summary will be visible in the saved financial period after approval.</span>
-                        <span>{cameronSummary.length.toLocaleString()} / {FINANCIAL_SUMMARY_MAX_LENGTH.toLocaleString()}</span>
-                      </div>
-                      {historyWarning && <p className="text-xs text-amber-300">{historyWarning}</p>}
-                    </div>
-
-                    {historyPanelOpen && (
-                      <div className="lg:col-span-5 rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <h5 className="text-sm font-semibold text-foreground">Summary History</h5>
-                          <Button type="button" size="sm" variant="ghost" onClick={() => void summaryHistoryQuery.refetch()}>
-                            Retry
+                    {aiAssistOpen && (
+                      <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-2">
+                        <label className="text-xs font-medium text-foreground">Tell AI what to improve</label>
+                        <Textarea
+                          value={aiInstruction}
+                          onChange={(e) => setAiInstruction(e.target.value)}
+                          maxLength={2000}
+                          className="w-full min-h-[96px] bg-muted/35 border-border/60"
+                          placeholder="Example: Make this easier for the client to understand and clarify that payroll remained within budget."
+                        />
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>AI will rewrite only Cameron’s Financial Summary. Financial figures and rows will not be changed.</span>
+                          <span>{aiInstruction.length.toLocaleString()} / 2,000</span>
+                        </div>
+                        {aiRevisionError && <p className="text-xs text-red-300">{aiRevisionError}</p>}
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setAiAssistOpen(false);
+                              setAiInstruction("");
+                              setAiSuggestedSummary("");
+                              setAiRevisionError(null);
+                            }}
+                            disabled={rewriteSummaryWithAiMutation.isPending}
+                          >
+                            Cancel
+                          </Button>
+                          <Button type="button" onClick={handleGenerateAiRevision} disabled={rewriteSummaryWithAiMutation.isPending}>
+                            {rewriteSummaryWithAiMutation.isPending ? "Generating Revision..." : "Generate Revision"}
                           </Button>
                         </div>
-
-                        {summaryHistoryQuery.isLoading ? (
-                          <p className="text-sm text-muted-foreground">Loading history…</p>
-                        ) : summaryHistoryQuery.isError ? (
-                          <p className="text-sm text-red-300">Unable to load summary history.</p>
-                        ) : (summaryHistoryQuery.data?.versions?.length ?? 0) === 0 ? (
-                          <p className="text-sm text-muted-foreground">No versions yet.</p>
-                        ) : (
-                          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-                            {(summaryHistoryQuery.data?.versions ?? []).map((v) => {
-                              const sourceLabel = v.changeSource === "initial_extraction"
-                                ? "Original Extraction"
-                                : v.changeSource === "manual_edit"
-                                  ? "Manual Edit"
-                                  : v.changeSource === "ai_revision"
-                                    ? "AI Revision"
-                                    : v.changeSource === "restored_version"
-                                      ? "Restored Version"
-                                      : "Final Approved";
-                              const isCurrent = v.summary.trim() === cameronSummary.trim();
-                              return (
-                                <div key={v.id} className="rounded-md border border-border/60 bg-card/40 p-2 space-y-2">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="text-xs text-foreground font-medium">Version {v.versionNumber}</div>
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[10px] rounded-full border border-border/60 px-2 py-0.5 text-muted-foreground">{sourceLabel}</span>
-                                      {isCurrent && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary">Current</span>}
-                                    </div>
-                                  </div>
-                                  <p className="text-[11px] text-muted-foreground">
-                                    {new Date(v.createdAt).toLocaleString()} • {v.changeSource === "initial_extraction"
-                                      ? "Created by System"
-                                      : v.changeSource === "ai_revision"
-                                        ? "Generated by AI"
-                                        : v.createdByRole
-                                          ? `Updated by ${v.createdByRole}`
-                                          : "Created by System"}
-                                  </p>
-                                  <p className="text-xs text-foreground/85 line-clamp-3 whitespace-pre-wrap break-words">{v.summary}</p>
-                                  <div className="flex items-center justify-end gap-2">
-                                    <Button type="button" size="sm" variant="outline" onClick={() => setHistoryViewVersion(v)}>View</Button>
-                                    <Button type="button" size="sm" onClick={() => setHistoryRestoreVersion(v)} disabled={restoreSummaryVersionMutation.isPending}>Restore this version</Button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
                       </div>
                     )}
+
+                    {aiSuggestedSummary && (
+                      <div className="rounded-md border border-primary/25 bg-primary/10 p-3 space-y-2">
+                        <h5 className="text-xs font-semibold text-primary">AI Suggested Revision</h5>
+                        <p className="text-sm text-foreground/90 whitespace-pre-wrap break-words">{aiSuggestedSummary}</p>
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setAiSuggestedSummary("");
+                              setAiRevisionError(null);
+                            }}
+                            disabled={rewriteSummaryWithAiMutation.isPending}
+                          >
+                            Keep Current Summary
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await persistSummaryVersion({ summary: aiSuggestedSummary, changeSource: "ai_revision" });
+                              } catch {
+                                setAiRevisionError("We couldn’t store this revision in history yet. Please try again.");
+                                return;
+                              }
+                              setUndoSummaryStack((prev) => [...prev, cameronSummary]);
+                              setCameronSummary(aiSuggestedSummary);
+                              setAiSuggestedSummary("");
+                              setAiInstruction("");
+                              setAiRevisionError(null);
+                              setAiAssistOpen(false);
+                            }}
+                            disabled={rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending}
+                          >
+                            Apply Revision
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className={historyPanelOpen ? "grid grid-cols-1 lg:grid-cols-12 gap-3" : "space-y-2"}>
+                      <div className={historyPanelOpen ? "lg:col-span-7 space-y-2" : "space-y-2"}>
+                        <p className="text-xs text-muted-foreground">Review and edit this summary before saving.</p>
+                        <Textarea
+                          value={cameronSummary}
+                          onChange={(e) => setCameronSummary(e.target.value)}
+                          onBlur={handleSummaryBlurSnapshot}
+                          maxLength={FINANCIAL_SUMMARY_MAX_LENGTH}
+                          className="w-full min-h-[160px] bg-muted/30 border-border/70"
+                          placeholder="Cameron's financial summary"
+                        />
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>This summary will be visible in the saved financial period after approval.</span>
+                          <span>{cameronSummary.length.toLocaleString()} / {FINANCIAL_SUMMARY_MAX_LENGTH.toLocaleString()}</span>
+                        </div>
+                        {historyWarning && <p className="text-xs text-amber-300">{historyWarning}</p>}
+                      </div>
+
+                      {historyPanelOpen && (
+                        <div className="lg:col-span-5 rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-sm font-semibold text-foreground">Summary History</h5>
+                            <Button type="button" size="sm" variant="ghost" onClick={() => void summaryHistoryQuery.refetch()}>
+                              Retry
+                            </Button>
+                          </div>
+
+                          {summaryHistoryQuery.isLoading ? (
+                            <p className="text-sm text-muted-foreground">Loading history…</p>
+                          ) : summaryHistoryQuery.isError ? (
+                            <p className="text-sm text-red-300">Unable to load summary history.</p>
+                          ) : (summaryHistoryQuery.data?.versions?.length ?? 0) === 0 ? (
+                            <p className="text-sm text-muted-foreground">No versions yet.</p>
+                          ) : (
+                            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                              {(summaryHistoryQuery.data?.versions ?? []).map((v) => {
+                                const sourceLabel = v.changeSource === "initial_extraction"
+                                  ? "Original Extraction"
+                                  : v.changeSource === "manual_edit"
+                                    ? "Manual Edit"
+                                    : v.changeSource === "ai_revision"
+                                      ? "AI Revision"
+                                      : v.changeSource === "restored_version"
+                                        ? "Restored Version"
+                                        : "Final Approved";
+                                const isCurrent = v.summary.trim() === cameronSummary.trim();
+                                return (
+                                  <div key={v.id} className="rounded-md border border-border/60 bg-card/40 p-2 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="text-xs text-foreground font-medium">Version {v.versionNumber}</div>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-[10px] rounded-full border border-border/60 px-2 py-0.5 text-muted-foreground">{sourceLabel}</span>
+                                        {isCurrent && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary">Current</span>}
+                                      </div>
+                                    </div>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      {new Date(v.createdAt).toLocaleString()} • {v.changeSource === "initial_extraction"
+                                        ? "Created by System"
+                                        : v.changeSource === "ai_revision"
+                                          ? "Generated by AI"
+                                          : v.createdByRole
+                                            ? `Updated by ${v.createdByRole}`
+                                            : "Created by System"}
+                                    </p>
+                                    <p className="text-xs text-foreground/85 line-clamp-3 whitespace-pre-wrap break-words">{v.summary}</p>
+                                    <div className="flex items-center justify-end gap-2">
+                                      <Button type="button" size="sm" variant="outline" onClick={() => setHistoryViewVersion(v)}>View</Button>
+                                      <Button type="button" size="sm" onClick={() => setHistoryRestoreVersion(v)} disabled={restoreSummaryVersionMutation.isPending}>Restore this version</Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
                   <div className="flex items-center justify-between">

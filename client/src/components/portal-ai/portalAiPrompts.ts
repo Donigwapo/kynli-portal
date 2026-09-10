@@ -10,9 +10,9 @@ const PROMPT_MAP: Record<PortalAiPromptGroup["key"], string[]> = {
     "How are we doing this year?",
   ],
   financials: [
-    "Explain this month",
-    "Compare with last month",
-    "Where are expenses increasing?",
+    "Explain this period",
+    "How profitable were we?",
+    "Are we over or under budget?",
     "What should I pay attention to?",
   ],
   coaching: [

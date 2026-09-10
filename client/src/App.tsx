@@ -83,8 +83,8 @@ function Router() {
       <Route path="/portal/reports"      component={() => <PortalRoute component={Reports}          featureKey="reports" />} />
       <Route path="/portal/documents"    component={() => <PortalRoute component={Documents}        featureKey="documents" />} />
       <Route path="/portal/coaching"     component={() => <PortalRoute component={CoachingDashboard} featureKey="coaching" />} />
-      <Route path="/portal/coaching/client-meeting" component={() => <PortalRoute component={CoachingClientMeeting} featureKey="coaching" />} />
-      <Route path="/portal/coaching/client-meeting/:meetingId" component={() => <PortalRoute component={CoachingClientMeetingDetail} featureKey="coaching" />} />
+      <Route path="/portal/coaching/client-meeting" component={() => <PortalRoute component={CoachingClientMeeting} featureKey="client_meeting" />} />
+      <Route path="/portal/coaching/client-meeting/:meetingId" component={() => <PortalRoute component={CoachingClientMeetingDetail} featureKey="client_meeting" />} />
       <Route path="/portal/kpi"          component={() => <PortalRoute component={KpiDashboard}     featureKey="kpi_dashboard" />} />
       <Route path="/portal/time"         component={() => <PortalRoute component={TimeIntelligence} featureKey="time_intelligence" />} />
       <Route path="/portal/sales"        component={() => <PortalRoute component={SalesTracker}     featureKey="sales_tracker" />} />

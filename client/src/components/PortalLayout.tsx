@@ -55,7 +55,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "sales_tracker",     label: "Sales Tracker",     featureKey: "sales_tracker",     icon: <ShoppingCart size={16} />,    href: "/portal/sales" },
   { id: "financials",        label: "Financials",        featureKey: "financials",        icon: <BarChart3 size={16} />,       href: "/portal/financials" },
   { id: "coaching",          label: "Coaching",          featureKey: "coaching",          icon: <ShieldAlert size={16} />,     href: "/portal/coaching" },
-  { id: "client_meeting",    label: "Client Meeting",    featureKey: "coaching",          icon: <CalendarDays size={16} />,    href: "/portal/coaching/client-meeting" },
+  { id: "client_meeting",    label: "Client Meeting",    featureKey: "client_meeting",    icon: <CalendarDays size={16} />,    href: "/portal/coaching/client-meeting" },
   { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
   { id: "chat",              label: "Workspace Chat",    featureKey: "chat",              icon: <MessageSquare size={16} />,   href: "/portal/chat" },
@@ -83,7 +83,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const { impersonatingTenantSlug, setImpersonatingTenantSlug, aiCoachingPeriod } = usePortal();
+  const { impersonatingTenantSlug, setImpersonatingTenantSlug, aiCoachingPeriod, aiFinancialPeriod } = usePortal();
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
@@ -265,6 +265,13 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const activeWorkspaceSlug = isClientUser
     ? (currentClientWorkspace?.tenantSlug ?? user?.tenant_slug ?? null)
     : (impersonatingTenantSlug ?? null);
+
+  // UX-only AI persistence scope. This does NOT authorize data access.
+  // Server-side auth + tenant resolution remains authoritative.
+  const aiTenantScopeKey = useMemo(() => {
+    const slug = typeof activeWorkspaceSlug === "string" ? activeWorkspaceSlug.trim().toLowerCase() : "";
+    return slug || "no-active-tenant";
+  }, [activeWorkspaceSlug]);
 
   const activeWorkspaceName = useMemo(() => {
     const hit = workspaceOptions.find((w) => w.slug === activeWorkspaceSlug);
@@ -809,7 +816,9 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           pathname={location}
           bottomOffset={aiBottomOffset}
           aiUserId={user?.id != null ? String(user.id) : null}
+          aiTenantScopeKey={aiTenantScopeKey}
           coachingSelectedPeriod={location.startsWith("/portal/coaching") ? aiCoachingPeriod : null}
+          financialSelectedPeriod={location.startsWith("/portal/financials") ? aiFinancialPeriod : null}
           onClose={() => setPortalAiOpen(false)}
         />
         <div ref={portalAiLauncherRef}>
