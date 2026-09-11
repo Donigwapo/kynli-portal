@@ -330,7 +330,7 @@ export default function Overview() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground">Strategic Overview</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Latest period: {periodLabel} · {year} YTD</p>
+          <p className="text-sm text-foreground/70 mt-0.5">Latest period: {periodLabel} · {year} YTD</p>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium bg-primary/10 text-primary border border-primary/20">
           <Users size={14} />
@@ -377,7 +377,7 @@ export default function Overview() {
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="text-sm font-semibold text-foreground mb-4">
-            Top Income Sources <span className="text-xs font-normal text-muted-foreground">({periodLabel})</span>
+            Top Income Sources <span className="text-xs font-normal text-foreground/70">({periodLabel})</span>
           </h2>
           {topIncome.length === 0 ? (
             <p className="text-xs text-muted-foreground">No income data for this period.</p>
@@ -407,7 +407,7 @@ export default function Overview() {
 
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="text-sm font-semibold text-foreground mb-4">
-            Top Expenses <span className="text-xs font-normal text-muted-foreground">({periodLabel})</span>
+            Top Expenses <span className="text-xs font-normal text-foreground/70">({periodLabel})</span>
           </h2>
           {topExpenses.length === 0 ? (
             <p className="text-xs text-muted-foreground">No expense data for this period.</p>
@@ -440,23 +440,23 @@ export default function Overview() {
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold text-foreground">{year} Coaching Priorities</h2>
-            <span className="text-xs text-muted-foreground">{openPriorities.length} open</span>
+            <span className="text-xs text-foreground/70">{openPriorities.length} open</span>
           </div>
 
           {!coachingCardsEnabled ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
               Select a client via “Viewing as client” to manage coaching priorities.
             </div>
           ) : prioritiesQuery.isLoading ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Loading priorities…</div>
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading priorities…</div>
           ) : prioritiesQuery.isError ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Unable to load priorities for this client.</div>
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load priorities for this client.</div>
           ) : (
             <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
               {openPriorities.length > 0 ? (
                 <>
                   {displayedOpenPriorities.map((p) => (
-                    <div key={p.id} className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2">
+                    <div key={p.id} className="flex items-center gap-3 rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-3 py-2">
                       <Checkbox
                         checked={!!p.completed}
                         onCheckedChange={(checked) => {
@@ -464,6 +464,7 @@ export default function Overview() {
                           togglePriorityMutation.mutate({ id: p.id, completed: checked === true, tenantSlug: coachingTenantSlug });
                         }}
                         disabled={!canEditPriorities || togglePriorityMutation.isPending}
+                        className="border-[oklch(0.30_0.01_240)] bg-[oklch(0.13_0.004_240)]"
                       />
                       <Link
                         href="/portal/coaching"
@@ -486,7 +487,7 @@ export default function Overview() {
                   ) : null}
                 </>
               ) : (
-                <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No open coaching priorities.</div>
+                <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open coaching priorities.</div>
               )}
             </div>
           )}
@@ -495,25 +496,25 @@ export default function Overview() {
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold text-foreground">Client Action Items</h2>
-            <span className="text-xs text-muted-foreground">{openActionItems.length} open</span>
+            <span className="text-xs text-foreground/70">{openActionItems.length} open</span>
           </div>
 
           {!coachingCardsEnabled ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
               Select a client via “Viewing as client” to view open client action items.
             </div>
           ) : meetingsQuery.isLoading || openItemsLoading ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Loading open action items…</div>
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading open action items…</div>
           ) : meetingsQuery.isError ? (
-            <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">Unable to load client meetings.</div>
+            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load client meetings.</div>
           ) : (
             <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
               {openActionItems.length === 0 ? (
-                <div className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">No open client action items.</div>
+                <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open client action items.</div>
               ) : (
                 <>
                   {displayedOpenActionItems.map((row) => (
-                    <div key={row.actionItemId} className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
+                    <div key={row.actionItemId} className="flex items-start gap-3 rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-3 py-2.5">
                       <Checkbox
                         checked={false}
                         onCheckedChange={(checked) => {
@@ -525,6 +526,7 @@ export default function Overview() {
                           });
                         }}
                         disabled={actionItemStatusMutation.isPending}
+                        className="border-[oklch(0.30_0.01_240)] bg-[oklch(0.13_0.004_240)]"
                       />
                       <div className="min-w-0 flex-1">
                         <Link
@@ -534,7 +536,7 @@ export default function Overview() {
                         >
                           {row.title}
                         </Link>
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                        <p className="text-xs text-foreground/70 mt-0.5 truncate">
                           {row.meetingTitle} · {fmtDate(row.meetingDate)}
                         </p>
                       </div>
@@ -564,22 +566,22 @@ export default function Overview() {
           <div className="xl:col-span-2 bg-card border border-border rounded-xl p-5">
             <div className="mb-4">
               <h3 className="text-sm font-semibold text-foreground">{year} Sales Target</h3>
-              <p className="text-xs text-muted-foreground mt-1">Clients signed vs annual client target</p>
+              <p className="text-xs text-foreground/70 mt-1">Clients signed vs annual client target</p>
             </div>
 
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="rounded-lg border border-border bg-background p-3">
-                <p className="text-xs text-muted-foreground">Clients signed</p>
+              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3">
+                <p className="text-xs text-foreground/70">Clients signed</p>
                 <p className="text-2xl font-semibold text-foreground mt-1">{ytdSigned}</p>
               </div>
-              <div className="rounded-lg border border-border bg-background p-3">
-                <p className="text-xs text-muted-foreground">Annual client target</p>
+              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3">
+                <p className="text-xs text-foreground/70">Annual client target</p>
                 <p className="text-2xl font-semibold text-foreground mt-1">{annualTarget}</p>
               </div>
             </div>
 
             <div className="mb-2 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Progress</span>
+              <span className="text-foreground/70">Progress</span>
               <span className="font-semibold" style={{ color: salesProgressPct >= 100 ? GREEN : TEAL }}>
                 {fmtPct(salesProgressPct)}
               </span>
@@ -590,7 +592,7 @@ export default function Overview() {
                 style={{ width: `${salesProgressPct}%`, backgroundColor: salesProgressPct >= 100 ? GREEN : TEAL }}
               />
             </div>
-            <p className="text-xs text-muted-foreground mb-4">{clientsRemaining} clients remaining</p>
+            <p className="text-xs text-foreground/70 mb-4">{clientsRemaining} clients remaining</p>
 
             <Link href="/portal/sales" className="inline-flex items-center text-xs text-primary hover:underline">
               Manage annual goal in Sales Tracker
@@ -600,11 +602,11 @@ export default function Overview() {
           <div className="xl:col-span-3 bg-card border border-border rounded-xl p-5">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-foreground">Actuals vs Budget</h3>
-              <p className="text-xs text-muted-foreground mt-1">Available periods only · {year}</p>
+              <p className="text-xs text-foreground/70 mt-1">Available periods only · {year}</p>
             </div>
 
             {actualVsBudgetChartData.length === 0 ? (
-              <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No financial periods available for this year.
               </div>
             ) : (
@@ -630,11 +632,11 @@ export default function Overview() {
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-foreground">Revenue Trend</h3>
-              <p className="text-xs text-muted-foreground mt-1">Actual revenue across available periods · {year}</p>
+              <p className="text-xs text-foreground/70 mt-1">Actual revenue across available periods · {year}</p>
             </div>
 
             {revenueTrendData.length === 0 ? (
-              <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No revenue periods available for this year.
               </div>
             ) : (
@@ -657,11 +659,11 @@ export default function Overview() {
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-foreground">Active Client Mix</h3>
-              <p className="text-xs text-muted-foreground mt-1">Grouped by active package/tier</p>
+              <p className="text-xs text-foreground/70 mt-1">Grouped by active package/tier</p>
             </div>
 
             {activeClientMix.length === 0 ? (
-              <div className="rounded-lg border border-border bg-background p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No active clients available.
               </div>
             ) : (
@@ -690,10 +692,10 @@ export default function Overview() {
                 </div>
                 <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
                   {activeClientMix.map((entry, idx) => (
-                    <div key={entry.name} className="flex items-center justify-between text-xs rounded-md border border-border bg-background px-2.5 py-2">
+                    <div key={entry.name} className="flex items-center justify-between text-xs rounded-md border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-2.5 py-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: mixColors[idx % mixColors.length] }} />
-                        <span className="text-muted-foreground truncate">{entry.name}</span>
+                        <span className="text-foreground/70 truncate">{entry.name}</span>
                       </div>
                       <span className="font-semibold text-foreground">{entry.value}</span>
                     </div>

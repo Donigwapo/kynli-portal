@@ -919,7 +919,26 @@ export default function Financials() {
   };
 
   const handleSaveReviewedPeriod = async () => {
-    if (!analysisDispatchResult?.importId) return;
+    if (!analysisDispatchResult) {
+      toast.error("Unable to save this financial period right now. Please reopen the editor and try again.");
+      return;
+    }
+
+    const isPublishedEdit = analysisDispatchResult.mode === "edit_published";
+
+    if (import.meta.env.DEV) {
+      console.debug("[FinancialsSaveClick]", {
+        mode: isPublishedEdit ? "edit_published" : "import_review",
+        year: analysisDispatchResult.selectedYear,
+        month: analysisDispatchResult.selectedMonth,
+      });
+    }
+
+    if (!isPublishedEdit && !analysisDispatchResult.importId) {
+      toast.error("This import review is missing its import ID and cannot be saved.");
+      return;
+    }
+
     if (!impersonatingTenantSlug) {
       toast.error("Please select a client workspace before saving financial data.");
       return;
@@ -963,7 +982,12 @@ export default function Financials() {
 
     setIsSavingReviewedPeriod(true);
     try {
-      const isPublishedEdit = analysisDispatchResult.mode === "edit_published";
+      if (import.meta.env.DEV) {
+        console.debug("[FinancialsSaveMutationStart]", {
+          mode: isPublishedEdit ? "edit_published" : "import_review",
+        });
+      }
+
       const result = isPublishedEdit
         ? await updatePublishedPeriodMutation.mutateAsync({
             tenantSlug: impersonatingTenantSlug,
@@ -991,6 +1015,12 @@ export default function Financials() {
         throw new Error("Save did not complete successfully.");
       }
 
+      if (import.meta.env.DEV) {
+        console.debug("[FinancialsSaveSuccess]", {
+          mode: isPublishedEdit ? "edit_published" : "import_review",
+        });
+      }
+
       toast.success("Financial period saved successfully.");
       if ((result as any)?.chatHistoryCleanup?.attempted && !(result as any)?.chatHistoryCleanup?.succeeded) {
         toast.warning("Financial period saved, but temporary AI history could not be cleared automatically.");
@@ -1003,8 +1033,17 @@ export default function Financials() {
       setImportDialogOpen(false);
       resetImportDialogState();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to save financial period.";
-      toast.error(message || "Failed to save financial period.");
+      const err = error as any;
+      if (import.meta.env.DEV) {
+        console.error("[FinancialsSaveError]", {
+          mode: isPublishedEdit ? "edit_published" : "import_review",
+          message: err?.message,
+          data: err?.data,
+        });
+      }
+
+      const message = error instanceof Error ? error.message : "Unable to save this financial period. Please try again.";
+      toast.error(message || "Unable to save this financial period. Please try again.");
     } finally {
       setIsSavingReviewedPeriod(false);
     }
@@ -1229,6 +1268,36 @@ export default function Financials() {
     };
   }, [setAiFinancialPeriod]);
   const isReviewState = analysisDispatchResult?.status === "ready_for_review";
+  const isSaveFinancialPeriodDisabled =
+    isSavingReviewedPeriod ||
+    rewriteSummaryWithAiMutation.isPending ||
+    createSummaryVersionMutation.isPending ||
+    restoreSummaryVersionMutation.isPending;
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!importDialogOpen || analysisDispatchResult?.status !== "ready_for_review") return;
+
+    console.debug("[FinancialsSaveState]", {
+      mode: analysisDispatchResult.mode === "edit_published" ? "edit_published" : "import_review",
+      disabled: isSaveFinancialPeriodDisabled,
+      saving: isSavingReviewedPeriod,
+      hasUnsavedChanges: hasUnsavedReviewChanges,
+      hasImportId: !!analysisDispatchResult?.importId,
+      year: analysisDispatchResult?.selectedYear ?? null,
+      month: analysisDispatchResult?.selectedMonth ?? null,
+    });
+  }, [
+    importDialogOpen,
+    analysisDispatchResult?.status,
+    analysisDispatchResult?.mode,
+    analysisDispatchResult?.importId,
+    analysisDispatchResult?.selectedYear,
+    analysisDispatchResult?.selectedMonth,
+    isSaveFinancialPeriodDisabled,
+    isSavingReviewedPeriod,
+    hasUnsavedReviewChanges,
+  ]);
 
   const loadPublishedPeriodIntoReview = async (period: any) => {
     if (!canManagePublishedPeriods || !impersonatingTenantSlug) return;
@@ -2168,7 +2237,7 @@ export default function Financials() {
                   <Button
                     type="button"
                     onClick={handleSaveReviewedPeriod}
-                    disabled={isSavingReviewedPeriod || rewriteSummaryWithAiMutation.isPending || createSummaryVersionMutation.isPending || restoreSummaryVersionMutation.isPending}
+                    disabled={isSaveFinancialPeriodDisabled}
                   >
                     {isSavingReviewedPeriod ? "Saving…" : "Save Financial Period"}
                   </Button>
