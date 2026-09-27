@@ -14,13 +14,22 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, CheckSquare, MoreHorizontal, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckSquare, ListChecks, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { TRPCClientErrorLike } from "@trpc/client";
 import type { AppRouter } from "../../../../server/routers";
+import { useLocation } from "wouter";
 
 type TriggerPeriodTile = {
   periodYear: number;
@@ -35,6 +44,7 @@ type TriggerPeriodTile = {
 export default function CoachingDashboard() {
   const { user } = useAuth();
   const { impersonatingTenantSlug, setAiCoachingPeriod } = usePortal();
+  const [, navigate] = useLocation();
   const now = new Date();
   const currentYear = now.getFullYear();
 
@@ -137,6 +147,11 @@ export default function CoachingDashboard() {
     onError: (err) => toast.error(err.message || "Unable to delete priority."),
   });
 
+  const meetingsForActionItemQuery = trpc.coaching.meetingsList.useQuery(
+    { tenantSlug },
+    { enabled: !allowClientSelector || !!tenantSlug, staleTime: 30_000 },
+  );
+
   const deleteTriggerPeriodMutation = trpc.coaching.deleteTriggerMonitorPeriod.useMutation({
     onSuccess: async () => {
       setDeletePeriodDialogOpen(false);
@@ -164,10 +179,49 @@ export default function CoachingDashboard() {
   const [newTitle, setNewTitle] = useState("");
   const [deletePeriodDialogOpen, setDeletePeriodDialogOpen] = useState(false);
   const [pendingDeletePeriod, setPendingDeletePeriod] = useState<TriggerPeriodTile | null>(null);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [clientActionDialogOpen, setClientActionDialogOpen] = useState(false);
+  const [selectedActionMeetingId, setSelectedActionMeetingId] = useState<string>("");
+
+  const createClientActionItemMutation = trpc.coaching.meetingActionItemsCreate.useMutation({
+    onSuccess: async () => {
+      setClientActionDialogOpen(false);
+      setSelectedActionMeetingId("");
+      setAddMenuOpen(false);
+      setNewTitle("");
+      await Promise.all([
+        utils.coaching.meetingsList.invalidate({ tenantSlug }),
+        utils.coaching.meetingsGet.invalidate(),
+      ]);
+      toast.success("Client action item added");
+      navigate("/portal#client-action-items");
+    },
+    onError: (err: TRPCClientErrorLike<AppRouter>) => {
+      toast.error(err.message || "Unable to create client action item.");
+    },
+  });
 
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
   const completedPriorities = priorities.filter((p) => !!p.completed);
+
+  const meetingsForActionItem = ((meetingsForActionItemQuery.data as Array<any>) || []).map((m) => ({
+    id: Number(m.id),
+    title: String(m.title || "Client Meeting"),
+    meetingDate: m.meeting_date ? String(m.meeting_date) : null,
+  }));
+
+  useEffect(() => {
+    if (!meetingsForActionItem.length) {
+      setSelectedActionMeetingId("");
+      return;
+    }
+
+    setSelectedActionMeetingId((prev) => {
+      if (prev && meetingsForActionItem.some((m) => String(m.id) === prev)) return prev;
+      return String(meetingsForActionItem[0].id);
+    });
+  }, [meetingsForActionItem]);
 
   const activeWorkspaceName = useMemo(() => {
     if (!allowClientSelector) return null;
@@ -188,6 +242,38 @@ export default function CoachingDashboard() {
   const pendingDeleteLabel = pendingDeletePeriod
     ? `${pendingDeletePeriod.reportMonthLabel}`
     : "selected";
+
+  const handleCreateCoachingPriority = () => {
+    if (!canEditPriorities || !newTitle.trim() || createMutation.isPending) return;
+    createMutation.mutate({ year: currentYear, tenantSlug, title: newTitle.trim() });
+    setAddMenuOpen(false);
+  };
+
+  const handleNavigateToClientActionItems = () => {
+    if (!canEditPriorities || !newTitle.trim()) return;
+    setAddMenuOpen(false);
+
+    if (!meetingsForActionItem.length) {
+      toast.error("Create a Client Meeting first before adding a client action item.");
+      return;
+    }
+
+    setClientActionDialogOpen(true);
+  };
+
+  const handleCreateClientActionItem = () => {
+    if (!canEditPriorities || !newTitle.trim()) return;
+    if (!selectedActionMeetingId) {
+      toast.error("Select a meeting.");
+      return;
+    }
+
+    createClientActionItemMutation.mutate({
+      meetingId: Number(selectedActionMeetingId),
+      title: newTitle.trim(),
+      tenantSlug,
+    });
+  };
 
   useEffect(() => {
     const path = typeof window !== "undefined" ? window.location.pathname : "";
@@ -445,18 +531,45 @@ export default function CoachingDashboard() {
                   }
                 }}
               />
-              <Button
-                type="button"
-                variant="default"
-                className="h-12 w-12 sm:h-14 sm:w-14 rounded-xl shrink-0 bg-teal-400 text-black hover:bg-teal-300"
-                disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
-                onClick={() => {
-                  if (!canEditPriorities || !newTitle.trim()) return;
-                  createMutation.mutate({ year: currentYear, tenantSlug, title: newTitle.trim() });
-                }}
-              >
-                <Plus className="w-5 h-5" />
-              </Button>
+              <DropdownMenu open={addMenuOpen} onOpenChange={setAddMenuOpen}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="default"
+                    className="h-12 w-12 sm:h-14 sm:w-14 rounded-xl shrink-0 bg-teal-400 text-black hover:bg-teal-300"
+                    disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
+                  >
+                    <Plus className="w-5 h-5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72 bg-zinc-950 border-zinc-800 text-zinc-100 p-1.5">
+                  <div className="px-2 py-1 text-xs uppercase tracking-[0.12em] text-zinc-500">Add item</div>
+
+                  <DropdownMenuItem
+                    onClick={handleCreateCoachingPriority}
+                    className="items-start gap-2.5 py-2.5"
+                    disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
+                  >
+                    <CheckSquare className="w-4 h-4 mt-0.5 text-teal-300" />
+                    <div className="min-w-0">
+                      <p className="text-sm text-zinc-100">Coaching Priority</p>
+                      <p className="text-xs text-zinc-400 mt-0.5">Keep this as an annual coaching commitment</p>
+                    </div>
+                  </DropdownMenuItem>
+
+                  <DropdownMenuItem
+                    onClick={handleNavigateToClientActionItems}
+                    className="items-start gap-2.5 py-2.5"
+                    disabled={!canEditPriorities || !newTitle.trim()}
+                  >
+                    <ListChecks className="w-4 h-4 mt-0.5 text-zinc-300" />
+                    <div className="min-w-0">
+                      <p className="text-sm text-zinc-100">Client Action Item</p>
+                      <p className="text-xs text-zinc-400 mt-0.5">Manage this with client meeting/action items</p>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
@@ -543,6 +656,61 @@ export default function CoachingDashboard() {
             </div>
           )}
         </section>
+
+        <Dialog open={clientActionDialogOpen} onOpenChange={setClientActionDialogOpen}>
+          <DialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">
+            <DialogHeader>
+              <DialogTitle>Add Client Action Item</DialogTitle>
+              <DialogDescription className="text-zinc-400">
+                Choose a Client Meeting to attach this action item.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3">
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
+                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500 mb-1">Task</p>
+                <p className="text-sm text-zinc-100 break-words">{newTitle.trim()}</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-xs text-zinc-400">Meeting</p>
+                <Select value={selectedActionMeetingId} onValueChange={setSelectedActionMeetingId}>
+                  <SelectTrigger className="h-11 bg-zinc-950/70 border-zinc-700 rounded-xl">
+                    <SelectValue placeholder="Select Client Meeting" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {meetingsForActionItem.map((m) => (
+                      <SelectItem key={String(m.id)} value={String(m.id)}>
+                        {m.title}{m.meetingDate ? ` · ${m.meetingDate}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-zinc-700 text-zinc-200 hover:bg-zinc-900"
+                onClick={() => {
+                  setClientActionDialogOpen(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="bg-teal-400 text-black hover:bg-teal-300"
+                disabled={!selectedActionMeetingId || createClientActionItemMutation.isPending || !newTitle.trim()}
+                onClick={handleCreateClientActionItem}
+              >
+                {createClientActionItemMutation.isPending ? "Adding..." : "Add Item"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <AlertDialog open={deletePeriodDialogOpen} onOpenChange={setDeletePeriodDialogOpen}>
           <AlertDialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">

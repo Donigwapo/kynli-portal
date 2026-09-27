@@ -143,6 +143,7 @@ import {
   updateClientMeeting,
   deleteClientMeeting,
   replaceClientMeetingActionItems,
+  insertClientMeetingActionItem,
   updateClientMeetingActionItemStatus,
   getLatestCfoTriggerSnapshot,
   listCfoTriggerSnapshotPeriods,
@@ -1336,6 +1337,16 @@ function normalizeDocTypeValue(value: string | null | undefined): string {
     return `Chat Attachments/${normalized.slice("chat attachment/".length)}`;
   }
   return normalized;
+}
+
+function isFinancialImportDocType(value: string | null | undefined): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized === "financials" ||
+    normalized === "financials (internal)" ||
+    normalized.startsWith("financials (internal)/")
+  );
 }
 
 function extractMentionedUserIds(body: string, candidates: MentionRecipient[]): number[] {
@@ -4020,8 +4031,8 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "Document tenant does not match selected client workspace." });
         }
 
-        const docType = String(doc.doc_type || "").trim().toLowerCase();
-        if (docType !== "financials") {
+        const docType = String(doc.doc_type || "").trim();
+        if (!isFinancialImportDocType(docType)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Document is not a Financials import file." });
         }
 
@@ -6145,6 +6156,44 @@ export const appRouter = router({
           metadata: { meeting_id: input.meetingId, item_count: rows.length },
         });
         return { success: true, items: rows };
+      }),
+    meetingActionItemsCreate: protectedProcedure
+      .input(z.object({
+        meetingId: z.number(),
+        title: z.string().min(1),
+        tenantSlug: z.string().optional(),
+        mode: meetingModeSchema.optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create action items." });
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const mode = resolveMeetingMode(input.mode);
+
+        const meeting = await getClientMeetingById(slug, input.meetingId, mode);
+        if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+
+        const existingItems = await listClientMeetingActionItems(slug, input.meetingId);
+        const item = await insertClientMeetingActionItem({
+          tenant_slug: slug,
+          meeting_id: input.meetingId,
+          title: input.title.trim(),
+          status: "open",
+          sort_order: existingItems.length,
+        });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "meeting_action_item_created",
+          entity_type: "meeting_action_item",
+          entity_id: String(item.id),
+          tenant_slug: slug,
+          file_name: item.title,
+          metadata: { meeting_id: item.meeting_id },
+        });
+
+        return { success: true, item };
       }),
     meetingActionItemsUpdateStatus: protectedProcedure
       .input(z.object({

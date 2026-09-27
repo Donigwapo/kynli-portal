@@ -64,6 +64,7 @@ function fmtDate(value?: string | null) {
 
 function KpiCard({
   label,
+  sublabel,
   value,
   budget,
   variance,
@@ -72,6 +73,7 @@ function KpiCard({
   invertGood = false,
 }: {
   label: string;
+  sublabel?: string;
   value: string;
   budget?: string;
   variance?: number;
@@ -87,7 +89,10 @@ function KpiCard({
   return (
     <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+        <div className="min-w-0">
+          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+          {sublabel ? <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{sublabel}</div> : null}
+        </div>
         <span className="text-muted-foreground">{icon}</span>
       </div>
       <div className="text-2xl font-bold text-foreground">{value}</div>
@@ -241,13 +246,25 @@ export default function Overview() {
     };
   }, [coachingCardsEnabled, coachingTenantSlug, meetings, utils.coaching.meetingsGet]);
 
-  const ytdRevenue = useMemo(() => financials.reduce((s, f) => s + (f.revenue ?? 0), 0), [financials]);
-  const ytdExpenses = useMemo(() => financials.reduce((s, f) => s + (f.expenses ?? 0), 0), [financials]);
-  const ytdProfit = ytdRevenue - ytdExpenses;
-  const ytdMargin = ytdRevenue > 0 ? (ytdProfit / ytdRevenue) * 100 : 0;
-  const ytdBudgetRevenue = useMemo(() => financials.reduce((s, f) => s + (f.budget_revenue ?? 0), 0), [financials]);
-  const ytdBudgetExpenses = useMemo(() => financials.reduce((s, f) => s + (f.budget_expenses ?? 0), 0), [financials]);
-  const ytdBudgetProfit = ytdBudgetRevenue - ytdBudgetExpenses;
+  const latestRevenue = latestPeriod?.revenue ?? 0;
+  const latestExpenses = latestPeriod?.expenses ?? 0;
+  const latestNetProfit = latestPeriod?.net_profit ?? 0;
+  const latestNetMarginPct = latestPeriod?.net_profit_margin ?? 0;
+
+  const latestBudgetRevenue = latestPeriod?.budget_revenue ?? 0;
+  const latestBudgetExpenses = latestPeriod?.budget_expenses ?? 0;
+
+  const latestCogs = (latestPeriod as any)?.cogs_actual ?? 0;
+  const latestOtherIncome = (latestPeriod as any)?.other_income_actual ?? 0;
+  const latestOtherExpense = (latestPeriod as any)?.other_expense_actual ?? 0;
+  const latestCogsBudget = (latestPeriod as any)?.cogs_budget ?? 0;
+  const latestOtherIncomeBudget = (latestPeriod as any)?.other_income_budget ?? 0;
+  const latestOtherExpenseBudget = (latestPeriod as any)?.other_expense_budget ?? 0;
+
+  const latestBudgetNetProfit =
+    latestBudgetRevenue - latestCogsBudget - latestBudgetExpenses + latestOtherIncomeBudget - latestOtherExpenseBudget;
+  const latestBudgetNetMarginPct =
+    latestBudgetRevenue > 0 ? (latestBudgetNetProfit / latestBudgetRevenue) * 100 : 0;
 
   const activeClients = rosterData.filter((c: any) => c.status === "active").length;
 
@@ -315,9 +332,10 @@ export default function Overview() {
 
   const periodLabel = latestPeriod ? `${MONTHS[latestPeriod.month - 1]} ${latestPeriod.year}` : `${MONTHS[now.getMonth()]} ${year}`;
 
-  const revVariancePct = ytdBudgetRevenue > 0 ? (ytdRevenue / ytdBudgetRevenue) * 100 - 100 : 0;
-  const expVariancePct = ytdBudgetExpenses > 0 ? (ytdExpenses / ytdBudgetExpenses) * 100 - 100 : 0;
-  const profitVariancePct = ytdBudgetProfit > 0 ? (ytdProfit / ytdBudgetProfit) * 100 - 100 : 0;
+  const revVariancePct = latestBudgetRevenue > 0 ? (latestRevenue / latestBudgetRevenue) * 100 - 100 : 0;
+  const expVariancePct = latestBudgetExpenses > 0 ? (latestExpenses / latestBudgetExpenses) * 100 - 100 : 0;
+  const profitVariancePct = latestBudgetNetProfit > 0 ? (latestNetProfit / latestBudgetNetProfit) * 100 - 100 : 0;
+  const marginVariancePct = latestNetMarginPct - latestBudgetNetMarginPct;
 
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
@@ -340,36 +358,40 @@ export default function Overview() {
 
       <div className="grid grid-cols-4 gap-4">
         <KpiCard
-          label="Revenue YTD"
-          value={fmtD(ytdRevenue)}
-          budget={fmtD(ytdBudgetRevenue)}
-          variance={ytdRevenue - ytdBudgetRevenue}
+          label="Revenue"
+          sublabel={periodLabel}
+          value={fmtD(latestRevenue)}
+          budget={fmtD(latestBudgetRevenue)}
+          variance={latestRevenue - latestBudgetRevenue}
           variancePct={revVariancePct}
           icon={<DollarSign size={16} />}
         />
         <KpiCard
-          label="Expenses YTD"
-          value={fmtD(ytdExpenses)}
-          budget={fmtD(ytdBudgetExpenses)}
-          variance={ytdExpenses - ytdBudgetExpenses}
+          label="Expenses"
+          sublabel={periodLabel}
+          value={fmtD(latestExpenses)}
+          budget={fmtD(latestBudgetExpenses)}
+          variance={latestExpenses - latestBudgetExpenses}
           variancePct={expVariancePct}
           icon={<TrendingDown size={16} />}
           invertGood
         />
         <KpiCard
-          label="Net Profit YTD"
-          value={fmtD(ytdProfit)}
-          budget={fmtD(ytdBudgetProfit)}
-          variance={ytdProfit - ytdBudgetProfit}
+          label="Net Profit"
+          sublabel={periodLabel}
+          value={fmtD(latestNetProfit)}
+          budget={fmtD(latestBudgetNetProfit)}
+          variance={latestNetProfit - latestBudgetNetProfit}
           variancePct={profitVariancePct}
           icon={<TrendingUp size={16} />}
         />
         <KpiCard
           label="Net Margin"
-          value={fmtPct(ytdMargin)}
-          budget="35% target"
-          variance={ytdMargin - 35}
-          variancePct={ytdMargin - 35}
+          sublabel={periodLabel}
+          value={fmtPct(latestNetMarginPct)}
+          budget={`${latestBudgetNetMarginPct.toFixed(1)}%`}
+          variance={marginVariancePct}
+          variancePct={marginVariancePct}
           icon={<Percent size={16} />}
         />
       </div>
@@ -493,7 +515,7 @@ export default function Overview() {
           )}
         </div>
 
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div id="client-action-items" className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-semibold text-foreground">Client Action Items</h2>
             <span className="text-xs text-foreground/70">{openActionItems.length} open</span>

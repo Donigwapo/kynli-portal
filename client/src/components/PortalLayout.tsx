@@ -94,6 +94,9 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   });
 
   const isClientUser = user?.role === "client";
+  const isClientFacingExperience = isClientUser || !!impersonatingTenantSlug;
+  const canShowPortalAi = !!user && !isClientFacingExperience;
+
   const { data: clientWorkspaces = [] } = trpc.clientWorkspaces.list.useQuery(undefined, {
     enabled: !!isClientUser,
     staleTime: 30_000,
@@ -291,6 +294,12 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     : impersonatingTenantSlug
       ? 120
       : 16;
+
+  useEffect(() => {
+    if (!canShowPortalAi && portalAiOpen) {
+      setPortalAiOpen(false);
+    }
+  }, [canShowPortalAi, portalAiOpen]);
 
   useEffect(() => {
     if (!portalAiOpen) return;
@@ -810,24 +819,28 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           {children}
         </div>
 
-        <PortalAiPanel
-          ref={portalAiPanelRef}
-          isOpen={portalAiOpen}
-          pathname={location}
-          bottomOffset={aiBottomOffset}
-          aiUserId={user?.id != null ? String(user.id) : null}
-          aiTenantScopeKey={aiTenantScopeKey}
-          coachingSelectedPeriod={location.startsWith("/portal/coaching") ? aiCoachingPeriod : null}
-          financialSelectedPeriod={location.startsWith("/portal/financials") ? aiFinancialPeriod : null}
-          onClose={() => setPortalAiOpen(false)}
-        />
-        <div ref={portalAiLauncherRef}>
-          <PortalAiLauncher
-            isOpen={portalAiOpen}
-            onClick={() => setPortalAiOpen((prev) => !prev)}
-            bottomOffset={aiBottomOffset}
-          />
-        </div>
+        {canShowPortalAi && (
+          <>
+            <PortalAiPanel
+              ref={portalAiPanelRef}
+              isOpen={portalAiOpen}
+              pathname={location}
+              bottomOffset={aiBottomOffset}
+              aiUserId={user?.id != null ? String(user.id) : null}
+              aiTenantScopeKey={aiTenantScopeKey}
+              coachingSelectedPeriod={location.startsWith("/portal/coaching") ? aiCoachingPeriod : null}
+              financialSelectedPeriod={location.startsWith("/portal/financials") ? aiFinancialPeriod : null}
+              onClose={() => setPortalAiOpen(false)}
+            />
+            <div ref={portalAiLauncherRef}>
+              <PortalAiLauncher
+                isOpen={portalAiOpen}
+                onClick={() => setPortalAiOpen((prev) => !prev)}
+                bottomOffset={aiBottomOffset}
+              />
+            </div>
+          </>
+        )}
 
         <FloatingTimerWidget />
       </main>

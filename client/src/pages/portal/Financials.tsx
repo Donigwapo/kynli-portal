@@ -540,6 +540,7 @@ export default function Financials() {
   const rewriteSummaryWithAiMutation = trpc.financials.rewriteSummaryWithAi.useMutation();
   const createSummaryVersionMutation = trpc.financials.createSummaryVersion.useMutation();
   const restoreSummaryVersionMutation = trpc.financials.restoreSummaryVersion.useMutation();
+  const createDocumentFolderMutation = trpc.documents.createFolder.useMutation();
 
   const summaryHistoryQuery = trpc.financials.getSummaryHistory.useQuery(
     { importId: analysisDispatchResult?.importId ?? "" },
@@ -572,6 +573,60 @@ export default function Financials() {
       reader.onerror = () => reject(reader.error ?? new Error("Unable to read file"));
       reader.readAsDataURL(file);
     });
+
+  const ensureFinancialsInternalFolderPath = async (tenantSlug: string, selectedYear: number, selectedMonth: number): Promise<string> => {
+    const monthName = MONTHS_LONG[Math.max(0, selectedMonth - 1)] ?? String(selectedMonth);
+    const rootName = "Financials (Internal)";
+    const yearName = String(selectedYear);
+
+    const folderRows = await trpcUtils.documents.listFolders.fetch({ tenantSlug });
+    const folders = (folderRows as Array<{ id: number; name: string; full_path: string; parent_folder_id?: number | null }>) || [];
+
+    const normalizePath = (v: string) => v.trim().toLowerCase();
+    const byPath = new Map<string, { id: number; name: string; full_path: string; parent_folder_id?: number | null }>();
+    for (const f of folders) {
+      byPath.set(normalizePath(String(f.full_path || "")), f);
+    }
+
+    const getByPath = (path: string) => byPath.get(normalizePath(path));
+
+    const getOrCreate = async (name: string, parentFolderId: number | null, fullPath: string): Promise<{ id: number; name: string; full_path: string; parent_folder_id?: number | null }> => {
+      const existing = getByPath(fullPath);
+      if (existing) return existing;
+
+      const created = await createDocumentFolderMutation.mutateAsync({
+        tenantSlug,
+        name,
+        parentFolderId,
+      });
+
+      const folder = (created as any)?.folder as { id: number; name: string; full_path: string; parent_folder_id?: number | null };
+      if (!folder?.id) {
+        throw new Error("Failed to prepare Financials (Internal) folder structure.");
+      }
+      byPath.set(normalizePath(String(folder.full_path || "")), folder);
+      return folder;
+    };
+
+    const root = await getOrCreate(rootName, null, rootName);
+
+    const canonicalYearPath = `${rootName}/${yearName}`;
+    const legacyYearPath = `${rootName}/${rootName} ${yearName}`;
+    const yearFolder =
+      getByPath(canonicalYearPath) ||
+      getByPath(legacyYearPath) ||
+      await getOrCreate(yearName, Number(root.id), canonicalYearPath);
+
+    const canonicalMonthPath = `${canonicalYearPath}/${monthName}`;
+    const legacyMonthPath = `${legacyYearPath}/${monthName}`;
+
+    const monthFolder =
+      getByPath(canonicalMonthPath) ||
+      getByPath(legacyMonthPath) ||
+      await getOrCreate(monthName, Number(yearFolder.id), `${String(yearFolder.full_path || canonicalYearPath)}/${monthName}`);
+
+    return String(monthFolder.full_path || canonicalMonthPath);
+  };
 
   const resetImportDialogState = () => {
     setSelectedPdfFile(null);
@@ -691,13 +746,19 @@ export default function Financials() {
     setIsUploadingImport(true);
     try {
       const base64 = await fileToBase64(selectedPdfFile);
+      const financialsInternalDocPath = await ensureFinancialsInternalFolderPath(
+        impersonatingTenantSlug,
+        Number(selectedImportYear),
+        Number(selectedImportMonth),
+      );
+
       const result = await uploadMutation.mutateAsync({
         name: selectedPdfFile.name.replace(/\.[^.]+$/, "") || selectedPdfFile.name,
         fileBase64: base64,
         mimeType: "application/pdf",
         fileName: selectedPdfFile.name,
         fileSize: selectedPdfFile.size,
-        docType: "Financials",
+        docType: financialsInternalDocPath,
         year: Number(selectedImportYear),
         month: Number(selectedImportMonth),
         tenantSlug: impersonatingTenantSlug,

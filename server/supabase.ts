@@ -4100,6 +4100,41 @@ export async function replaceClientMeetingActionItems(input: {
   return (data || []) as ClientMeetingActionItem[];
 }
 
+export async function insertClientMeetingActionItem(input: {
+  tenant_slug: string;
+  meeting_id: number;
+  title: string;
+  details?: string | null;
+  status?: string;
+  due_date?: string | null;
+  assigned_to_user_id?: number | null;
+  completed_at?: string | null;
+  sort_order?: number;
+}): Promise<ClientMeetingActionItem> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+
+  const payload = {
+    tenant_slug: safeSlug,
+    meeting_id: input.meeting_id,
+    title: input.title,
+    details: input.details ?? null,
+    status: input.status ?? "open",
+    due_date: input.due_date ?? null,
+    assigned_to_user_id: input.assigned_to_user_id ?? null,
+    completed_at: input.completed_at ?? null,
+    sort_order: input.sort_order ?? 0,
+  };
+
+  const { data, error } = await supabase
+    .from("client_meeting_action_items")
+    .insert(payload)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data as ClientMeetingActionItem;
+}
+
 export async function updateClientMeetingActionItemStatus(input: {
   tenant_slug: string;
   id: number;
