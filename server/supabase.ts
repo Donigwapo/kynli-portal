@@ -3915,7 +3915,7 @@ export type ClientMeeting = {
 
 export type ClientMeetingActionItem = {
   id: number;
-  meeting_id: number;
+  meeting_id: number | null;
   tenant_slug: string;
   title: string;
   details: string | null;
@@ -3963,15 +3963,23 @@ export async function getClientMeetingById(tenantSlug: string, meetingId: number
   return (data as ClientMeeting | null) ?? null;
 }
 
-export async function listClientMeetingActionItems(tenantSlug: string, meetingId: number): Promise<ClientMeetingActionItem[]> {
+export async function listClientMeetingActionItems(tenantSlug: string, meetingId: number | null): Promise<ClientMeetingActionItem[]> {
   const safeSlug = sanitizeTenantSlug(tenantSlug);
-  const { data, error } = await supabase
+  let query = supabase
     .from("client_meeting_action_items")
     .select("*")
-    .eq("tenant_slug", safeSlug)
-    .eq("meeting_id", meetingId)
+    .eq("tenant_slug", safeSlug);
+
+  if (meetingId == null) {
+    query = query.is("meeting_id", null);
+  } else {
+    query = query.eq("meeting_id", meetingId);
+  }
+
+  const { data, error } = await query
     .order("sort_order", { ascending: true })
     .order("created_at", { ascending: true });
+
   if (error) throw new Error(error.message);
   return (data || []) as ClientMeetingActionItem[];
 }
@@ -4100,9 +4108,29 @@ export async function replaceClientMeetingActionItems(input: {
   return (data || []) as ClientMeetingActionItem[];
 }
 
+export async function listClientActionItemsByTenant(tenantSlug: string, includeCompleted = false): Promise<ClientMeetingActionItem[]> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  let query = supabase
+    .from("client_meeting_action_items")
+    .select("*")
+    .eq("tenant_slug", safeSlug);
+
+  if (!includeCompleted) {
+    query = query.neq("status", "completed");
+  }
+
+  const { data, error } = await query
+    .order("meeting_id", { ascending: true })
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) throw new Error(error.message);
+  return (data || []) as ClientMeetingActionItem[];
+}
+
 export async function insertClientMeetingActionItem(input: {
   tenant_slug: string;
-  meeting_id: number;
+  meeting_id: number | null;
   title: string;
   details?: string | null;
   status?: string;
@@ -4115,7 +4143,7 @@ export async function insertClientMeetingActionItem(input: {
 
   const payload = {
     tenant_slug: safeSlug,
-    meeting_id: input.meeting_id,
+    meeting_id: input.meeting_id ?? null,
     title: input.title,
     details: input.details ?? null,
     status: input.status ?? "open",
@@ -4133,6 +4161,16 @@ export async function insertClientMeetingActionItem(input: {
 
   if (error) throw new Error(error.message);
   return data as ClientMeetingActionItem;
+}
+
+export async function deleteClientActionItem(input: { tenant_slug: string; id: number }): Promise<void> {
+  const { error } = await supabase
+    .from("client_meeting_action_items")
+    .delete()
+    .eq("tenant_slug", sanitizeTenantSlug(input.tenant_slug))
+    .eq("id", input.id);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function updateClientMeetingActionItemStatus(input: {

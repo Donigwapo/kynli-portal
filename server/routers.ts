@@ -139,12 +139,14 @@ import {
   listClientMeetings,
   getClientMeetingById,
   listClientMeetingActionItems,
+  listClientActionItemsByTenant,
   insertClientMeeting,
   updateClientMeeting,
   deleteClientMeeting,
   replaceClientMeetingActionItems,
   insertClientMeetingActionItem,
   updateClientMeetingActionItemStatus,
+  deleteClientActionItem,
   getLatestCfoTriggerSnapshot,
   listCfoTriggerSnapshotPeriods,
   getCfoTriggerSnapshotByPeriod,
@@ -5857,8 +5859,8 @@ export const appRouter = router({
         await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
 
-        const [clientMeetings, tenantMembers] = await Promise.all([
-          listClientMeetings(slug, "client_meeting"),
+        const [actionItems, tenantMembers] = await Promise.all([
+          listClientActionItemsByTenant(slug, false),
           listTenantMembers(slug),
         ]);
 
@@ -5882,45 +5884,30 @@ export const appRouter = router({
         };
 
         const today = new Date().toISOString().slice(0, 10);
-        let order = 0;
-        const tasks: OverviewTask[] = [];
 
-        async function appendMeetingTasks(
-          meetings: Array<{ id: number }>,
-          source: "client_meeting",
-          sourceLabel: "Client Meeting",
-        ) {
-          const grouped = await Promise.all(meetings.map(async (meeting) => ({
-            meetingId: meeting.id,
-            items: await listClientMeetingActionItems(slug, meeting.id),
-          })));
+        const tasks: OverviewTask[] = actionItems
+          .map((item, originalOrder) => {
+            const status = String(item.status || "open");
+            if (status === "completed") return null;
+            const normalizedStatus: "open" | "in_progress" = status === "in_progress" ? "in_progress" : "open";
+            const dueDate = item.due_date ? String(item.due_date).slice(0, 10) : null;
+            const assignedToUserId = item.assigned_to_user_id != null ? Number(item.assigned_to_user_id) : null;
 
-          for (const group of grouped) {
-            for (const item of group.items) {
-              const status = String(item.status || "open");
-              if (status === "completed") continue;
-              const normalizedStatus: "open" | "in_progress" = status === "in_progress" ? "in_progress" : "open";
-              const dueDate = item.due_date ? String(item.due_date).slice(0, 10) : null;
-              const assignedToUserId = item.assigned_to_user_id != null ? Number(item.assigned_to_user_id) : null;
-
-              tasks.push({
-                id: `${source}:${item.id}`,
-                title: String(item.title || "Untitled task"),
-                source,
-                sourceLabel,
-                dueDate,
-                assignedToUserId,
-                assignedToName: assignedToUserId != null ? (assigneeById.get(assignedToUserId) || "Former member") : null,
-                status: normalizedStatus,
-                isAssignedToCurrentUser: assignedToUserId != null && assignedToUserId === Number(ctx.user.id),
-                isOverdue: !!(dueDate && dueDate < today),
-                originalOrder: order++,
-              });
-            }
-          }
-        }
-
-        await appendMeetingTasks(clientMeetings, "client_meeting", "Client Meeting");
+            return {
+              id: `client_meeting:${item.id}`,
+              title: String(item.title || "Untitled task"),
+              source: "client_meeting" as const,
+              sourceLabel: "Client Meeting" as const,
+              dueDate,
+              assignedToUserId,
+              assignedToName: assignedToUserId != null ? (assigneeById.get(assignedToUserId) || "Former member") : null,
+              status: normalizedStatus,
+              isAssignedToCurrentUser: assignedToUserId != null && assignedToUserId === Number(ctx.user.id),
+              isOverdue: !!(dueDate && dueDate < today),
+              originalOrder,
+            };
+          })
+          .filter((task): task is OverviewTask => !!task);
 
         const prioritized = [...tasks].sort((a, b) => {
           if (a.isAssignedToCurrentUser !== b.isAssignedToCurrentUser) return a.isAssignedToCurrentUser ? -1 : 1;
@@ -6159,24 +6146,30 @@ export const appRouter = router({
       }),
     meetingActionItemsCreate: protectedProcedure
       .input(z.object({
-        meetingId: z.number(),
+        meetingId: z.number().nullable().optional(),
         title: z.string().min(1),
         tenantSlug: z.string().optional(),
         mode: meetingModeSchema.optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        if (ctx.user.role === "client") throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot create action items." });
+        if (!(ctx.user.role === "admin" || STAFF_PORTAL_ROLES.has(ctx.user.role))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only staff can create action items." });
+        }
         await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
         const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
         const mode = resolveMeetingMode(input.mode);
 
-        const meeting = await getClientMeetingById(slug, input.meetingId, mode);
-        if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+        let resolvedMeetingId: number | null = null;
+        if (input.meetingId != null) {
+          const meeting = await getClientMeetingById(slug, input.meetingId, mode);
+          if (!meeting) throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+          resolvedMeetingId = Number(meeting.id);
+        }
 
-        const existingItems = await listClientMeetingActionItems(slug, input.meetingId);
+        const existingItems = await listClientMeetingActionItems(slug, resolvedMeetingId);
         const item = await insertClientMeetingActionItem({
           tenant_slug: slug,
-          meeting_id: input.meetingId,
+          meeting_id: resolvedMeetingId,
           title: input.title.trim(),
           status: "open",
           sort_order: existingItems.length,
@@ -6194,6 +6187,48 @@ export const appRouter = router({
         });
 
         return { success: true, item };
+      }),
+    clientActionItemsList: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().optional(), includeCompleted: z.boolean().optional() }))
+      .query(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        return listClientActionItemsByTenant(slug, input.includeCompleted === true);
+      }),
+    meetingActionItemsDelete: protectedProcedure
+      .input(z.object({ id: z.number(), tenantSlug: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        await assertTierAccess(ctx.user, "client_meeting", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+
+        const actionItemRow = await supabase
+          .from("client_meeting_action_items")
+          .select("id, title, meeting_id")
+          .eq("tenant_slug", slug)
+          .eq("id", input.id)
+          .maybeSingle();
+
+        if (actionItemRow.error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: actionItemRow.error.message });
+        }
+        if (!actionItemRow.data) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
+        }
+
+        await deleteClientActionItem({ tenant_slug: slug, id: input.id });
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "meeting_action_item_deleted",
+          entity_type: "meeting_action_item",
+          entity_id: String(input.id),
+          tenant_slug: slug,
+          file_name: String((actionItemRow.data as any)?.title || "Action item"),
+          metadata: { meeting_id: (actionItemRow.data as any)?.meeting_id ?? null },
+        });
+
+        return { success: true };
       }),
     meetingActionItemsUpdateStatus: protectedProcedure
       .input(z.object({
@@ -6215,14 +6250,20 @@ export const appRouter = router({
         if (actionItemRow.error) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: actionItemRow.error.message });
         }
-        const meetingId = Number((actionItemRow.data as any)?.meeting_id ?? 0) || 0;
-        if (!meetingId) {
+
+        const rawMeetingId = (actionItemRow.data as any)?.meeting_id;
+        const meetingId = rawMeetingId == null ? null : Number(rawMeetingId);
+        if (meetingId != null && (!Number.isFinite(meetingId) || meetingId <= 0)) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
         }
-        const meeting = await getClientMeetingById(slug, meetingId, mode);
-        if (!meeting) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
+
+        if (meetingId != null) {
+          const meeting = await getClientMeetingById(slug, meetingId, mode);
+          if (!meeting) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Action item not found" });
+          }
         }
+
         const updated = await updateClientMeetingActionItemStatus({ tenant_slug: slug, id: input.id, status: input.status });
         await writeActivityLog({
           req: ctx.req,

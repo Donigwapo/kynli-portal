@@ -44,6 +44,8 @@ interface NavItem {
   label: string;
   icon: ReactNode;
   href: string;
+  disabled?: boolean;
+  disabledLabel?: string;
   /** key into TAB_ACCESS — omit for items always visible (admin nav) */
   featureKey?: string;
 }
@@ -55,7 +57,7 @@ const CLIENT_NAV: NavItem[] = [
   { id: "sales_tracker",     label: "Sales Tracker",     featureKey: "sales_tracker",     icon: <ShoppingCart size={16} />,    href: "/portal/sales" },
   { id: "financials",        label: "Financials",        featureKey: "financials",        icon: <BarChart3 size={16} />,       href: "/portal/financials" },
   { id: "coaching",          label: "Coaching",          featureKey: "coaching",          icon: <ShieldAlert size={16} />,     href: "/portal/coaching" },
-  { id: "client_meeting",    label: "Client Meeting",    featureKey: "client_meeting",    icon: <CalendarDays size={16} />,    href: "/portal/coaching/client-meeting" },
+  { id: "client_meeting",    label: "Client Meeting",    featureKey: "client_meeting",    icon: <CalendarDays size={16} />,    href: "/portal/coaching/client-meeting", disabled: true, disabledLabel: "Coming soon" },
   { id: "documents",         label: "Portal",            featureKey: "documents",         icon: <FolderOpen size={16} />,      href: "/portal/documents" },
   { id: "reports",           label: "Reports",           featureKey: "reports",           icon: <TrendingUp size={16} />,      href: "/portal/reports" },
   { id: "chat",              label: "Workspace Chat",    featureKey: "chat",              icon: <MessageSquare size={16} />,   href: "/portal/chat" },
@@ -658,24 +660,42 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 ? isClientMeetingActive
                 : (location === item.href || (item.href !== "/portal" && item.href.length > 6 && location.startsWith(item.href)));
 
-            return (
-              <Link key={item.id} href={item.href}>
-                <div
-                  className={cn(
-                    "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-all duration-150",
-                    isActive
+            const navRow = (
+              <div
+                className={cn(
+                  "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-all duration-150",
+                  item.disabled
+                    ? "opacity-45 cursor-not-allowed"
+                    : isActive
                       ? "font-medium"
                       : "hover:opacity-80"
-                  )}
-                  style={isActive
+                )}
+                style={item.disabled
+                  ? { color: "#666", backgroundColor: "transparent" }
+                  : isActive
                     ? { color: "#00d4aa", backgroundColor: "rgba(0,212,170,0.08)" }
                     : { color: "#888" }
-                  }
-                >
-                  <span className="shrink-0">{item.icon}</span>
-                  <span className="truncate">{item.label}</span>
-                  {isActive && <span className="ml-auto shrink-0 w-1 h-1 rounded-full" style={{ backgroundColor: "#00d4aa" }} />}
-                </div>
+                }
+                aria-disabled={item.disabled ? "true" : undefined}
+                title={item.disabledLabel || undefined}
+              >
+                <span className="shrink-0">{item.icon}</span>
+                <span className="truncate">{item.label}</span>
+                {item.disabledLabel ? (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-zinc-500">{item.disabledLabel}</span>
+                ) : isActive ? (
+                  <span className="ml-auto shrink-0 w-1 h-1 rounded-full" style={{ backgroundColor: "#00d4aa" }} />
+                ) : null}
+              </div>
+            );
+
+            if (item.disabled) {
+              return <div key={item.id}>{navRow}</div>;
+            }
+
+            return (
+              <Link key={item.id} href={item.href}>
+                {navRow}
               </Link>
             );
           })}

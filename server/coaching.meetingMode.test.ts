@@ -102,6 +102,146 @@ describe("coaching client meeting routes", () => {
     expect(res).toMatchObject({ success: true, meeting: { id: 777, meeting_mode: "client_meeting" } });
   });
 
+  it("creates standalone action item with meeting_id null", async () => {
+    const admin = makeUser({ id: 9105, role: "admin", email: "admin5@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(admin));
+
+    const getMeetingSpy = vi.spyOn(supabaseModule, "getClientMeetingById");
+    vi.spyOn(supabaseModule, "listClientMeetingActionItems").mockResolvedValue([] as any);
+
+    const insertSpy = vi.spyOn(supabaseModule, "insertClientMeetingActionItem").mockResolvedValue({
+      id: 901,
+      meeting_id: null,
+      tenant_slug: "acme_llc",
+      title: "Follow up with payroll",
+      details: null,
+      status: "open",
+      due_date: null,
+      assigned_to_user_id: null,
+      completed_at: null,
+      sort_order: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as any);
+
+    const out = await caller.coaching.meetingActionItemsCreate({
+      tenantSlug: "acme_llc",
+      title: "Follow up with payroll",
+      meetingId: null,
+    });
+
+    expect(out.success).toBe(true);
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({
+      tenant_slug: "acme_llc",
+      meeting_id: null,
+      title: "Follow up with payroll",
+      status: "open",
+    }));
+    expect(getMeetingSpy).not.toHaveBeenCalled();
+  });
+
+  it("creates meeting-linked action item when meeting exists", async () => {
+    const admin = makeUser({ id: 9106, role: "admin", email: "admin6@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(admin));
+
+    vi.spyOn(supabaseModule, "getClientMeetingById").mockResolvedValue({
+      id: 333,
+      tenant_slug: "acme_llc",
+      meeting_mode: "client_meeting",
+      title: "Client Meeting",
+      meeting_date: "2026-08-20",
+      meeting_type: "other",
+      notes: null,
+      status: "scheduled",
+      created_by_user_id: 9106,
+      updated_by_user_id: 9106,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as any);
+    vi.spyOn(supabaseModule, "listClientMeetingActionItems").mockResolvedValue([] as any);
+
+    const insertSpy = vi.spyOn(supabaseModule, "insertClientMeetingActionItem").mockResolvedValue({
+      id: 902,
+      meeting_id: 333,
+      tenant_slug: "acme_llc",
+      title: "Prepare agenda",
+      details: null,
+      status: "open",
+      due_date: null,
+      assigned_to_user_id: null,
+      completed_at: null,
+      sort_order: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as any);
+
+    await caller.coaching.meetingActionItemsCreate({
+      tenantSlug: "acme_llc",
+      title: "Prepare agenda",
+      meetingId: 333,
+    });
+
+    expect(insertSpy).toHaveBeenCalledWith(expect.objectContaining({ meeting_id: 333 }));
+  });
+
+  it("blocks client role from creating action items", async () => {
+    const clientUser = makeUser({ id: 9107, role: "client", email: "client@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(clientUser));
+
+    await expect(
+      caller.coaching.meetingActionItemsCreate({ title: "Client task", meetingId: null }),
+    ).rejects.toThrow("Only staff can create action items.");
+  });
+
+  it("updates standalone action-item status without requiring meeting lookup", async () => {
+    const admin = makeUser({ id: 9108, role: "admin", email: "admin8@acme.com" });
+    const caller = appRouter.createCaller(makeCtx(admin));
+
+    const actionItemId = 889;
+
+    vi.spyOn(supabaseModule.supabase, "from").mockImplementation((table: string) => {
+      if (table !== "client_meeting_action_items") throw new Error("unexpected table");
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: { id: actionItemId, meeting_id: null }, error: null }),
+            }),
+          }),
+        }),
+      } as any;
+    });
+
+    const getMeetingSpy = vi.spyOn(supabaseModule, "getClientMeetingById");
+    const updateStatusSpy = vi
+      .spyOn(supabaseModule, "updateClientMeetingActionItemStatus")
+      .mockResolvedValue({
+        id: actionItemId,
+        meeting_id: null,
+        tenant_slug: "acme_llc",
+        title: "Standalone follow up",
+        details: null,
+        status: "completed",
+        due_date: null,
+        assigned_to_user_id: null,
+        completed_at: new Date().toISOString(),
+        sort_order: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as any);
+
+    await expect(
+      caller.coaching.meetingActionItemsUpdateStatus({
+        id: actionItemId,
+        status: "completed",
+        tenantSlug: "acme_llc",
+      }),
+    ).resolves.toMatchObject({ success: true });
+
+    expect(updateStatusSpy).toHaveBeenCalledTimes(1);
+    expect(getMeetingSpy).not.toHaveBeenCalled();
+  });
+
   it("updates action-item status for a valid meeting and blocks unassigned staff tenant access", async () => {
     const admin = makeUser({ id: 9103, role: "admin", email: "admin3@acme.com" });
     const adminCaller = appRouter.createCaller(makeCtx(admin));

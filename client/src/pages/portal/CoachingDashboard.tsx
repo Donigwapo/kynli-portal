@@ -14,14 +14,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, CheckSquare, ListChecks, MoreHorizontal, Plus, Trash2 } from "lucide-react";
@@ -147,11 +139,6 @@ export default function CoachingDashboard() {
     onError: (err) => toast.error(err.message || "Unable to delete priority."),
   });
 
-  const meetingsForActionItemQuery = trpc.coaching.meetingsList.useQuery(
-    { tenantSlug },
-    { enabled: !allowClientSelector || !!tenantSlug, staleTime: 30_000 },
-  );
-
   const deleteTriggerPeriodMutation = trpc.coaching.deleteTriggerMonitorPeriod.useMutation({
     onSuccess: async () => {
       setDeletePeriodDialogOpen(false);
@@ -177,21 +164,26 @@ export default function CoachingDashboard() {
   });
 
   const [newTitle, setNewTitle] = useState("");
+  const [newClientActionTitle, setNewClientActionTitle] = useState("");
   const [deletePeriodDialogOpen, setDeletePeriodDialogOpen] = useState(false);
   const [pendingDeletePeriod, setPendingDeletePeriod] = useState<TriggerPeriodTile | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [clientActionDialogOpen, setClientActionDialogOpen] = useState(false);
-  const [selectedActionMeetingId, setSelectedActionMeetingId] = useState<string>("");
+
+  const clientActionItemsQuery = trpc.coaching.clientActionItemsList.useQuery(
+    { tenantSlug, includeCompleted: true },
+    { enabled: !allowClientSelector || !!tenantSlug, staleTime: 10_000 },
+  );
 
   const createClientActionItemMutation = trpc.coaching.meetingActionItemsCreate.useMutation({
     onSuccess: async () => {
-      setClientActionDialogOpen(false);
-      setSelectedActionMeetingId("");
       setAddMenuOpen(false);
       setNewTitle("");
       await Promise.all([
         utils.coaching.meetingsList.invalidate({ tenantSlug }),
         utils.coaching.meetingsGet.invalidate(),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug, includeCompleted: true }),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug }),
+        utils.coaching.overviewTasks.invalidate(),
       ]);
       toast.success("Client action item added");
       navigate("/portal#client-action-items");
@@ -201,27 +193,67 @@ export default function CoachingDashboard() {
     },
   });
 
+  const createClientActionItemLocalMutation = trpc.coaching.meetingActionItemsCreate.useMutation({
+    onSuccess: async () => {
+      setNewClientActionTitle("");
+      await Promise.all([
+        clientActionItemsQuery.refetch(),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug }),
+        utils.coaching.overviewTasks.invalidate(),
+      ]);
+      toast.success("Client action item added");
+    },
+    onError: (err: TRPCClientErrorLike<AppRouter>) => {
+      toast.error(err.message || "Unable to create client action item.");
+    },
+  });
+
+  const updateClientActionItemStatusMutation = trpc.coaching.meetingActionItemsUpdateStatus.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        clientActionItemsQuery.refetch(),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug }),
+        utils.coaching.overviewTasks.invalidate(),
+      ]);
+    },
+    onError: (err: TRPCClientErrorLike<AppRouter>) => {
+      toast.error(err.message || "Unable to update action item status.");
+    },
+  });
+
+  const deleteClientActionItemMutation = trpc.coaching.meetingActionItemsDelete.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        clientActionItemsQuery.refetch(),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug }),
+        utils.coaching.overviewTasks.invalidate(),
+      ]);
+      toast.success("Client action item deleted");
+    },
+    onError: (err: TRPCClientErrorLike<AppRouter>) => {
+      toast.error(err.message || "Unable to delete action item.");
+    },
+  });
+
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
   const completedPriorities = priorities.filter((p) => !!p.completed);
 
-  const meetingsForActionItem = ((meetingsForActionItemQuery.data as Array<any>) || []).map((m) => ({
-    id: Number(m.id),
-    title: String(m.title || "Client Meeting"),
-    meetingDate: m.meeting_date ? String(m.meeting_date) : null,
-  }));
+  const clientActionItems = (clientActionItemsQuery.data as Array<any>) || [];
+  const openClientActionItems = clientActionItems.filter((item) => {
+    const status = String(item?.status || "open");
+    return status === "open" || status === "in_progress";
+  });
+  const completedClientActionItems = clientActionItems.filter((item) => String(item?.status || "open") === "completed");
 
-  useEffect(() => {
-    if (!meetingsForActionItem.length) {
-      setSelectedActionMeetingId("");
-      return;
-    }
-
-    setSelectedActionMeetingId((prev) => {
-      if (prev && meetingsForActionItem.some((m) => String(m.id) === prev)) return prev;
-      return String(meetingsForActionItem[0].id);
+  const handleCreateClientActionItemInSection = () => {
+    if (!canEditPriorities || !newClientActionTitle.trim() || createClientActionItemLocalMutation.isPending) return;
+    createClientActionItemLocalMutation.mutate({
+      meetingId: null,
+      title: newClientActionTitle.trim(),
+      tenantSlug,
     });
-  }, [meetingsForActionItem]);
+  };
 
   const activeWorkspaceName = useMemo(() => {
     if (!allowClientSelector) return null;
@@ -250,26 +282,11 @@ export default function CoachingDashboard() {
   };
 
   const handleNavigateToClientActionItems = () => {
-    if (!canEditPriorities || !newTitle.trim()) return;
+    if (!canEditPriorities || !newTitle.trim() || createClientActionItemMutation.isPending) return;
+
     setAddMenuOpen(false);
-
-    if (!meetingsForActionItem.length) {
-      toast.error("Create a Client Meeting first before adding a client action item.");
-      return;
-    }
-
-    setClientActionDialogOpen(true);
-  };
-
-  const handleCreateClientActionItem = () => {
-    if (!canEditPriorities || !newTitle.trim()) return;
-    if (!selectedActionMeetingId) {
-      toast.error("Select a meeting.");
-      return;
-    }
-
     createClientActionItemMutation.mutate({
-      meetingId: Number(selectedActionMeetingId),
+      meetingId: null,
       title: newTitle.trim(),
       tenantSlug,
     });
@@ -560,7 +577,7 @@ export default function CoachingDashboard() {
                   <DropdownMenuItem
                     onClick={handleNavigateToClientActionItems}
                     className="items-start gap-2.5 py-2.5"
-                    disabled={!canEditPriorities || !newTitle.trim()}
+                    disabled={!canEditPriorities || !newTitle.trim() || createClientActionItemMutation.isPending}
                   >
                     <ListChecks className="w-4 h-4 mt-0.5 text-zinc-300" />
                     <div className="min-w-0">
@@ -657,60 +674,153 @@ export default function CoachingDashboard() {
           )}
         </section>
 
-        <Dialog open={clientActionDialogOpen} onOpenChange={setClientActionDialogOpen}>
-          <DialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">
-            <DialogHeader>
-              <DialogTitle>Add Client Action Item</DialogTitle>
-              <DialogDescription className="text-zinc-400">
-                Choose a Client Meeting to attach this action item.
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-3">
-              <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
-                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500 mb-1">Task</p>
-                <p className="text-sm text-zinc-100 break-words">{newTitle.trim()}</p>
+        <section className="rounded-3xl border border-white/10 bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(260px,30%)_1fr] gap-4 xl:gap-6 items-start mb-6">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2.5">
+                <ListChecks className="w-4 h-4 text-teal-300" />
+                <h3 className="text-xl sm:text-2xl font-semibold text-foreground">Client action items</h3>
               </div>
-
-              <div className="space-y-1.5">
-                <p className="text-xs text-zinc-400">Meeting</p>
-                <Select value={selectedActionMeetingId} onValueChange={setSelectedActionMeetingId}>
-                  <SelectTrigger className="h-11 bg-zinc-950/70 border-zinc-700 rounded-xl">
-                    <SelectValue placeholder="Select Client Meeting" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {meetingsForActionItem.map((m) => (
-                      <SelectItem key={String(m.id)} value={String(m.id)}>
-                        {m.title}{m.meetingDate ? ` · ${m.meetingDate}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <p className="text-sm text-muted-foreground">{openClientActionItems.length} open · {completedClientActionItems.length} complete</p>
             </div>
 
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                className="border-zinc-700 text-zinc-200 hover:bg-zinc-900"
-                onClick={() => {
-                  setClientActionDialogOpen(false);
+            <div className="flex items-center gap-2.5">
+              <Input
+                value={newClientActionTitle}
+                onChange={(e) => setNewClientActionTitle(e.target.value)}
+                placeholder="Add a client action item..."
+                className="h-12 sm:h-14 rounded-xl bg-zinc-950/70 border-zinc-700 text-sm sm:text-base"
+                disabled={!canEditPriorities}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleCreateClientActionItemInSection();
+                  }
                 }}
-              >
-                Cancel
-              </Button>
+              />
               <Button
                 type="button"
-                className="bg-teal-400 text-black hover:bg-teal-300"
-                disabled={!selectedActionMeetingId || createClientActionItemMutation.isPending || !newTitle.trim()}
-                onClick={handleCreateClientActionItem}
+                variant="default"
+                className="h-12 w-12 sm:h-14 sm:w-14 rounded-xl shrink-0 bg-teal-400 text-black hover:bg-teal-300"
+                disabled={!canEditPriorities || !newClientActionTitle.trim() || createClientActionItemLocalMutation.isPending}
+                onClick={handleCreateClientActionItemInSection}
               >
-                {createClientActionItemMutation.isPending ? "Adding..." : "Add Item"}
+                <Plus className="w-5 h-5" />
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </div>
+          </div>
+
+          {clientActionItemsQuery.isLoading ? (
+            <div className="text-sm text-muted-foreground py-4">Loading client action items…</div>
+          ) : clientActionItemsQuery.isError ? (
+            <div className="text-sm text-red-300 py-4">Unable to load client action items.</div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,56%)_minmax(0,44%)] gap-4 xl:gap-6 items-start">
+              <div className="space-y-2.5">
+                {openClientActionItems.length > 0 ? openClientActionItems.map((item) => {
+                  const status = String(item?.status || "open");
+                  const checked = status === "completed";
+                  const metadata = item.meeting_id != null
+                    ? `From client meeting${item.meeting_title ? ` · ${String(item.meeting_title)}` : ""}`
+                    : null;
+
+                  return (
+                    <div
+                      key={`open-action-${item.id}`}
+                      className="group flex items-center justify-between rounded-2xl border border-zinc-700/80 bg-zinc-900/35 px-4 py-3"
+                    >
+                      <label className="flex items-center gap-3 min-w-0 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(next) => {
+                            if (!canEditPriorities) return;
+                            updateClientActionItemStatusMutation.mutate({
+                              id: Number(item.id),
+                              status: next === true ? "completed" : "open",
+                              tenantSlug,
+                            });
+                          }}
+                          disabled={!canEditPriorities || updateClientActionItemStatusMutation.isPending}
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-[15px] sm:text-base font-medium text-foreground truncate">{String(item.title || "Untitled action item")}</span>
+                          {metadata ? <span className="block text-xs text-zinc-500 mt-0.5 truncate">{metadata}</span> : null}
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-400 hover:text-zinc-200"
+                        onClick={() => deleteClientActionItemMutation.mutate({ id: Number(item.id), tenantSlug })}
+                        disabled={!canEditPriorities || deleteClientActionItemMutation.isPending}
+                        aria-label={`Delete ${String(item.title || "action item")}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  );
+                }) : (
+                  <div className="rounded-xl border border-zinc-700 bg-zinc-900/30 p-4 text-sm text-zinc-400">
+                    No open client action items yet.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">Completed</p>
+                <div className="space-y-2.5">
+                  {completedClientActionItems.length > 0 ? completedClientActionItems.map((item) => {
+                    const metadata = item.meeting_id != null
+                      ? `From client meeting${item.meeting_title ? ` · ${String(item.meeting_title)}` : ""}`
+                      : null;
+
+                    return (
+                      <div
+                        key={`completed-action-${item.id}`}
+                        className="group flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/20 px-4 py-3"
+                      >
+                        <label className="flex items-center gap-3 min-w-0 cursor-pointer">
+                          <Checkbox
+                            checked={true}
+                            onCheckedChange={(next) => {
+                              if (!canEditPriorities) return;
+                              updateClientActionItemStatusMutation.mutate({
+                                id: Number(item.id),
+                                status: next === true ? "completed" : "open",
+                                tenantSlug,
+                              });
+                            }}
+                            disabled={!canEditPriorities || updateClientActionItemStatusMutation.isPending}
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-[15px] text-zinc-500 line-through truncate">{String(item.title || "Untitled action item")}</span>
+                            {metadata ? <span className="block text-xs text-zinc-600 mt-0.5 truncate">{metadata}</span> : null}
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-500 hover:text-zinc-300"
+                          onClick={() => deleteClientActionItemMutation.mutate({ id: Number(item.id), tenantSlug })}
+                          disabled={!canEditPriorities || deleteClientActionItemMutation.isPending}
+                          aria-label={`Delete ${String(item.title || "action item")}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  }) : (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/15 p-4 text-sm text-zinc-500">
+                      No completed client action items yet.
+                    </div>
+                  )}
+                </div>
+
+                <p className="text-xs text-muted-foreground pt-2 leading-relaxed">
+                  Check a box to complete an item. Completed items remain visible so progress is easy to track.
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
 
         <AlertDialog open={deletePeriodDialogOpen} onOpenChange={setDeletePeriodDialogOpen}>
           <AlertDialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">

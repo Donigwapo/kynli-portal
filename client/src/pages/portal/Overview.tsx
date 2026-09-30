@@ -40,8 +40,8 @@ type OpenActionItemRow = {
   actionItemId: number;
   title: string;
   status: "open" | "in_progress";
-  meetingId: number;
-  meetingTitle: string;
+  meetingId: number | null;
+  meetingTitle: string | null;
   meetingDate: string | null;
 };
 
@@ -176,7 +176,10 @@ export default function Overview() {
 
   const actionItemStatusMutation = trpc.coaching.meetingActionItemsUpdateStatus.useMutation({
     onSuccess: async () => {
-      await meetingsQuery.refetch();
+      await Promise.all([
+        meetingsQuery.refetch(),
+        utils.coaching.clientActionItemsList.invalidate({ tenantSlug: coachingTenantSlug }),
+      ]);
     },
     onError: (err) => toast.error(err.message || "Unable to update action item status."),
   });
@@ -193,38 +196,57 @@ export default function Overview() {
         setOpenActionItems([]);
         return;
       }
-      if (!meetings.length) {
-        setOpenActionItems([]);
-        return;
-      }
-
       setOpenItemsLoading(true);
       try {
-        const details = await Promise.all(
-          meetings.map((m) =>
-            utils.coaching.meetingsGet.fetch({ id: Number(m.id), tenantSlug: coachingTenantSlug }),
-          ),
-        );
-
-        if (cancelled) return;
-
         const rows: OpenActionItemRow[] = [];
-        for (const detail of details) {
-          const meeting = (detail as any)?.meeting;
-          const actionItems = Array.isArray((detail as any)?.actionItems) ? (detail as any).actionItems : [];
 
-          for (const item of actionItems) {
-            const status = String(item?.status || "open");
-            if (status === "completed") continue;
+        const standalone = await utils.coaching.clientActionItemsList.fetch({ tenantSlug: coachingTenantSlug });
+        for (const item of (standalone as Array<any>) || []) {
+          const status = String(item?.status || "open");
+          if (status === "completed") continue;
 
-            rows.push({
-              actionItemId: Number(item.id),
-              title: String(item.title || "Untitled action item"),
-              status: status === "in_progress" ? "in_progress" : "open",
-              meetingId: Number(meeting?.id ?? 0),
-              meetingTitle: String(meeting?.title || "Client Meeting"),
-              meetingDate: meeting?.meeting_date ? String(meeting.meeting_date) : null,
-            });
+          rows.push({
+            actionItemId: Number(item.id),
+            title: String(item.title || "Untitled action item"),
+            status: status === "in_progress" ? "in_progress" : "open",
+            meetingId: item.meeting_id == null ? null : Number(item.meeting_id),
+            meetingTitle: null,
+            meetingDate: null,
+          });
+        }
+
+        if (meetings.length > 0) {
+          const details = await Promise.all(
+            meetings.map((m) =>
+              utils.coaching.meetingsGet.fetch({ id: Number(m.id), tenantSlug: coachingTenantSlug }),
+            ),
+          );
+
+          if (cancelled) return;
+
+          const seen = new Set<number>(rows.map((r) => r.actionItemId));
+
+          for (const detail of details) {
+            const meeting = (detail as any)?.meeting;
+            const actionItems = Array.isArray((detail as any)?.actionItems) ? (detail as any).actionItems : [];
+
+            for (const item of actionItems) {
+              const itemId = Number(item.id);
+              if (seen.has(itemId)) continue;
+
+              const status = String(item?.status || "open");
+              if (status === "completed") continue;
+
+              rows.push({
+                actionItemId: itemId,
+                title: String(item.title || "Untitled action item"),
+                status: status === "in_progress" ? "in_progress" : "open",
+                meetingId: Number(meeting?.id ?? 0) || null,
+                meetingTitle: String(meeting?.title || "Client Meeting"),
+                meetingDate: meeting?.meeting_date ? String(meeting.meeting_date) : null,
+              });
+              seen.add(itemId);
+            }
           }
         }
 
@@ -244,7 +266,7 @@ export default function Overview() {
     return () => {
       cancelled = true;
     };
-  }, [coachingCardsEnabled, coachingTenantSlug, meetings, utils.coaching.meetingsGet]);
+  }, [coachingCardsEnabled, coachingTenantSlug, meetings, utils.coaching.meetingsGet, utils.coaching.clientActionItemsList]);
 
   const latestRevenue = latestPeriod?.revenue ?? 0;
   const latestExpenses = latestPeriod?.expenses ?? 0;
@@ -551,16 +573,22 @@ export default function Overview() {
                         className="border-[oklch(0.30_0.01_240)] bg-[oklch(0.13_0.004_240)]"
                       />
                       <div className="min-w-0 flex-1">
-                        <Link
-                          href="/portal/coaching/client-meeting"
-                          className="block text-sm text-foreground hover:text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm truncate"
-                          title={row.title}
-                        >
-                          {row.title}
-                        </Link>
-                        <p className="text-xs text-foreground/70 mt-0.5 truncate">
-                          {row.meetingTitle} · {fmtDate(row.meetingDate)}
-                        </p>
+                        {row.meetingId ? (
+                          <Link
+                            href="/portal/coaching/client-meeting"
+                            className="block text-sm text-foreground hover:text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm truncate"
+                            title={row.title}
+                          >
+                            {row.title}
+                          </Link>
+                        ) : (
+                          <span className="block text-sm text-foreground truncate" title={row.title}>{row.title}</span>
+                        )}
+                        {row.meetingId ? (
+                          <p className="text-xs text-foreground/70 mt-0.5 truncate">
+                            {row.meetingTitle} · {fmtDate(row.meetingDate)}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   ))}
