@@ -4097,6 +4097,19 @@ export const appRouter = router({
           });
         }
 
+        const tenant = await getTenantBySlug(docTenant);
+        if (!tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Client workspace not found." });
+        }
+
+        const packageTier = String(tenant.package_tier || "").trim() as PackageTier;
+        if (!PACKAGE_TIERS.includes(packageTier)) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Client package tier is invalid for financial analysis dispatch.",
+          });
+        }
+
         const callbackUrl = `${getPortalPublicBaseUrl()}/api/financials/import-result`;
         const payload = {
           import_id: importId,
@@ -4107,6 +4120,7 @@ export const appRouter = router({
           business_slug: docTenant,
           month: Number(input.month),
           year: Number(input.year),
+          package_tier: packageTier,
           callback_url: callbackUrl,
         };
 
