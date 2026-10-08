@@ -47,62 +47,57 @@
   --color-on-track: var(--on-track);
 }
 
-/* ─── KynLi Dark Theme — matches mockup exactly ─────────────────────────────── */
+/* ─── KynLi Light Theme (default) ───────────────────────────────────────────── */
 :root {
   --radius: 0.5rem;
 
-  /* Pure black backgrounds matching reference dashboard */
-  --background: oklch(0.06 0.002 240);        /* #0a0a0a — pure black */
-  --foreground: oklch(0.95 0.005 240);        /* near-white text */
+  --background: oklch(0.98 0.002 240);
+  --foreground: oklch(0.20 0.01 240);
 
-  --card: oklch(0.10 0.003 240);              /* #161616 — card panels */
-  --card-foreground: oklch(0.95 0.005 240);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.01 240);
 
-  --popover: oklch(0.14 0.005 240);
-  --popover-foreground: oklch(0.95 0.005 240);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.01 240);
 
-  /* Teal primary — matches mockup accent */
-  --primary: oklch(0.75 0.15 192);            /* bright teal */
+  --primary: oklch(0.75 0.15 192);
   --primary-foreground: oklch(0.08 0.005 240);
 
-  --secondary: oklch(0.18 0.005 240);
-  --secondary-foreground: oklch(0.85 0.005 240);
+  --secondary: oklch(0.94 0.004 240);
+  --secondary-foreground: oklch(0.26 0.01 240);
 
-  --muted: oklch(0.16 0.005 240);
-  --muted-foreground: oklch(0.50 0.008 240);  /* medium gray labels */
+  --muted: oklch(0.95 0.004 240);
+  --muted-foreground: oklch(0.46 0.01 240);
 
-  --accent: oklch(0.75 0.15 192);
-  --accent-foreground: oklch(0.08 0.005 240);
+  --accent: oklch(0.94 0.004 240);
+  --accent-foreground: oklch(0.22 0.01 240);
 
-  --destructive: oklch(0.62 0.22 25);         /* red for errors */
+  --destructive: oklch(0.62 0.22 25);
   --destructive-foreground: oklch(0.98 0 0);
 
-  --border: oklch(0.14 0.003 240);            /* very subtle borders #1f1f1f */
-  --input: oklch(0.14 0.003 240);
+  --border: oklch(0.88 0.004 240);
+  --input: oklch(0.88 0.004 240);
   --ring: oklch(0.75 0.15 192);
 
-  /* Chart colors */
-  --chart-1: oklch(0.75 0.15 192);           /* teal */
-  --chart-2: oklch(0.68 0.18 145);           /* green */
-  --chart-3: oklch(0.62 0.22 25);            /* red */
-  --chart-4: oklch(0.72 0.18 280);           /* purple */
-  --chart-5: oklch(0.78 0.16 60);            /* amber */
+  --chart-1: oklch(0.75 0.15 192);
+  --chart-2: oklch(0.68 0.18 145);
+  --chart-3: oklch(0.62 0.22 25);
+  --chart-4: oklch(0.72 0.18 280);
+  --chart-5: oklch(0.78 0.16 60);
 
-  /* Sidebar — slightly darker than cards */
-  --sidebar: oklch(0.08 0.003 240);           /* #111111 */
-  --sidebar-foreground: oklch(0.85 0.005 240);
+  --sidebar: oklch(0.96 0.003 240);
+  --sidebar-foreground: oklch(0.22 0.01 240);
   --sidebar-primary: oklch(0.75 0.15 192);
   --sidebar-primary-foreground: oklch(0.08 0.005 240);
-  --sidebar-accent: oklch(0.14 0.005 240);
-  --sidebar-accent-foreground: oklch(0.90 0.005 240);
-  --sidebar-border: oklch(0.14 0.003 240);
+  --sidebar-accent: oklch(0.92 0.004 240);
+  --sidebar-accent-foreground: oklch(0.22 0.01 240);
+  --sidebar-border: oklch(0.88 0.004 240);
   --sidebar-ring: oklch(0.75 0.15 192);
 
-  /* KynLi semantic status colors */
-  --profit: oklch(0.68 0.18 145);            /* green — profit/positive */
-  --loss: oklch(0.62 0.22 25);               /* red — loss/negative */
-  --over-budget: oklch(0.62 0.22 25);        /* red — over budget */
-  --on-track: oklch(0.68 0.18 145);          /* green — on track */
+  --profit: oklch(0.68 0.18 145);
+  --loss: oklch(0.62 0.22 25);
+  --over-budget: oklch(0.62 0.22 25);
+  --on-track: oklch(0.68 0.18 145);
 }
 
 /* .dark mirrors :root — KynLi is always dark */

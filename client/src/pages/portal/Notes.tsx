@@ -71,12 +71,12 @@ function categoryLabel(category: NoteCategory) {
 }
 
 function categoryClasses(category: NoteCategory) {
-  if (category === "tax") return "border-blue-500/30 bg-blue-500/10 text-blue-200";
-  if (category === "payroll") return "border-violet-500/30 bg-violet-500/10 text-violet-200";
-  if (category === "bookkeeping") return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
-  if (category === "urgent") return "border-rose-500/30 bg-rose-500/10 text-rose-200";
-  if (category === "follow_up") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
-  return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+  if (category === "tax") return "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-200";
+  if (category === "payroll") return "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-200";
+  if (category === "bookkeeping") return "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200";
+  if (category === "urgent") return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+  if (category === "follow_up") return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200";
+  return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
 }
 
 function mapSort(sortMode: SortMode): { sortBy: "created_at" | "updated_at" | "title"; sortDir: "asc" | "desc" } {
@@ -324,7 +324,7 @@ export default function Notes() {
             </div>
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200 whitespace-nowrap">
+          <div className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-200 whitespace-nowrap">
             <Lock size={12} />
             Private
           </div>
@@ -390,12 +390,12 @@ export default function Notes() {
         className="w-full rounded-2xl border border-dashed border-emerald-500/35 bg-emerald-500/5 p-6 md:p-7 text-left hover:bg-emerald-500/10 hover:border-emerald-400/45 transition-all duration-200 shadow-[0_8px_22px_rgba(0,0,0,0.14)]"
       >
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0">
+          <div className="w-10 h-10 rounded-lg bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
             <Plus size={18} />
           </div>
           <div>
-            <p className="text-sm font-semibold text-emerald-300">Add Note</p>
-            <p className="text-xs text-zinc-400 mt-0.5">Create a new private note for this workspace.</p>
+            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Add Note</p>
+            <p className="text-xs text-muted-foreground dark:text-zinc-400 mt-0.5">Create a new private note for this workspace.</p>
           </div>
         </div>
       </button>
@@ -405,43 +405,43 @@ export default function Notes() {
         <h2 className="text-sm font-medium text-foreground mb-4">Notes Timeline</h2>
 
         {notesQuery.isLoading && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-950/35 p-10 text-center">
-            <p className="text-sm text-zinc-200 font-semibold">Loading notes...</p>
+          <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-950/35 p-10 text-center">
+            <p className="text-sm text-foreground dark:text-zinc-200 font-semibold">Loading notes...</p>
           </div>
         )}
 
         {notesQuery.error && (
           <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-6 text-center">
-            <p className="text-sm text-rose-200 font-medium">Failed to load notes</p>
-            <p className="text-xs text-rose-300/80 mt-1">{notesQuery.error.message}</p>
+            <p className="text-sm text-rose-700 dark:text-rose-200 font-medium">Failed to load notes</p>
+            <p className="text-xs text-rose-700/80 dark:text-rose-300/80 mt-1">{notesQuery.error.message}</p>
           </div>
         )}
 
         {!notesQuery.isLoading && !notesQuery.error && (
           <div className="space-y-3">
             {pinnedFirst.length === 0 && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-950/35 p-10 text-center">
-                <p className="text-sm text-zinc-200 font-semibold">No notes yet</p>
-                <p className="text-xs text-zinc-500 mt-1.5 leading-relaxed">Create your first private workspace note.</p>
+              <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-950/35 p-10 text-center">
+                <p className="text-sm text-foreground dark:text-zinc-200 font-semibold">No notes yet</p>
+                <p className="text-xs text-muted-foreground dark:text-zinc-500 mt-1.5 leading-relaxed">Create your first private workspace note.</p>
               </div>
             )}
 
             {pinnedFirst.map((note: any) => (
               <article
                 key={note.id}
-                className="rounded-2xl border border-zinc-800/90 bg-zinc-950/40 p-4 md:p-5 hover:border-zinc-700 hover:bg-zinc-950/55 transition-all duration-200 shadow-[0_6px_18px_rgba(0,0,0,0.2)]"
+                className="rounded-2xl border border-border dark:border-zinc-800/90 bg-muted/30 dark:bg-zinc-950/40 p-4 md:p-5 hover:border-muted-foreground/35 dark:hover:border-zinc-700 hover:bg-muted/40 dark:hover:bg-zinc-950/55 transition-all duration-200 shadow-[0_6px_18px_rgba(0,0,0,0.2)]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 space-y-2">
                     <div className="flex items-center gap-2">
-                      <h3 className="text-[15px] md:text-base font-semibold text-zinc-100 leading-6 tracking-tight">{note.title}</h3>
+                      <h3 className="text-[15px] md:text-base font-semibold text-foreground dark:text-zinc-100 leading-6 tracking-tight">{note.title}</h3>
                       {note.is_pinned && (
-                        <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">
+                        <span className="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300">
                           Pinned
                         </span>
                       )}
                     </div>
-                    <div className="prose prose-sm dark:prose-invert max-w-none text-zinc-300/95 leading-7 prose-p:my-2 prose-headings:my-2 prose-headings:text-zinc-100 prose-strong:text-zinc-100 prose-ul:my-2 prose-ol:my-2 prose-ul:list-disc prose-ol:list-decimal prose-li:my-0.5 prose-li:marker:text-zinc-500 prose-a:text-emerald-300 prose-a:underline prose-a:decoration-emerald-500/50 hover:prose-a:text-emerald-200 prose-pre:bg-zinc-900/70 prose-pre:border prose-pre:border-zinc-800 prose-code:text-zinc-200">
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 dark:text-zinc-300/95 leading-7 prose-p:my-2 prose-headings:my-2 prose-headings:text-foreground dark:prose-headings:text-zinc-100 prose-strong:text-foreground dark:prose-strong:text-zinc-100 prose-ul:my-2 prose-ol:my-2 prose-ul:list-disc prose-ol:list-decimal prose-li:my-0.5 prose-li:marker:text-muted-foreground dark:prose-li:marker:text-zinc-500 prose-a:text-emerald-700 dark:prose-a:text-emerald-300 prose-a:underline prose-a:decoration-emerald-500/50 hover:prose-a:text-emerald-800 dark:hover:prose-a:text-emerald-200 prose-pre:bg-muted/35 dark:prose-pre:bg-zinc-900/70 prose-pre:border prose-pre:border-border dark:prose-pre:border-zinc-800 prose-code:text-foreground dark:prose-code:text-zinc-200">
                       <Streamdown
                         remarkPlugins={[
                           defaultRemarkPlugins.gfm,
@@ -460,7 +460,7 @@ export default function Notes() {
                         <button
                           type="button"
                           disabled={!canMutate}
-                          className="shrink-0 rounded-lg border border-zinc-700/90 bg-zinc-900/90 px-2 py-1.5 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 hover:bg-zinc-800/80 transition-colors disabled:opacity-50"
+                          className="shrink-0 rounded-lg border border-border dark:border-zinc-700/90 bg-muted/40 dark:bg-zinc-900/90 px-2 py-1.5 text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-200 hover:border-muted-foreground/40 dark:hover:border-zinc-600 hover:bg-muted/45 dark:hover:bg-zinc-800/80 transition-colors disabled:opacity-50"
                           aria-label="More options"
                         >
                           <MoreHorizontal size={14} />
@@ -484,7 +484,7 @@ export default function Notes() {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => deleteMutation.mutate({ noteId: note.id })}
-                          className="cursor-pointer gap-2 text-rose-300 focus:text-rose-200"
+                          className="cursor-pointer gap-2 text-rose-700 dark:text-rose-300 focus:text-rose-800 dark:focus:text-rose-200"
                         >
                           <Trash2 size={14} /> Delete
                         </DropdownMenuItem>
@@ -493,15 +493,15 @@ export default function Notes() {
                   </div>
                 </div>
 
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground dark:text-zinc-500">
                   <span>{formatDate(note.created_at ?? note.createdAt)}</span>
-                  <span className="text-zinc-700">•</span>
+                  <span className="text-muted-foreground dark:text-zinc-700">•</span>
                   <span>By {note.created_by_name ?? "Unknown user"}</span>
-                  <span className="text-zinc-700">•</span>
+                  <span className="text-muted-foreground dark:text-zinc-700">•</span>
                   <span className={`inline-flex items-center rounded-full border px-2 py-0.5 ${categoryClasses(note.category as NoteCategory)}`}>
                     {categoryLabel(note.category as NoteCategory)}
                   </span>
-                  <span className="text-zinc-700">•</span>
+                  <span className="text-muted-foreground dark:text-zinc-700">•</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -510,7 +510,7 @@ export default function Notes() {
                       setEditingCommentContent("");
                       setCommentDraft("");
                     }}
-                    className="inline-flex items-center gap-1 rounded-md border border-zinc-700/70 bg-zinc-900/70 px-2 py-1 text-[11px] text-zinc-300 hover:text-zinc-100 hover:border-zinc-600"
+                    className="inline-flex items-center gap-1 rounded-md border border-border dark:border-zinc-700/70 bg-muted/35 dark:bg-zinc-900/70 px-2 py-1 text-[11px] text-foreground/80 dark:text-zinc-300 hover:text-foreground dark:hover:text-zinc-100 hover:border-muted-foreground/40 dark:hover:border-zinc-600"
                   >
                     <MessageSquare size={12} />
                     {note.comments ?? 0} comment{(note.comments ?? 0) === 1 ? "" : "s"}
@@ -540,21 +540,21 @@ export default function Notes() {
 
           <div className="flex-1 overflow-y-auto pr-1 space-y-3">
             {commentsQuery.isLoading && (
-              <div className="rounded-lg border border-zinc-800 bg-zinc-950/35 p-6 text-center text-sm text-zinc-400">
+              <div className="rounded-lg border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-950/35 p-6 text-center text-sm text-muted-foreground dark:text-zinc-400">
                 Loading comments...
               </div>
             )}
 
             {commentsQuery.error && (
-              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-700 dark:text-rose-200">
                 Failed to load comments: {commentsQuery.error.message}
               </div>
             )}
 
             {!commentsQuery.isLoading && !commentsQuery.error && comments.length === 0 && (
-              <div className="rounded-lg border border-zinc-800 bg-zinc-950/35 p-6 text-center">
-                <p className="text-sm text-zinc-200 font-medium">No comments yet</p>
-                <p className="text-xs text-zinc-500 mt-1">Start the internal discussion for this note.</p>
+              <div className="rounded-lg border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-950/35 p-6 text-center">
+                <p className="text-sm text-foreground dark:text-zinc-200 font-medium">No comments yet</p>
+                <p className="text-xs text-muted-foreground dark:text-zinc-500 mt-1">Start the internal discussion for this note.</p>
               </div>
             )}
 
@@ -562,10 +562,10 @@ export default function Notes() {
               const canEdit = canEditComment(comment);
               const isEditing = editingCommentId === comment.id;
               return (
-                <div key={comment.id} className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                <div key={comment.id} className="rounded-lg border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-950/40 p-3">
                   <div className="flex items-center justify-between gap-3 mb-2">
-                    <div className="text-xs text-zinc-400">
-                      <span className="text-zinc-200 font-medium">{comment.created_by_name ?? "Unknown user"}</span>
+                    <div className="text-xs text-muted-foreground dark:text-zinc-400">
+                      <span className="text-foreground dark:text-zinc-200 font-medium">{comment.created_by_name ?? "Unknown user"}</span>
                       <span className="mx-1.5">•</span>
                       <span>{formatDate(comment.created_at)}</span>
                     </div>
@@ -587,7 +587,7 @@ export default function Notes() {
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-7 px-2 text-rose-300"
+                          className="h-7 px-2 text-rose-700 dark:text-rose-300"
                           disabled={deleteCommentMutation.isPending}
                           onClick={() => deleteCommentMutation.mutate({ commentId: comment.id })}
                         >
@@ -629,7 +629,7 @@ export default function Notes() {
                       </div>
                     </div>
                   ) : (
-                    <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-6">{comment.content}</p>
+                    <p className="text-sm text-foreground dark:text-zinc-200 whitespace-pre-wrap leading-6">{comment.content}</p>
                   )}
                 </div>
               );
@@ -690,8 +690,8 @@ export default function Notes() {
                 className="bg-background border-border text-foreground"
                 maxLength={160}
               />
-              <p className="text-[11px] text-zinc-500">{draftTitle.length}/160</p>
-              {titleError && <p className="text-[11px] text-rose-300">{titleError}</p>}
+              <p className="text-[11px] text-muted-foreground dark:text-zinc-500">{draftTitle.length}/160</p>
+              {titleError && <p className="text-[11px] text-rose-700 dark:text-rose-300">{titleError}</p>}
             </div>
 
             <div className="space-y-2">
@@ -705,8 +705,8 @@ export default function Notes() {
                 className="bg-background border-border text-foreground field-sizing-fixed min-h-[170px] max-h-[430px] overflow-y-auto resize-y"
                 maxLength={20000}
               />
-              <p className="text-[11px] text-zinc-500">{draftContent.length}/20000</p>
-              {contentError && <p className="text-[11px] text-rose-300">{contentError}</p>}
+              <p className="text-[11px] text-muted-foreground dark:text-zinc-500">{draftContent.length}/20000</p>
+              {contentError && <p className="text-[11px] text-rose-700 dark:text-rose-300">{contentError}</p>}
             </div>
 
             <div className="space-y-2">

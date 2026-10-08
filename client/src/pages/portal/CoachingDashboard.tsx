@@ -21,7 +21,6 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { TRPCClientErrorLike } from "@trpc/client";
 import type { AppRouter } from "../../../../server/routers";
-import { useLocation } from "wouter";
 
 type TriggerPeriodTile = {
   periodYear: number;
@@ -33,10 +32,16 @@ type TriggerPeriodTile = {
   isLatest: boolean;
 };
 
+function formatAddedDate(value: unknown): string | null {
+  if (!value) return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 export default function CoachingDashboard() {
   const { user } = useAuth();
   const { impersonatingTenantSlug, setAiCoachingPeriod } = usePortal();
-  const [, navigate] = useLocation();
   const now = new Date();
   const currentYear = now.getFullYear();
 
@@ -167,31 +172,11 @@ export default function CoachingDashboard() {
   const [newClientActionTitle, setNewClientActionTitle] = useState("");
   const [deletePeriodDialogOpen, setDeletePeriodDialogOpen] = useState(false);
   const [pendingDeletePeriod, setPendingDeletePeriod] = useState<TriggerPeriodTile | null>(null);
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
 
   const clientActionItemsQuery = trpc.coaching.clientActionItemsList.useQuery(
     { tenantSlug, includeCompleted: true },
     { enabled: !allowClientSelector || !!tenantSlug, staleTime: 10_000 },
   );
-
-  const createClientActionItemMutation = trpc.coaching.meetingActionItemsCreate.useMutation({
-    onSuccess: async () => {
-      setAddMenuOpen(false);
-      setNewTitle("");
-      await Promise.all([
-        utils.coaching.meetingsList.invalidate({ tenantSlug }),
-        utils.coaching.meetingsGet.invalidate(),
-        utils.coaching.clientActionItemsList.invalidate({ tenantSlug, includeCompleted: true }),
-        utils.coaching.clientActionItemsList.invalidate({ tenantSlug }),
-        utils.coaching.overviewTasks.invalidate(),
-      ]);
-      toast.success("Client action item added");
-      navigate("/portal#client-action-items");
-    },
-    onError: (err: TRPCClientErrorLike<AppRouter>) => {
-      toast.error(err.message || "Unable to create client action item.");
-    },
-  });
 
   const createClientActionItemLocalMutation = trpc.coaching.meetingActionItemsCreate.useMutation({
     onSuccess: async () => {
@@ -278,18 +263,6 @@ export default function CoachingDashboard() {
   const handleCreateCoachingPriority = () => {
     if (!canEditPriorities || !newTitle.trim() || createMutation.isPending) return;
     createMutation.mutate({ year: currentYear, tenantSlug, title: newTitle.trim() });
-    setAddMenuOpen(false);
-  };
-
-  const handleNavigateToClientActionItems = () => {
-    if (!canEditPriorities || !newTitle.trim() || createClientActionItemMutation.isPending) return;
-
-    setAddMenuOpen(false);
-    createClientActionItemMutation.mutate({
-      meetingId: null,
-      title: newTitle.trim(),
-      tenantSlug,
-    });
   };
 
   useEffect(() => {
@@ -317,7 +290,7 @@ export default function CoachingDashboard() {
     <div className="px-6 py-8 xl:px-10">
       <div className="w-full max-w-[1800px] mx-auto space-y-8 xl:space-y-10">
         <header className="space-y-3 xl:space-y-4">
-          <p className="text-xs uppercase tracking-[0.18em] font-semibold text-teal-300">Coaching Priorities</p>
+          <p className="text-xs uppercase tracking-[0.18em] font-semibold text-primary dark:text-teal-300">Coaching Priorities</p>
           <h1 className="text-3xl sm:text-4xl xl:text-[2.7rem] leading-tight font-semibold text-foreground">
             {currentYear} coaching priorities
           </h1>
@@ -327,36 +300,36 @@ export default function CoachingDashboard() {
           </p>
         </header>
 
-        <section className="rounded-3xl border border-white/10 bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+        <section className="rounded-3xl border border-border dark:border-white/10 bg-card/90 dark:bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 lg:gap-6 mb-5">
             <div className="space-y-2">
               <div className="flex items-center gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-zinc-200" />
+                <AlertTriangle className="w-4 h-4 text-foreground/90 dark:text-zinc-200" />
                 <h2 className="text-base sm:text-lg font-semibold text-foreground">CFO trigger monitor</h2>
               </div>
               <p className="text-sm text-muted-foreground max-w-3xl">
                 Only red blocks require attention. Select a client to review the latest submitted financials.
               </p>
               <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="inline-flex items-center rounded-full border border-red-500/35 bg-red-950/30 px-2.5 py-1 text-[11px] font-medium text-red-200">
+                <span className="inline-flex items-center rounded-full border border-red-500/35 bg-red-500/10 dark:bg-red-950/30 px-2.5 py-1 text-[11px] font-medium text-red-700 dark:text-red-200">
                   {monitorSummary.triggered} triggered
                 </span>
-                <span className="inline-flex items-center rounded-full border border-emerald-600/25 bg-emerald-950/20 px-2.5 py-1 text-[11px] font-medium text-emerald-200">
+                <span className="inline-flex items-center rounded-full border border-emerald-600/25 bg-emerald-500/10 dark:bg-emerald-950/20 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-200">
                   {monitorSummary.clear} clear
                 </span>
-                <span className="inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/50 px-2.5 py-1 text-[11px] font-medium text-zinc-300">
+                <span className="inline-flex items-center rounded-full border border-border dark:border-zinc-700 bg-muted/35 dark:bg-zinc-900/50 px-2.5 py-1 text-[11px] font-medium text-foreground/80 dark:text-zinc-300">
                   {monitorSummary.unknown} unknown
                 </span>
                 {selectedPeriodLabel ? (
-                  <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+                  <span className="inline-flex items-center rounded-full border border-border dark:border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-muted-foreground dark:text-zinc-400">
                     Showing results for {selectedPeriodLabel}{isSelectedLatest ? " · Latest" : ""}
                   </span>
                 ) : latestSnapshot?.reportMonthLabel ? (
-                  <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+                  <span className="inline-flex items-center rounded-full border border-border dark:border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-muted-foreground dark:text-zinc-400">
                     Latest: {latestSnapshot.reportMonthLabel}
                   </span>
                 ) : activeWorkspaceName ? (
-                  <span className="inline-flex items-center rounded-full border border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
+                  <span className="inline-flex items-center rounded-full border border-border dark:border-zinc-700/70 px-2.5 py-1 text-[11px] font-medium text-muted-foreground dark:text-zinc-400">
                     {activeWorkspaceName}
                   </span>
                 ) : null}
@@ -366,7 +339,7 @@ export default function CoachingDashboard() {
             {allowClientSelector ? (
               <div className="w-full lg:w-[320px]">
                 <Select value={selectedTenantSlug ?? ""} onValueChange={(v) => setSelectedTenantSlug(v)}>
-                  <SelectTrigger className="h-11 bg-zinc-950/70 border-zinc-700 rounded-xl">
+                  <SelectTrigger className="h-11 bg-background dark:bg-zinc-950/70 border-border dark:border-zinc-700 rounded-xl">
                     <SelectValue placeholder="Select client" />
                   </SelectTrigger>
                   <SelectContent>
@@ -383,7 +356,7 @@ export default function CoachingDashboard() {
 
           {periodsQuery.isSuccess && periodTiles.length > 0 ? (
             <div className="mb-5 space-y-3">
-              <p className="text-xs uppercase tracking-[0.16em] text-zinc-500">Trigger history</p>
+              <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground dark:text-zinc-500">Trigger history</p>
               <div className="overflow-x-auto">
                 <div className="inline-flex gap-2.5 min-w-full pb-1">
                   {periodTiles.map((period) => {
@@ -393,8 +366,8 @@ export default function CoachingDashboard() {
                       <div
                         key={key}
                         className={`min-w-[140px] rounded-xl border px-3 py-2 transition-colors ${selected
-                          ? "border-teal-400/70 bg-teal-950/25"
-                          : "border-zinc-700/80 bg-zinc-900/35"}`}
+                          ? "border-primary/50 dark:border-teal-400/70 bg-primary/10 dark:bg-teal-950/25"
+                          : "border-border dark:border-zinc-700/80 bg-muted/30 dark:bg-zinc-900/35"}`}
                       >
                         <div className="flex items-start justify-between gap-2">
                           <button
@@ -402,10 +375,10 @@ export default function CoachingDashboard() {
                             onClick={() => setSelectedPeriod({ year: period.periodYear, month: period.periodMonth })}
                             className="flex-1 min-w-0 text-left"
                           >
-                            <p className={`text-xs font-medium ${selected ? "text-teal-200" : "text-zinc-200"}`}>
+                            <p className={`text-xs font-medium ${selected ? "text-primary dark:text-teal-200" : "text-foreground/90 dark:text-zinc-200"}`}>
                               {period.reportMonthLabel}
                             </p>
-                            <p className={`text-[11px] mt-1 ${selected ? "text-teal-300/90" : "text-zinc-500"}`}>
+                            <p className={`text-[11px] mt-1 ${selected ? "text-primary/90 dark:text-teal-300/90" : "text-muted-foreground dark:text-zinc-500"}`}>
                               {period.triggeredCount} triggered
                             </p>
                           </button>
@@ -415,16 +388,16 @@ export default function CoachingDashboard() {
                               <DropdownMenuTrigger asChild>
                                 <button
                                   type="button"
-                                  className="mt-0.5 p-1 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60"
+                                  className="mt-0.5 p-1 rounded-md text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300 hover:bg-muted dark:hover:bg-zinc-800/60"
                                   aria-label={`Trigger period actions for ${period.reportMonthLabel}`}
                                 >
                                   <MoreHorizontal className="w-3.5 h-3.5" />
                                 </button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="w-52 bg-zinc-950 border-zinc-800 text-zinc-100">
-                                <DropdownMenuItem disabled className="text-zinc-500">Regenerate triggers (coming soon)</DropdownMenuItem>
+                              <DropdownMenuContent align="end" className="w-52 bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 text-popover-foreground dark:text-zinc-100">
+                                <DropdownMenuItem disabled className="text-muted-foreground dark:text-zinc-500">Regenerate triggers (coming soon)</DropdownMenuItem>
                                 <DropdownMenuItem
-                                  className="text-red-300 focus:text-red-200 focus:bg-red-950/40"
+                                  className="text-red-700 dark:text-red-300 focus:text-red-800 dark:focus:text-red-200 focus:bg-red-950/40"
                                   onClick={() => {
                                     setPendingDeletePeriod(period);
                                     setDeletePeriodDialogOpen(true);
@@ -442,12 +415,12 @@ export default function CoachingDashboard() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/20 p-3">
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500 mb-2">Monthly trigger summary</p>
+              <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/20 p-3">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground dark:text-zinc-500 mb-2">Monthly trigger summary</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs min-w-[420px]">
                     <thead>
-                      <tr className="text-zinc-500 border-b border-zinc-800">
+                      <tr className="text-muted-foreground dark:text-zinc-500 border-b border-border dark:border-zinc-800">
                         <th className="text-left font-medium py-1.5">Month</th>
                         <th className="text-left font-medium py-1.5">Triggered</th>
                         <th className="text-left font-medium py-1.5">Clear</th>
@@ -459,11 +432,11 @@ export default function CoachingDashboard() {
                         const key = `${p.periodYear}-${p.periodMonth}`;
                         const selected = key === selectedPeriodKey;
                         return (
-                          <tr key={`summary-${key}`} className={`border-b border-zinc-900/80 ${selected ? "bg-teal-950/15" : ""}`}>
-                            <td className="py-1.5 text-zinc-300">{p.reportMonthLabel}</td>
-                            <td className="py-1.5 text-red-200">{p.triggeredCount}</td>
-                            <td className="py-1.5 text-emerald-200">{p.clearCount}</td>
-                            <td className="py-1.5 text-zinc-400">{p.unknownCount}</td>
+                          <tr key={`summary-${key}`} className={`border-b border-zinc-900/80 ${selected ? "bg-primary/5 dark:bg-teal-950/15" : ""}`}>
+                            <td className="py-1.5 text-foreground/80 dark:text-zinc-300">{p.reportMonthLabel}</td>
+                            <td className="py-1.5 text-red-700 dark:text-red-200">{p.triggeredCount}</td>
+                            <td className="py-1.5 text-emerald-700 dark:text-emerald-200">{p.clearCount}</td>
+                            <td className="py-1.5 text-muted-foreground dark:text-zinc-400">{p.unknownCount}</td>
                           </tr>
                         );
                       })}
@@ -477,9 +450,9 @@ export default function CoachingDashboard() {
           {periodsQuery.isLoading || (selectedPeriod && selectedTriggerQuery.isLoading) ? (
             <div className="text-sm text-muted-foreground py-6">Loading trigger monitor…</div>
           ) : periodsQuery.isError || selectedTriggerQuery.isError ? (
-            <div className="text-sm text-red-300 py-6">Unable to load trigger monitor.</div>
+            <div className="text-sm text-red-700 dark:text-red-300 py-6">Unable to load trigger monitor.</div>
           ) : periodTiles.length === 0 ? (
-            <div className="rounded-2xl border border-zinc-700/70 bg-zinc-900/25 px-5 py-6 text-sm text-zinc-400">
+            <div className="rounded-2xl border border-border dark:border-zinc-700/70 bg-muted/20 dark:bg-zinc-900/25 px-5 py-6 text-sm text-muted-foreground dark:text-zinc-400">
               No trigger snapshots have been received for this client yet.
             </div>
           ) : (
@@ -492,20 +465,20 @@ export default function CoachingDashboard() {
                 const toneClass = isTriggered
                   ? "border-red-400/45 bg-gradient-to-b from-red-900/45 to-red-950/35"
                   : isUnknown
-                    ? "border-zinc-700/80 bg-zinc-900/55"
-                    : "border-zinc-700/75 bg-zinc-900/25";
+                    ? "border-border dark:border-zinc-700/80 bg-muted/35 dark:bg-zinc-900/55"
+                    : "border-border dark:border-zinc-700/75 bg-muted/20 dark:bg-zinc-900/25";
 
                 const titleClass = isTriggered
-                  ? "text-red-100"
+                  ? "text-red-800 dark:text-red-100"
                   : isUnknown
-                    ? "text-zinc-300"
-                    : "text-zinc-100";
+                    ? "text-foreground/80 dark:text-zinc-300"
+                    : "text-foreground dark:text-zinc-100";
 
                 const valueClass = isTriggered
-                  ? "text-red-200/95"
+                  ? "text-red-700 dark:text-red-200/95"
                   : isUnknown
-                    ? "text-zinc-500"
-                    : "text-zinc-300";
+                    ? "text-muted-foreground dark:text-zinc-500"
+                    : "text-foreground/80 dark:text-zinc-300";
 
                 return (
                   <div
@@ -523,11 +496,11 @@ export default function CoachingDashboard() {
           )}
         </section>
 
-        <section className="rounded-3xl border border-white/10 bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+        <section className="rounded-3xl border border-border dark:border-white/10 bg-card/90 dark:bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(260px,30%)_1fr] gap-4 xl:gap-6 items-start mb-6">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2.5">
-                <CheckSquare className="w-4 h-4 text-teal-300" />
+                <CheckSquare className="w-4 h-4 text-primary dark:text-teal-300" />
                 <h3 className="text-xl sm:text-2xl font-semibold text-foreground">{currentYear} coaching priorities</h3>
               </div>
               <p className="text-sm text-muted-foreground">{openPriorities.length} open · {completedPriorities.length} complete</p>
@@ -538,7 +511,7 @@ export default function CoachingDashboard() {
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
                 placeholder="Add a coaching priority..."
-                className="h-12 sm:h-14 rounded-xl bg-zinc-950/70 border-zinc-700 text-sm sm:text-base"
+                className="h-12 sm:h-14 rounded-xl bg-background dark:bg-zinc-950/70 border-border dark:border-zinc-700 text-sm sm:text-base"
                 disabled={!canEditPriorities}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -548,59 +521,29 @@ export default function CoachingDashboard() {
                   }
                 }}
               />
-              <DropdownMenu open={addMenuOpen} onOpenChange={setAddMenuOpen}>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="default"
-                    className="h-12 w-12 sm:h-14 sm:w-14 rounded-xl shrink-0 bg-teal-400 text-black hover:bg-teal-300"
-                    disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
-                  >
-                    <Plus className="w-5 h-5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-72 bg-zinc-950 border-zinc-800 text-zinc-100 p-1.5">
-                  <div className="px-2 py-1 text-xs uppercase tracking-[0.12em] text-zinc-500">Add item</div>
-
-                  <DropdownMenuItem
-                    onClick={handleCreateCoachingPriority}
-                    className="items-start gap-2.5 py-2.5"
-                    disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
-                  >
-                    <CheckSquare className="w-4 h-4 mt-0.5 text-teal-300" />
-                    <div className="min-w-0">
-                      <p className="text-sm text-zinc-100">Coaching Priority</p>
-                      <p className="text-xs text-zinc-400 mt-0.5">Keep this as an annual coaching commitment</p>
-                    </div>
-                  </DropdownMenuItem>
-
-                  <DropdownMenuItem
-                    onClick={handleNavigateToClientActionItems}
-                    className="items-start gap-2.5 py-2.5"
-                    disabled={!canEditPriorities || !newTitle.trim() || createClientActionItemMutation.isPending}
-                  >
-                    <ListChecks className="w-4 h-4 mt-0.5 text-zinc-300" />
-                    <div className="min-w-0">
-                      <p className="text-sm text-zinc-100">Client Action Item</p>
-                      <p className="text-xs text-zinc-400 mt-0.5">Manage this with client meeting/action items</p>
-                    </div>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <Button
+                type="button"
+                variant="default"
+                className="h-12 w-12 sm:h-14 sm:w-14 rounded-xl shrink-0 bg-teal-400 text-black hover:bg-teal-300"
+                disabled={!canEditPriorities || !newTitle.trim() || createMutation.isPending}
+                onClick={handleCreateCoachingPriority}
+              >
+                <Plus className="w-5 h-5" />
+              </Button>
             </div>
           </div>
 
           {prioritiesQuery.isLoading ? (
             <div className="text-sm text-muted-foreground py-4">Loading priorities…</div>
           ) : prioritiesQuery.isError ? (
-            <div className="text-sm text-red-300 py-4">Unable to load priorities.</div>
+            <div className="text-sm text-red-700 dark:text-red-300 py-4">Unable to load priorities.</div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,56%)_minmax(0,44%)] gap-4 xl:gap-6 items-start">
               <div className="space-y-2.5">
                 {openPriorities.length > 0 ? openPriorities.map((p) => (
                   <div
                     key={p.id}
-                    className="group flex items-center justify-between rounded-2xl border border-zinc-700/80 bg-zinc-900/35 px-4 py-3"
+                    className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-700/80 bg-muted/30 dark:bg-zinc-900/35 px-4 py-3"
                   >
                     <label className="flex items-center gap-3 min-w-0 cursor-pointer">
                       <Checkbox
@@ -615,7 +558,7 @@ export default function CoachingDashboard() {
                     </label>
                     <button
                       type="button"
-                      className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-400 hover:text-zinc-200"
+                      className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-400 hover:text-foreground/90 dark:hover:text-zinc-200"
                       onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
                       disabled={!canEditPriorities || deleteMutation.isPending}
                       aria-label={`Delete ${p.title}`}
@@ -624,19 +567,19 @@ export default function CoachingDashboard() {
                     </button>
                   </div>
                 )) : (
-                  <div className="rounded-xl border border-zinc-700 bg-zinc-900/30 p-4 text-sm text-zinc-400">
+                  <div className="rounded-xl border border-border dark:border-zinc-700 bg-muted/20 dark:bg-zinc-900/30 p-4 text-sm text-muted-foreground dark:text-zinc-400">
                     No open priorities yet.
                   </div>
                 )}
               </div>
 
               <div className="space-y-3">
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">Completed</p>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground dark:text-zinc-500">Completed</p>
                 <div className="space-y-2.5">
                   {completedPriorities.length > 0 ? completedPriorities.map((p) => (
                     <div
                       key={p.id}
-                      className="group flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/20 px-4 py-3"
+                      className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/20 px-4 py-3"
                     >
                       <label className="flex items-center gap-3 min-w-0 cursor-pointer">
                         <Checkbox
@@ -647,11 +590,11 @@ export default function CoachingDashboard() {
                           }}
                           disabled={!canEditPriorities || toggleMutation.isPending}
                         />
-                        <span className="text-[15px] text-zinc-500 line-through truncate">{p.title}</span>
+                        <span className="text-[15px] text-muted-foreground dark:text-zinc-500 line-through truncate">{p.title}</span>
                       </label>
                       <button
                         type="button"
-                        className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-500 hover:text-zinc-300"
+                        className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300"
                         onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
                         disabled={!canEditPriorities || deleteMutation.isPending}
                         aria-label={`Delete ${p.title}`}
@@ -660,7 +603,7 @@ export default function CoachingDashboard() {
                       </button>
                     </div>
                   )) : (
-                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/15 p-4 text-sm text-zinc-500">
+                    <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/10 dark:bg-zinc-900/15 p-4 text-sm text-muted-foreground dark:text-zinc-500">
                       No completed priorities yet.
                     </div>
                   )}
@@ -674,11 +617,11 @@ export default function CoachingDashboard() {
           )}
         </section>
 
-        <section className="rounded-3xl border border-white/10 bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+        <section className="rounded-3xl border border-border dark:border-white/10 bg-card/90 dark:bg-zinc-900/45 p-5 sm:p-6 xl:p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(260px,30%)_1fr] gap-4 xl:gap-6 items-start mb-6">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2.5">
-                <ListChecks className="w-4 h-4 text-teal-300" />
+                <ListChecks className="w-4 h-4 text-primary dark:text-teal-300" />
                 <h3 className="text-xl sm:text-2xl font-semibold text-foreground">Client action items</h3>
               </div>
               <p className="text-sm text-muted-foreground">{openClientActionItems.length} open · {completedClientActionItems.length} complete</p>
@@ -689,7 +632,7 @@ export default function CoachingDashboard() {
                 value={newClientActionTitle}
                 onChange={(e) => setNewClientActionTitle(e.target.value)}
                 placeholder="Add a client action item..."
-                className="h-12 sm:h-14 rounded-xl bg-zinc-950/70 border-zinc-700 text-sm sm:text-base"
+                className="h-12 sm:h-14 rounded-xl bg-background dark:bg-zinc-950/70 border-border dark:border-zinc-700 text-sm sm:text-base"
                 disabled={!canEditPriorities}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -713,7 +656,7 @@ export default function CoachingDashboard() {
           {clientActionItemsQuery.isLoading ? (
             <div className="text-sm text-muted-foreground py-4">Loading client action items…</div>
           ) : clientActionItemsQuery.isError ? (
-            <div className="text-sm text-red-300 py-4">Unable to load client action items.</div>
+            <div className="text-sm text-red-700 dark:text-red-300 py-4">Unable to load client action items.</div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,56%)_minmax(0,44%)] gap-4 xl:gap-6 items-start">
               <div className="space-y-2.5">
@@ -723,11 +666,12 @@ export default function CoachingDashboard() {
                   const metadata = item.meeting_id != null
                     ? `From client meeting${item.meeting_title ? ` · ${String(item.meeting_title)}` : ""}`
                     : null;
+                  const addedDate = formatAddedDate(item?.created_at);
 
                   return (
                     <div
                       key={`open-action-${item.id}`}
-                      className="group flex items-center justify-between rounded-2xl border border-zinc-700/80 bg-zinc-900/35 px-4 py-3"
+                      className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-700/80 bg-muted/30 dark:bg-zinc-900/35 px-4 py-3"
                     >
                       <label className="flex items-center gap-3 min-w-0 cursor-pointer">
                         <Checkbox
@@ -744,12 +688,13 @@ export default function CoachingDashboard() {
                         />
                         <span className="min-w-0">
                           <span className="block text-[15px] sm:text-base font-medium text-foreground truncate">{String(item.title || "Untitled action item")}</span>
-                          {metadata ? <span className="block text-xs text-zinc-500 mt-0.5 truncate">{metadata}</span> : null}
+                          {addedDate ? <span className="block text-xs text-muted-foreground dark:text-zinc-500 mt-0.5 truncate">Added {addedDate}</span> : null}
+                          {metadata ? <span className="block text-xs text-muted-foreground dark:text-zinc-500 mt-0.5 truncate">{metadata}</span> : null}
                         </span>
                       </label>
                       <button
                         type="button"
-                        className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-400 hover:text-zinc-200"
+                        className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-400 hover:text-foreground/90 dark:hover:text-zinc-200"
                         onClick={() => deleteClientActionItemMutation.mutate({ id: Number(item.id), tenantSlug })}
                         disabled={!canEditPriorities || deleteClientActionItemMutation.isPending}
                         aria-label={`Delete ${String(item.title || "action item")}`}
@@ -759,24 +704,25 @@ export default function CoachingDashboard() {
                     </div>
                   );
                 }) : (
-                  <div className="rounded-xl border border-zinc-700 bg-zinc-900/30 p-4 text-sm text-zinc-400">
+                  <div className="rounded-xl border border-border dark:border-zinc-700 bg-muted/20 dark:bg-zinc-900/30 p-4 text-sm text-muted-foreground dark:text-zinc-400">
                     No open client action items yet.
                   </div>
                 )}
               </div>
 
               <div className="space-y-3">
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">Completed</p>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground dark:text-zinc-500">Completed</p>
                 <div className="space-y-2.5">
                   {completedClientActionItems.length > 0 ? completedClientActionItems.map((item) => {
                     const metadata = item.meeting_id != null
                       ? `From client meeting${item.meeting_title ? ` · ${String(item.meeting_title)}` : ""}`
                       : null;
+                    const addedDate = formatAddedDate(item?.created_at);
 
                     return (
                       <div
                         key={`completed-action-${item.id}`}
-                        className="group flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/20 px-4 py-3"
+                        className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/20 px-4 py-3"
                       >
                         <label className="flex items-center gap-3 min-w-0 cursor-pointer">
                           <Checkbox
@@ -792,13 +738,14 @@ export default function CoachingDashboard() {
                             disabled={!canEditPriorities || updateClientActionItemStatusMutation.isPending}
                           />
                           <span className="min-w-0">
-                            <span className="block text-[15px] text-zinc-500 line-through truncate">{String(item.title || "Untitled action item")}</span>
-                            {metadata ? <span className="block text-xs text-zinc-600 mt-0.5 truncate">{metadata}</span> : null}
+                            <span className="block text-[15px] text-muted-foreground dark:text-zinc-500 line-through truncate">{String(item.title || "Untitled action item")}</span>
+                            {addedDate ? <span className="block text-xs text-muted-foreground dark:text-zinc-600 mt-0.5 truncate">Added {addedDate}</span> : null}
+                            {metadata ? <span className="block text-xs text-muted-foreground dark:text-zinc-600 mt-0.5 truncate">{metadata}</span> : null}
                           </span>
                         </label>
                         <button
                           type="button"
-                          className="opacity-20 group-hover:opacity-60 transition-opacity text-zinc-500 hover:text-zinc-300"
+                          className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300"
                           onClick={() => deleteClientActionItemMutation.mutate({ id: Number(item.id), tenantSlug })}
                           disabled={!canEditPriorities || deleteClientActionItemMutation.isPending}
                           aria-label={`Delete ${String(item.title || "action item")}`}
@@ -808,7 +755,7 @@ export default function CoachingDashboard() {
                       </div>
                     );
                   }) : (
-                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/15 p-4 text-sm text-zinc-500">
+                    <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/10 dark:bg-zinc-900/15 p-4 text-sm text-muted-foreground dark:text-zinc-500">
                       No completed client action items yet.
                     </div>
                   )}
@@ -823,12 +770,12 @@ export default function CoachingDashboard() {
         </section>
 
         <AlertDialog open={deletePeriodDialogOpen} onOpenChange={setDeletePeriodDialogOpen}>
-          <AlertDialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100">
+          <AlertDialogContent className="bg-background dark:bg-zinc-950 border-border dark:border-zinc-800 text-foreground dark:text-zinc-100">
             <AlertDialogHeader>
               <AlertDialogTitle>
                 Delete {pendingDeleteLabel} trigger snapshot?
               </AlertDialogTitle>
-              <AlertDialogDescription className="text-zinc-400 leading-relaxed">
+              <AlertDialogDescription className="text-muted-foreground dark:text-zinc-400 leading-relaxed">
                 This will remove the CFO Trigger Monitor results for {pendingDeleteLabel}.
                 <br />
                 The underlying financial data and submitted financial report will not be deleted.
@@ -836,7 +783,7 @@ export default function CoachingDashboard() {
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel
-                className="border-zinc-700 text-zinc-200 hover:bg-zinc-900"
+                className="border-border dark:border-zinc-700 text-foreground/90 dark:text-zinc-200 hover:bg-muted dark:hover:bg-zinc-900"
                 onClick={() => {
                   setDeletePeriodDialogOpen(false);
                   setPendingDeletePeriod(null);

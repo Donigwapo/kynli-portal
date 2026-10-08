@@ -738,23 +738,28 @@ export async function inviteClientByEmail(
     return { sent: false, error: message };
   }
 
-  // 4) Mark invite metadata only after email send succeeds
-  const supabaseUid = linkData?.user?.id ?? null;
+  // 4) Mark invite metadata only after email send succeeds.
+  // Preserve existing account linkage/flags for already-provisioned users.
+  const existingPortalUser = await getPortalUserByEmail(email);
+  const supabaseUid = linkData?.user?.id ?? existingPortalUser?.supabase_uid ?? null;
   const nowIso = new Date().toISOString();
+
+  const portalUserUpsertPayload = {
+    supabase_uid: supabaseUid,
+    email,
+    name: existingPortalUser?.name ?? recipientName,
+    role: existingPortalUser?.role ?? "client",
+    tenant_slug: existingPortalUser?.tenant_slug ?? tenantSlug,
+    must_reset_password: existingPortalUser?.must_reset_password ?? false,
+    invite_sent_at: nowIso,
+    // IMPORTANT: do not regress accepted users back to pending when resending.
+    invite_accepted: existingPortalUser?.invite_accepted ?? false,
+  };
 
   let upsertError: any = null;
 
   ({ error: upsertError } = await supabase.from("portal_users").upsert(
-    {
-      supabase_uid: supabaseUid,
-      email,
-      name: recipientName,
-      role: "client",
-      tenant_slug: tenantSlug,
-      must_reset_password: false,
-      invite_sent_at: nowIso,
-      invite_accepted: false,
-    },
+    portalUserUpsertPayload,
     { onConflict: "email" },
   ));
 
@@ -762,12 +767,12 @@ export async function inviteClientByEmail(
     // Backward-compatible fallback for schemas without invite tracking columns on portal_users
     const fallback = await supabase.from("portal_users").upsert(
       {
-        supabase_uid: supabaseUid,
-        email,
-        name: recipientName,
-        role: "client",
-        tenant_slug: tenantSlug,
-        must_reset_password: false,
+        supabase_uid: portalUserUpsertPayload.supabase_uid,
+        email: portalUserUpsertPayload.email,
+        name: portalUserUpsertPayload.name,
+        role: portalUserUpsertPayload.role,
+        tenant_slug: portalUserUpsertPayload.tenant_slug,
+        must_reset_password: portalUserUpsertPayload.must_reset_password,
       },
       { onConflict: "email" },
     );

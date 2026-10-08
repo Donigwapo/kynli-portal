@@ -48,11 +48,11 @@ const MAX_SERVICES_PER_CLIENT = 50;
 const MAX_SERVICE_MONTHLY_AMOUNT = 1_000_000_000;
 
 const PACKAGE_COLORS: Record<string, string> = {
-  "Video Production":  "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
-  "Social Media":      "text-blue-400 border-blue-400/40 bg-blue-400/10",
-  "Brand Strategy":    "text-cyan-400 border-cyan-400/40 bg-cyan-400/10",
-  "Content + Photo":   "text-amber-400 border-amber-400/40 bg-amber-400/10",
-  "Full Service":      "text-purple-400 border-purple-400/40 bg-purple-400/10",
+  "Video Production":  "text-emerald-700 dark:text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
+  "Social Media":      "text-blue-700 dark:text-blue-400 border-blue-400/40 bg-blue-400/10",
+  "Brand Strategy":    "text-cyan-700 dark:text-cyan-400 border-cyan-400/40 bg-cyan-400/10",
+  "Content + Photo":   "text-amber-700 dark:text-amber-400 border-amber-400/40 bg-amber-400/10",
+  "Full Service":      "text-purple-700 dark:text-purple-400 border-purple-400/40 bg-purple-400/10",
 };
 
 const canonicalServiceKey = (value: string) => value.trim().toLocaleLowerCase();
@@ -658,9 +658,9 @@ export default function Clients() {
               const tenure = calcTenureMonths(service.startDate);
               const ltv = service.monthlyAmount * tenure;
               const statusClass = service.status === "active"
-                ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
+                ? "text-emerald-700 dark:text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
                 : service.status === "churned"
-                  ? "text-red-300 border-red-500/40 bg-red-500/10"
+                  ? "text-red-700 dark:text-red-300 border-red-500/40 bg-red-500/10"
                   : "text-muted-foreground border-border bg-muted/20";
               const displayServiceName = toDisplayServiceName(service.name);
 
@@ -816,8 +816,8 @@ export default function Clients() {
                         <Badge
                           variant="outline"
                           className={c.status === "active"
-                            ? "text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
-                            : "text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
+                            ? "text-emerald-700 dark:text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
+                            : "text-red-700 dark:text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
                         >
                           {c.status.charAt(0).toUpperCase() + c.status.slice(1)}
                         </Badge>
@@ -829,7 +829,7 @@ export default function Clients() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="h-8 px-2.5 text-xs text-cyan-300 hover:text-cyan-200"
+                                className="h-8 px-2.5 text-xs text-cyan-700 dark:text-cyan-300 hover:text-cyan-800 dark:hover:text-cyan-200"
                                 onClick={() => openDetails(c)}
                               >
                                 <SlidersHorizontal className="w-3.5 h-3.5 mr-1" />
@@ -907,8 +907,8 @@ export default function Clients() {
                       <Badge
                         variant="outline"
                         className={c.status === "active"
-                          ? "text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
-                          : "text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
+                          ? "text-emerald-700 dark:text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
+                          : "text-red-700 dark:text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
                       >
                         {c.status.charAt(0).toUpperCase() + c.status.slice(1)}
                       </Badge>
@@ -1006,8 +1006,8 @@ export default function Clients() {
                       <Badge
                         variant="outline"
                         className={c.status === "active"
-                          ? "text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
-                          : "text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
+                          ? "text-emerald-700 dark:text-emerald-400 border-emerald-400/40 bg-emerald-400/10 text-xs"
+                          : "text-red-700 dark:text-red-400 border-red-400/40 bg-red-400/10 text-xs"}
                       >
                         {c.status}
                       </Badge>
@@ -1055,7 +1055,7 @@ export default function Clients() {
           <DialogContent className="bg-card border-border w-[95vw] sm:w-[92vw] max-w-[740px] max-h-[92vh] overflow-hidden p-0">
             <DialogHeader className="px-5 sm:px-6 pt-5 pb-4 border-b border-border">
               <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
-                <Building2 className="w-4 h-4 text-cyan-400" aria-hidden="true" />
+                <Building2 className="w-4 h-4 text-cyan-700 dark:text-cyan-400" aria-hidden="true" />
                 Client Details
               </DialogTitle>
               <DialogDescription className="text-sm text-muted-foreground mt-1">
@@ -1070,7 +1070,7 @@ export default function Clients() {
                     <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-muted text-[11px] font-semibold px-1.5">1</span>
                     <h3 className="text-sm font-semibold text-foreground">{editingServiceKey ? "Edit Service" : "Add or Edit Service"}</h3>
                     {editingServiceKey && (
-                      <Badge variant="outline" className="text-[11px] border-cyan-500/40 text-cyan-300 bg-cyan-500/10">Editing</Badge>
+                      <Badge variant="outline" className="text-[11px] border-cyan-500/40 text-cyan-700 dark:text-cyan-300 bg-cyan-500/10">Editing</Badge>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">Add a new service or update an existing service for this client.</p>
@@ -1177,7 +1177,7 @@ export default function Clients() {
                 </div>
 
                 {serviceInputError && (
-                  <p className="text-xs text-red-400 mt-1">{serviceInputError}</p>
+                  <p className="text-xs text-red-700 dark:text-red-400 mt-1">{serviceInputError}</p>
                 )}
               </section>
 
@@ -1207,9 +1207,9 @@ export default function Clients() {
                       const tenure = calcTenureMonths(service.startDate);
                       const serviceLtv = service.monthlyAmount * tenure;
                       const statusClass = service.status === "active"
-                        ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
+                        ? "text-emerald-700 dark:text-emerald-300 border-emerald-500/40 bg-emerald-500/10"
                         : service.status === "churned"
-                          ? "text-red-300 border-red-500/40 bg-red-500/10"
+                          ? "text-red-700 dark:text-red-300 border-red-500/40 bg-red-500/10"
                           : "text-muted-foreground border-border bg-muted/20";
                       return (
                         <article
@@ -1218,7 +1218,7 @@ export default function Clients() {
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex items-center gap-2">
-                              <BriefcaseBusiness className="w-4 h-4 text-cyan-400 shrink-0" aria-hidden="true" />
+                              <BriefcaseBusiness className="w-4 h-4 text-cyan-700 dark:text-cyan-400 shrink-0" aria-hidden="true" />
                               <p className="text-sm font-medium text-foreground break-words">{service.name}</p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">

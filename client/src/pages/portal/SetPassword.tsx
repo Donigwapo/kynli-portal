@@ -12,6 +12,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useTheme } from "@/contexts/ThemeContext";
 import { toast } from "sonner";
 import { Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
 import { useState } from "react";
@@ -22,6 +23,7 @@ import { trpc } from "../../lib/trpc";
 export default function SetPassword() {
   const [, navigate] = useLocation();
   const { refresh } = useAuth();
+  const { theme } = useTheme();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -51,8 +53,21 @@ export default function SetPassword() {
     changePassword.mutate({ newPassword });
   }
 
+  const isDark = theme === "dark";
+  const shellBg = isDark ? "#0a0a0a" : "var(--background)";
+  const cardBg = isDark ? "#111111" : "var(--card)";
+  const cardBorder = isDark ? "#1f1f1f" : "var(--border)";
+  const iconWrapBg = isDark ? "rgba(0,212,170,0.1)" : "color-mix(in oklab, var(--primary) 12%, transparent)";
+  const iconColor = isDark ? "#00d4aa" : "var(--primary)";
+  const warningColor = isDark ? "#f59e0b" : "color-mix(in oklab, var(--chart-5) 78%, var(--foreground))";
+  const errorColor = isDark ? "#ef4444" : "var(--destructive)";
+  const okColor = isDark ? "#00d4aa" : "var(--primary)";
+  const primaryBtnBg = isDark ? "#00d4aa" : "var(--primary)";
+  const primaryBtnFg = isDark ? "#000" : "var(--primary-foreground)";
+  const footerColor = isDark ? "#444" : "var(--muted-foreground)";
+
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: "#0a0a0a" }}>
+    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: shellBg }}>
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex justify-center mb-8">
@@ -68,15 +83,15 @@ export default function SetPassword() {
         {/* Card */}
         <div
           className="rounded-2xl border p-8 space-y-6"
-          style={{ backgroundColor: "#111111", borderColor: "#1f1f1f" }}
+          style={{ backgroundColor: cardBg, borderColor: cardBorder }}
         >
           {/* Header */}
           <div className="text-center space-y-2">
             <div
               className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4"
-              style={{ backgroundColor: "rgba(0,212,170,0.1)" }}
+              style={{ backgroundColor: iconWrapBg }}
             >
-              <KeyRound size={22} style={{ color: "#00d4aa" }} />
+              <KeyRound size={22} style={{ color: iconColor }} />
             </div>
             <h1 className="text-xl font-bold text-foreground">Set Your Password</h1>
             <p className="text-sm text-muted-foreground">
@@ -131,17 +146,17 @@ export default function SetPassword() {
 
             {/* Password strength hint */}
             {newPassword.length > 0 && newPassword.length < 8 && (
-              <p className="text-xs" style={{ color: "#f59e0b" }}>
+              <p className="text-xs" style={{ color: warningColor }}>
                 Password must be at least 8 characters.
               </p>
             )}
             {newPassword.length >= 8 && confirmPassword.length > 0 && newPassword !== confirmPassword && (
-              <p className="text-xs" style={{ color: "#ef4444" }}>
+              <p className="text-xs" style={{ color: errorColor }}>
                 Passwords do not match.
               </p>
             )}
             {newPassword.length >= 8 && confirmPassword === newPassword && (
-              <p className="text-xs flex items-center gap-1" style={{ color: "#00d4aa" }}>
+              <p className="text-xs flex items-center gap-1" style={{ color: okColor }}>
                 <ShieldCheck size={12} /> Passwords match
               </p>
             )}
@@ -149,7 +164,7 @@ export default function SetPassword() {
             <Button
               type="submit"
               className="w-full font-medium"
-              style={{ backgroundColor: "#00d4aa", color: "#000" }}
+              style={{ backgroundColor: primaryBtnBg, color: primaryBtnFg }}
               disabled={changePassword.isPending || newPassword.length < 8 || newPassword !== confirmPassword}
             >
               {changePassword.isPending ? "Setting password…" : "Set Password & Enter Portal"}
@@ -157,7 +172,7 @@ export default function SetPassword() {
           </form>
         </div>
 
-        <p className="text-center text-xs mt-4" style={{ color: "#444" }}>
+        <p className="text-center text-xs mt-4" style={{ color: footerColor }}>
           KynLi Consulting — Secure Client Portal
         </p>
       </div>

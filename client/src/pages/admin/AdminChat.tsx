@@ -1152,7 +1152,7 @@ export default function AdminChat() {
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
       {/* Client Sidebar */}
-      <div className="w-72 border-r border-border flex flex-col bg-[#0f1012] shrink-0 min-h-0 overflow-hidden">
+      <div className="w-72 border-r border-border flex flex-col bg-card dark:bg-[#0f1012] shrink-0 min-h-0 overflow-hidden">
         <div className="px-3 py-3 border-b border-border space-y-2">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Conversations</p>
           <div className="relative">
@@ -1222,8 +1222,8 @@ export default function AdminChat() {
               className="h-8 text-xs bg-background border-border text-foreground"
             />
             {dmCmdOpen && searchQuery.trim().startsWith("@") && (
-              <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-cyan-400/20 bg-zinc-900/85 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
-                <div className="px-2 py-1 border-b border-zinc-800/80 text-[10px] uppercase tracking-wide text-zinc-400">People</div>
+              <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-border dark:border-cyan-400/20 bg-popover dark:bg-zinc-900/85 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+                <div className="px-2 py-1 border-b border-border dark:border-zinc-800/80 text-[10px] uppercase tracking-wide text-muted-foreground dark:text-zinc-400">People</div>
                 <div className="max-h-64 overflow-y-auto p-1">
                   {(peopleSearchResults as MentionCandidate[]).slice(0, 12).map((u, idx) => {
                     const active = idx === dmCmdIndex;
@@ -1253,20 +1253,20 @@ export default function AdminChat() {
                           setSearchActive(false);
                           setDmCmdOpen(false);
                         }}
-                        className={`w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 ${active ? "bg-cyan-500/15 border border-cyan-400/30" : "hover:bg-zinc-800/70"}`}
+                        className={`w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 ${active ? "bg-cyan-500/10 border border-cyan-500/40 dark:bg-cyan-500/15 dark:border-cyan-400/30" : "hover:bg-muted/60 dark:hover:bg-zinc-800/70"}`}
                       >
-                        <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 text-[11px] font-semibold text-zinc-200 flex items-center justify-center">
+                        <div className="w-7 h-7 rounded-full bg-muted dark:bg-zinc-800 border border-border dark:border-zinc-700 text-[11px] font-semibold text-foreground dark:text-zinc-200 flex items-center justify-center">
                           {(u.initials || u.displayName?.charAt(0) || "?").toUpperCase()}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium text-zinc-100 truncate">{u.displayName}</p>
-                          <p className="text-[10px] text-zinc-400 truncate">@{u.displayName.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "")}</p>
+                          <p className="text-xs font-medium text-foreground dark:text-zinc-100 truncate">{u.displayName}</p>
+                          <p className="text-[10px] text-muted-foreground dark:text-zinc-400 truncate">@{u.displayName.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "")}</p>
                         </div>
                       </button>
                     );
                   })}
                   {(peopleSearchResults as MentionCandidate[]).length === 0 && (
-                    <div className="px-2.5 py-2 text-xs text-zinc-400">No matching members</div>
+                    <div className="px-2.5 py-2 text-xs text-muted-foreground dark:text-zinc-400">No matching members</div>
                   )}
                 </div>
               </div>
@@ -1287,7 +1287,7 @@ export default function AdminChat() {
                   <button
                     type="button"
                     onClick={() => toggleGroup(group)}
-                    className="w-full px-1.5 flex items-center justify-between text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold hover:text-zinc-300 transition-colors"
+                    className="w-full px-1.5 flex items-center justify-between text-[10px] tracking-[0.14em] uppercase text-muted-foreground dark:text-zinc-500 font-semibold hover:text-foreground dark:hover:text-zinc-300 transition-colors"
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="truncate">{group}</span>
@@ -1340,11 +1340,11 @@ export default function AdminChat() {
                               `group w-full text-left rounded-lg border px-2 py-1.5 transition-all ` +
                               (active
                                 ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
-                                : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                                : "border-transparent hover:border-border dark:hover:border-zinc-700 hover:bg-muted/40 dark:hover:bg-zinc-900/60")
                             }
                           >
                             <div className="flex items-start gap-2">
-                              <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                              <div className={`w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold ${active ? "bg-cyan-400/20 text-cyan-800 dark:text-cyan-200" : "bg-muted dark:bg-zinc-800 text-foreground/80 dark:text-zinc-300"}`}>
                                 {(lane.title?.charAt(0) || "?").toUpperCase()}
                               </div>
                               <div className="min-w-0 flex-1">
@@ -1374,14 +1374,14 @@ export default function AdminChat() {
                                         "p-0.5 rounded transition-colors cursor-pointer",
                                         starredConversations.has(lane.key)
                                           ? "text-yellow-400"
-                                          : "text-zinc-500 hover:text-zinc-300 opacity-0 group-hover:opacity-100",
+                                          : "text-muted-foreground dark:text-zinc-500 hover:text-foreground dark:hover:text-zinc-300 opacity-0 group-hover:opacity-100",
                                       )}
                                       aria-label={starredConversations.has(lane.key) ? "Unstar conversation" : "Star conversation"}
                                       title={starredConversations.has(lane.key) ? "Unstar" : "Star"}
                                     >
                                       <Star
                                         size={12}
-                                        className={starredConversations.has(lane.key) ? "text-yellow-400 fill-yellow-400" : "text-zinc-500"}
+                                        className={starredConversations.has(lane.key) ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground dark:text-zinc-500"}
                                       />
                                     </span>
                                     {hasUnread && (
@@ -1433,13 +1433,13 @@ export default function AdminChat() {
                   <button
                     type="button"
                     onClick={() => toggleStarConversation(selectedConversationKey)}
-                    className="p-0.5 rounded hover:bg-zinc-800/70 transition-colors"
+                    className="p-0.5 rounded hover:bg-muted/60 dark:hover:bg-zinc-800/70 transition-colors"
                     aria-label={starredConversations.has(selectedConversationKey) ? "Unstar conversation" : "Star conversation"}
                     title={starredConversations.has(selectedConversationKey) ? "Unstar" : "Star"}
                   >
                     <Star
                       size={14}
-                      className={starredConversations.has(selectedConversationKey) ? "text-yellow-400 fill-yellow-400" : "text-zinc-400"}
+                      className={starredConversations.has(selectedConversationKey) ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground dark:text-zinc-400"}
                     />
                   </button>
                 )}
@@ -1605,12 +1605,12 @@ export default function AdminChat() {
                   <div className="space-y-1 max-h-40 overflow-auto pr-1">
                     {attachments.map((item, idx) => {
                       const statusIcon = item.status === "uploading"
-                        ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                        ? <Loader2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400 animate-spin" />
                         : item.status === "uploaded"
-                          ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
                           : item.status === "failed"
-                            ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                            : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
+                            ? <AlertTriangle className="w-3.5 h-3.5 text-red-700 dark:text-red-400" />
+                            : <Clock3 className="w-3.5 h-3.5 text-muted-foreground dark:text-zinc-400" />;
 
                       const statusLabel = item.status === "uploading"
                         ? "Uploading"
@@ -1621,7 +1621,7 @@ export default function AdminChat() {
                             : "Pending";
 
                       return (
-                        <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                        <div key={item.id} className="rounded-md bg-muted/40 dark:bg-zinc-900/70 border border-border dark:border-zinc-800 px-2 py-1.5">
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
                               <Paperclip size={12} className="text-muted-foreground shrink-0" />
@@ -1629,7 +1629,7 @@ export default function AdminChat() {
                               <span className="text-muted-foreground text-xs shrink-0">({formatFileSize(item.file.size)})</span>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
-                              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
+                              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-border dark:border-zinc-700 text-foreground/80 dark:text-zinc-300 bg-background dark:bg-zinc-950/70">
                                 {statusIcon}
                                 {statusLabel}
                               </span>
@@ -1650,7 +1650,7 @@ export default function AdminChat() {
                             </div>
                           </div>
                           {item.status === "failed" && item.error && (
-                            <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">{item.error}</div>
+                            <div className="mt-1 text-[11px] text-red-700 dark:text-red-300/90 pl-6 truncate">{item.error}</div>
                           )}
                         </div>
                       );

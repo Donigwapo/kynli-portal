@@ -148,7 +148,7 @@ const DOC_TYPE_COLORS: Record<string, string> = {
   "W-2 / 1099": "bg-purple-500/20 text-purple-400 border-purple-500/30",
   "Chat Attachment": "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
   chat_attachment: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
-  Other: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
+  Other: "bg-zinc-500/20 text-muted-foreground dark:text-zinc-400 border-zinc-500/30",
 };
 
 function normalizeDocType(value?: string | null): string {
@@ -200,7 +200,7 @@ function DocIcon({ mimeType }: { mimeType?: string | null }) {
   if (cat === "image") return <ImageIcon className="w-5 h-5 text-cyan-400" />;
   if (cat === "spreadsheet") return <FileSpreadsheet className="w-5 h-5 text-emerald-400" />;
   if (cat === "pdf") return <FileText className="w-5 h-5 text-red-400" />;
-  return <File className="w-5 h-5 text-zinc-400" />;
+  return <File className="w-5 h-5 text-muted-foreground dark:text-zinc-400" />;
 }
 
 function openButtonLabel(mimeType?: string | null, fileName?: string | null, displayName?: string | null): string {
@@ -355,10 +355,10 @@ const FolderCard = memo(function FolderCard({
           onSelect(folder);
         }
       }}
-      className={`rounded-xl border p-4 bg-zinc-900/60 cursor-pointer transition-all ${
+      className={`rounded-xl border p-4 bg-muted/35 dark:bg-zinc-900/60 cursor-pointer transition-all ${
         isActive
           ? "border-emerald-500/45 ring-1 ring-emerald-500/30"
-          : "border-zinc-800 hover:border-zinc-700"
+          : "border-border dark:border-zinc-800 hover:border-muted-foreground/40 dark:hover:border-zinc-700"
       } ${isOver ? "ring-2 ring-emerald-300/40 border-emerald-400/60" : ""} ${pulse ? "ring-2 ring-emerald-400/25" : ""}`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -367,24 +367,24 @@ const FolderCard = memo(function FolderCard({
             <FolderOpen className="w-4 h-4 text-emerald-400 shrink-0" />
             {parsedYearFolder ? (
               <div className="min-w-0 flex items-center gap-2" title={folder.name}>
-                <p className="text-sm font-semibold text-zinc-100 truncate">{parsedYearFolder.base}</p>
+                <p className="text-sm font-semibold text-foreground dark:text-zinc-100 truncate">{parsedYearFolder.base}</p>
                 <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 shrink-0">
                   {parsedYearFolder.year}
                 </span>
               </div>
             ) : (
-              <p className="text-sm font-semibold text-zinc-100 truncate" title={folder.name}>{folder.name}</p>
+              <p className="text-sm font-semibold text-foreground dark:text-zinc-100 truncate" title={folder.name}>{folder.name}</p>
             )}
           </div>
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="text-xs text-muted-foreground dark:text-zinc-400 mt-1">
             {subfolderCount} folder{subfolderCount !== 1 ? "s" : ""} • {count} document{count !== 1 ? "s" : ""}
           </p>
-          <p className="text-[11px] text-zinc-500 mt-0.5">Updated {lastUpdated ? formatDateShort(lastUpdated) : (monthYearLabel || "—")}</p>
+          <p className="text-[11px] text-muted-foreground dark:text-zinc-500 mt-0.5">Updated {lastUpdated ? formatDateShort(lastUpdated) : (monthYearLabel || "—")}</p>
         </div>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" variant="outline" className="h-7 px-2 border-zinc-700">•••</Button>
+            <Button size="sm" variant="outline" className="h-7 px-2 border-border dark:border-zinc-700">•••</Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuItem onClick={(e) => { e.preventDefault(); onCreateSubfolder?.(folder); }}>
@@ -1936,8 +1936,8 @@ export default function Documents() {
             <span className="font-medium">{selectedDocIds.length} selected</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="border-zinc-700" onClick={clearSelection} disabled={bulkDeleting}>Clear</Button>
-            <Button size="sm" className="bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30" onClick={() => setShowBulkDeleteConfirm(true)} disabled={bulkDeleting}>
+            <Button variant="outline" size="sm" className="border-border dark:border-zinc-700" onClick={clearSelection} disabled={bulkDeleting}>Clear</Button>
+            <Button size="sm" className="bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-300 border border-red-500/30" onClick={() => setShowBulkDeleteConfirm(true)} disabled={bulkDeleting}>
               <Trash2 className="w-4 h-4 mr-1.5" />
               Delete Selected
             </Button>
@@ -1954,13 +1954,13 @@ export default function Documents() {
       >
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 items-start">
           <div className="xl:col-span-3">
-        <div className="flex items-center gap-2 mb-3 text-sm text-zinc-300 flex-wrap">
+        <div className="flex items-center gap-2 mb-3 text-sm text-foreground/80 dark:text-zinc-300 flex-wrap">
           <button type="button" onClick={goToRootFolders} className={`hover:text-emerald-300 ${!currentFolderPath ? "text-emerald-300" : ""}`}>
             All Folders
           </button>
           {breadcrumbs.map((crumb) => (
             <div key={crumb.path} className="flex items-center gap-2">
-              <span className="text-zinc-500">&gt;</span>
+              <span className="text-muted-foreground dark:text-zinc-500">&gt;</span>
               <button
                 type="button"
                 onClick={() => {
@@ -1977,7 +1977,7 @@ export default function Documents() {
         </div>
 
         <div className="flex items-center gap-3 mb-3 flex-wrap">
-          <Button size="sm" variant="outline" className="border-zinc-700" onClick={() => openCreateFolder(effectiveCurrentFolderId)}>
+          <Button size="sm" variant="outline" className="border-border dark:border-zinc-700" onClick={() => openCreateFolder(effectiveCurrentFolderId)}>
             + New Folder
           </Button>
           <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-black" onClick={() => openUploadDialog(currentFolderPath ?? undefined)}>
@@ -1992,7 +1992,7 @@ export default function Documents() {
             placeholder={currentFolderPath
               ? `Search folders and documents in ${prettifyFolderPath(currentFolderPath).split("/").pop() || currentFolderPath}...`
               : "Search folders and documents..."}
-            className="bg-zinc-900 border-zinc-700"
+            className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"
           />
           <div className="mt-2 text-xs text-muted-foreground">
             {docsForFilter.length} document{docsForFilter.length !== 1 ? "s" : ""}
@@ -2001,30 +2001,30 @@ export default function Documents() {
 
         {normalizedSearch ? (
           <div className="space-y-6 mb-5">
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-              <h3 className="font-semibold text-zinc-100">Search Results for "{searchQuery.trim()}"</h3>
-              <p className="text-xs text-zinc-400 mt-1">{scopedSearchFolders.length} folders • {scopedSearchDocuments.length} documents</p>
+            <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-900/40 p-4">
+              <h3 className="font-semibold text-foreground dark:text-zinc-100">Search Results for "{searchQuery.trim()}"</h3>
+              <p className="text-xs text-muted-foreground dark:text-zinc-400 mt-1">{scopedSearchFolders.length} folders • {scopedSearchDocuments.length} documents</p>
             </div>
 
             <div>
-              <h4 className="text-sm font-semibold text-zinc-200 mb-3">Matching Folders</h4>
+              <h4 className="text-sm font-semibold text-foreground/90 dark:text-zinc-200 mb-3">Matching Folders</h4>
               {searchLoading ? (
-                <div className="text-sm text-zinc-500">Searching...</div>
+                <div className="text-sm text-muted-foreground dark:text-zinc-500">Searching...</div>
               ) : scopedSearchFolders.length === 0 ? (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">No matching folders.</div>
+                <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-900/40 p-4 text-sm text-muted-foreground dark:text-zinc-500">No matching folders.</div>
               ) : (
                 <div className="space-y-2">
                   {scopedSearchFolders.map((folder) => (
-                    <div key={folder.full_path} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
+                    <div key={folder.full_path} className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-zinc-100 truncate">📁 {folder.name}</p>
-                        <p className="text-xs text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(folder.full_path).replaceAll("/", " > ")}</p>
-                        <p className="text-[11px] text-zinc-500">Updated {formatRelative(folder.updated_at)}</p>
+                        <p className="text-sm font-medium text-foreground dark:text-zinc-100 truncate">📁 {folder.name}</p>
+                        <p className="text-xs text-muted-foreground dark:text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(folder.full_path).replaceAll("/", " > ")}</p>
+                        <p className="text-[11px] text-muted-foreground dark:text-zinc-500">Updated {formatRelative(folder.updated_at)}</p>
                       </div>
                       <Button
                         size="sm"
                         variant="outline"
-                        className="border-zinc-700"
+                        className="border-border dark:border-zinc-700"
                         onClick={() => {
                           setSearchQuery("");
                           enterFolder({ id: folder.id, name: folder.name, fullPath: folder.full_path });
@@ -2039,28 +2039,28 @@ export default function Documents() {
             </div>
 
             <div>
-              <h4 className="text-sm font-semibold text-zinc-200 mb-3">Matching Documents</h4>
+              <h4 className="text-sm font-semibold text-foreground/90 dark:text-zinc-200 mb-3">Matching Documents</h4>
               {searchLoading ? (
-                <div className="text-sm text-zinc-500">Searching...</div>
+                <div className="text-sm text-muted-foreground dark:text-zinc-500">Searching...</div>
               ) : scopedSearchDocuments.length === 0 ? (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">No matching documents.</div>
+                <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-900/40 p-4 text-sm text-muted-foreground dark:text-zinc-500">No matching documents.</div>
               ) : (
                 <div className="space-y-2">
                   {scopedSearchDocuments.map((doc) => (
-                    <div key={doc.id} className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
+                    <div key={doc.id} className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-3 flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-zinc-100 truncate">📄 {doc.display_name}</p>
-                        <p className="text-xs text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(doc.folder_path).replaceAll("/", " > ")}</p>
-                        <p className="text-[11px] text-zinc-500">Uploaded {formatRelative(doc.uploaded_at)} • {formatBytes(doc.file_size ?? 0)}</p>
+                        <p className="text-sm font-medium text-foreground dark:text-zinc-100 truncate">📄 {doc.display_name}</p>
+                        <p className="text-xs text-muted-foreground dark:text-zinc-500 truncate">All Folders &gt; {prettifyFolderPath(doc.folder_path).replaceAll("/", " > ")}</p>
+                        <p className="text-[11px] text-muted-foreground dark:text-zinc-500">Uploaded {formatRelative(doc.uploaded_at)} • {formatBytes(doc.file_size ?? 0)}</p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        <Button size="sm" variant="outline" className="border-zinc-700" onClick={() => openSearchPreview(doc)}>
+                        <Button size="sm" variant="outline" className="border-border dark:border-zinc-700" onClick={() => openSearchPreview(doc)}>
                           Preview
                         </Button>
                         <Button
                           size="sm"
                           variant="outline"
-                          className="border-zinc-700"
+                          className="border-border dark:border-zinc-700"
                           onClick={() => {
                             setSearchQuery("");
                             openDocumentFromSearch(doc);
@@ -2102,7 +2102,7 @@ export default function Documents() {
             </div>
 
             {folderCardFilters.length === 0 && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6 mb-5 text-sm text-muted-foreground">
+              <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/25 dark:bg-zinc-900/40 p-6 mb-5 text-sm text-muted-foreground">
                 No subfolders yet. Create one to organize this folder.
               </div>
             )}
@@ -2116,26 +2116,26 @@ export default function Documents() {
             <div className="text-center py-16 text-muted-foreground">Loading documents...</div>
           ) : docsForFilter.length === 0 ? (
             isClientUploadsRootView ? (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 text-sm text-zinc-300">
-                <h3 className="text-base font-semibold text-zinc-100 mb-2">Client Uploads Overview</h3>
-                <p className="text-zinc-400 mb-3">
+              <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-6 text-sm text-foreground/80 dark:text-zinc-300">
+                <h3 className="text-base font-semibold text-foreground dark:text-zinc-100 mb-2">Client Uploads Overview</h3>
+                <p className="text-muted-foreground dark:text-zinc-400 mb-3">
                   Files uploaded by your assigned clients appear here before being organized into their final destination folders.
                 </p>
-                <p className="text-zinc-400">
+                <p className="text-muted-foreground dark:text-zinc-400">
                   Use Preview and Move actions to review incoming files and place them into Bank Statements, Payroll, Financials, Tax, or other folders.
                 </p>
               </div>
             ) : (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 py-20 text-center text-muted-foreground">
+              <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 py-20 text-center text-muted-foreground">
                 <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
                 <p className="font-medium">No documents in this folder yet.</p>
               </div>
             )
           ) : isClientUploadsRootView ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 overflow-hidden">
+            <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/35 dark:bg-zinc-900/60 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-zinc-900/80 text-zinc-400">
+                  <thead className="bg-card/95 dark:bg-zinc-900/80 text-muted-foreground dark:text-zinc-400">
                     <tr>
                       <th className="text-left px-4 py-2 font-medium">Document Name</th>
                       <th className="text-left px-4 py-2 font-medium">Client</th>
@@ -2152,15 +2152,15 @@ export default function Documents() {
                       const uploadedBy = String((doc as any).uploaded_by_name ?? "Unknown");
                       const uploadedAt = (doc as any).created_at ?? doc.updated_at ?? null;
                       return (
-                        <tr key={String(doc.id)} className="border-t border-zinc-800/70 hover:bg-zinc-900/40">
-                          <td className="px-4 py-2 text-zinc-200 max-w-[320px] truncate" title={docName}>{docName}</td>
-                          <td className="px-4 py-2 text-zinc-300">{clientName}</td>
-                          <td className="px-4 py-2 text-zinc-400">{uploadedBy}</td>
-                          <td className="px-4 py-2 text-zinc-400">{formatRelative(uploadedAt)}</td>
-                          <td className="px-4 py-2 text-zinc-400">{formatBytes(Number(doc.file_size ?? 0))}</td>
+                        <tr key={String(doc.id)} className="border-t border-border dark:border-zinc-800/70 hover:bg-muted/25 dark:bg-zinc-900/40">
+                          <td className="px-4 py-2 text-foreground/90 dark:text-zinc-200 max-w-[320px] truncate" title={docName}>{docName}</td>
+                          <td className="px-4 py-2 text-foreground/80 dark:text-zinc-300">{clientName}</td>
+                          <td className="px-4 py-2 text-muted-foreground dark:text-zinc-400">{uploadedBy}</td>
+                          <td className="px-4 py-2 text-muted-foreground dark:text-zinc-400">{formatRelative(uploadedAt)}</td>
+                          <td className="px-4 py-2 text-muted-foreground dark:text-zinc-400">{formatBytes(Number(doc.file_size ?? 0))}</td>
                           <td className="px-4 py-2">
                             <div className="flex items-center justify-end gap-2">
-                              <Button size="sm" variant="outline" className="h-7 px-2 border-zinc-700" onClick={() => {
+                              <Button size="sm" variant="outline" className="h-7 px-2 border-border dark:border-zinc-700" onClick={() => {
                                 const folderPath = String(normalizedDocTypeById.get(String(doc.id)) ?? "Client Uploads");
                                 openSearchPreview({
                                   id: String(doc.id),
@@ -2175,7 +2175,7 @@ export default function Documents() {
                               }}>
                                 Preview
                               </Button>
-                              <Button size="sm" variant="outline" className="h-7 px-2 border-zinc-700" onClick={() => openMoveFolderDialog(doc)}>
+                              <Button size="sm" variant="outline" className="h-7 px-2 border-border dark:border-zinc-700" onClick={() => openMoveFolderDialog(doc)}>
                                 Move
                               </Button>
                             </div>
@@ -2214,9 +2214,9 @@ export default function Documents() {
                               const isEditingName = editingDocId === String(doc.id);
                               return (
                                 <DraggableDocCard key={doc.id} id={doc.id} dragDisabled={isEditingName}>
-                                  <div className={`bg-zinc-900 border rounded-xl p-4 flex flex-col gap-3 transition-colors ${isSelected ? "border-emerald-500/50 ring-1 ring-emerald-500/30" : "border-zinc-800 hover:border-zinc-700"}`}>
+                                  <div className={`bg-background dark:bg-zinc-900 border rounded-xl p-4 flex flex-col gap-3 transition-colors ${isSelected ? "border-emerald-500/50 ring-1 ring-emerald-500/30" : "border-border dark:border-zinc-800 hover:border-muted-foreground/40 dark:hover:border-zinc-700"}`}>
                                     {getMimeCategory(doc.mime_type) === "image" && doc.file_url && (
-                                      <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="block -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-zinc-800">
+                                      <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="block -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-border dark:border-zinc-800">
                                         <img src={doc.file_url} alt={doc.name} className="w-full h-32 object-cover hover:opacity-90 transition-opacity" />
                                       </a>
                                     )}
@@ -2237,12 +2237,12 @@ export default function Documents() {
                                             description: doc.description ?? null,
                                           } as any);
                                         }}
-                                        className="group relative block w-full text-left -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-zinc-800"
+                                        className="group relative block w-full text-left -mx-4 -mt-4 mb-0 rounded-t-xl overflow-hidden border-b border-border dark:border-zinc-800"
                                         title="Preview Video"
                                       >
                                         <div className="relative w-full h-32 bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-900">
                                           <div className="absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-white/[0.02] transition-colors group-hover:from-black/45" />
-                                          <Video className="absolute -right-4 -bottom-4 w-20 h-20 text-zinc-500/25" />
+                                          <Video className="absolute -right-4 -bottom-4 w-20 h-20 text-muted-foreground dark:text-zinc-500/25" />
                                           <div className="absolute top-2 right-2">
                                             <Badge variant="outline" className="px-1.5 py-0 text-[10px] tracking-wide border-cyan-500/35 text-cyan-300 bg-cyan-500/10">
                                               VIDEO
@@ -2261,12 +2261,12 @@ export default function Documents() {
                                       <button
                                         type="button"
                                         onClick={(e) => { e.stopPropagation(); toggleSelect(doc.id); }}
-                                        className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? "border-emerald-400 bg-emerald-500/20 text-emerald-300" : "border-zinc-600 text-zinc-500 hover:border-zinc-400"}`}
+                                        className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? "border-emerald-400 bg-emerald-500/20 text-emerald-300" : "border-border dark:border-zinc-600 text-muted-foreground dark:text-zinc-500 hover:border-zinc-400"}`}
                                       >
                                         {isSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
                                       </button>
 
-                                      <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                                      <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-border dark:border-zinc-700 flex items-center justify-center shrink-0">
                                         <DocIcon mimeType={doc.mime_type} />
                                       </div>
 
@@ -2304,7 +2304,7 @@ export default function Documents() {
                                             }
                                           }}
                                           disabled={savingFileName}
-                                          className="h-8 w-full min-w-0 text-sm bg-zinc-900 border-zinc-700"
+                                          className="h-8 w-full min-w-0 text-sm bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"
                                         />
                                       ) : (
                                         <button
@@ -2326,7 +2326,7 @@ export default function Documents() {
                                       {doc.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{doc.description}</p>}
                                     </div>
 
-                                    <div className="flex items-center gap-2 min-w-0 w-full overflow-hidden text-xs text-muted-foreground border-t border-zinc-800 pt-2">
+                                    <div className="flex items-center gap-2 min-w-0 w-full overflow-hidden text-xs text-muted-foreground border-t border-border dark:border-zinc-800 pt-2">
                                       <Calendar className="w-3 h-3 shrink-0" />
                                       <button
                                         type="button"
@@ -2342,7 +2342,7 @@ export default function Documents() {
                                       </button>
                                       {doc.file_size != null && doc.file_size > 0 && (
                                         <>
-                                          <span className="text-zinc-700">·</span>
+                                          <span className="text-muted-foreground dark:text-zinc-700">·</span>
                                           <HardDrive className="w-3 h-3 shrink-0" />
                                           <span>{formatBytes(doc.file_size)}</span>
                                         </>
@@ -2354,7 +2354,7 @@ export default function Documents() {
                                         <ExternalLink className="w-3.5 h-3.5" />
                                         {openButtonLabel(doc.mime_type, doc.file_name, doc.name)}
                                       </Button>
-                                      <Button size="sm" variant="outline" className="px-2.5 border-zinc-700 hover:bg-zinc-800" disabled={!doc.file_url} onClick={() => {
+                                      <Button size="sm" variant="outline" className="px-2.5 border-border dark:border-zinc-700 hover:bg-muted dark:hover:bg-zinc-800" disabled={!doc.file_url} onClick={() => {
                                         if (!doc.file_url) return;
                                         const a = document.createElement("a");
                                         a.href = doc.file_url;
@@ -2363,7 +2363,7 @@ export default function Documents() {
                                       }}>
                                         <Download className="w-3.5 h-3.5" />
                                       </Button>
-                                      <Button size="sm" variant="outline" className="px-2.5 border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30" onClick={() => {
+                                      <Button size="sm" variant="outline" className="px-2.5 border-border dark:border-zinc-700 hover:bg-red-900/30 hover:text-red-400 hover:border-red-500/30" onClick={() => {
                                         if (confirm(`Delete "${doc.name}"?`)) {
                                           deleteMutation.mutate({ id: doc.id });
                                           setSelectedDocIds((prev) => prev.filter((id) => String(id) !== String(doc.id)));
@@ -2408,11 +2408,11 @@ export default function Documents() {
                 openUploadDialog(currentFolderPath);
               }
             }}
-            className="mt-5 rounded-xl border-2 border-dashed border-zinc-700 hover:border-emerald-500/40 bg-zinc-900/40 p-8 text-center cursor-pointer transition-colors"
+            className="mt-5 rounded-xl border-2 border-dashed border-border dark:border-zinc-700 hover:border-emerald-500/40 bg-muted/25 dark:bg-zinc-900/40 p-8 text-center cursor-pointer transition-colors"
           >
             <Upload className="w-7 h-7 mx-auto mb-2 text-emerald-400/80" />
-            <p className="text-sm font-medium text-zinc-200">Drag documents here to upload</p>
-            <p className="text-xs text-zinc-500 mt-1">or click to browse files</p>
+            <p className="text-sm font-medium text-foreground/90 dark:text-zinc-200">Drag documents here to upload</p>
+            <p className="text-xs text-muted-foreground dark:text-zinc-500 mt-1">or click to browse files</p>
           </div>
         )}
           </>
@@ -2420,20 +2420,20 @@ export default function Documents() {
           </div>
 
           <aside className="xl:col-span-1 space-y-4">
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-              <h3 className="text-sm font-semibold text-zinc-100 mb-3">Recent Activity</h3>
+            <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-4">
+              <h3 className="text-sm font-semibold text-foreground dark:text-zinc-100 mb-3">Recent Activity</h3>
               {(dashboardData?.recent?.length ?? 0) === 0 ? (
-                <p className="text-xs text-zinc-500">No recent document activity yet.</p>
+                <p className="text-xs text-muted-foreground dark:text-zinc-500">No recent document activity yet.</p>
               ) : (
                 <div className="space-y-3">
                   {(dashboardData?.recent ?? []).slice(0, 10).map((item) => (
-                    <div key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2.5">
+                    <div key={item.id} className="rounded-lg border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-950/60 p-2.5">
                       <div className="flex items-start gap-2">
                         <FileText className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                         <div className="min-w-0">
-                          <p className="text-xs font-medium text-zinc-200 truncate" title={(item as any).message || item.file_name}>{(item as any).message || item.file_name}</p>
-                          <p className="text-[11px] text-zinc-500">Updated {formatRelative(item.updated_at)}</p>
-                          <p className="text-[11px] text-zinc-500 truncate" title={item.folder_path}>{prettifyFolderPath(item.folder_path)}</p>
+                          <p className="text-xs font-medium text-foreground/90 dark:text-zinc-200 truncate" title={(item as any).message || item.file_name}>{(item as any).message || item.file_name}</p>
+                          <p className="text-[11px] text-muted-foreground dark:text-zinc-500">Updated {formatRelative(item.updated_at)}</p>
+                          <p className="text-[11px] text-muted-foreground dark:text-zinc-500 truncate" title={item.folder_path}>{prettifyFolderPath(item.folder_path)}</p>
                         </div>
                       </div>
                     </div>
@@ -2442,31 +2442,31 @@ export default function Documents() {
               )}
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-2">
-              <h3 className="text-sm font-semibold text-zinc-100">Portal Summary</h3>
-              <p className="text-xs text-zinc-400">Total Folders: <span className="text-zinc-200">{folders.length}</span></p>
-              <p className="text-xs text-zinc-400">Total Documents: <span className="text-zinc-200">{dashboardData?.totals?.totalDocuments ?? 0}</span></p>
-              <p className="text-xs text-zinc-400">Storage Used: <span className="text-zinc-200">{formatBytes(dashboardData?.totals?.storageBytes ?? 0)}</span></p>
-              <p className="text-xs text-zinc-400">Last Updated: <span className="text-zinc-200">{formatDateShort(dashboardData?.totals?.lastUpdated)}</span></p>
+            <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-4 space-y-2">
+              <h3 className="text-sm font-semibold text-foreground dark:text-zinc-100">Portal Summary</h3>
+              <p className="text-xs text-muted-foreground dark:text-zinc-400">Total Folders: <span className="text-foreground/90 dark:text-zinc-200">{folders.length}</span></p>
+              <p className="text-xs text-muted-foreground dark:text-zinc-400">Total Documents: <span className="text-foreground/90 dark:text-zinc-200">{dashboardData?.totals?.totalDocuments ?? 0}</span></p>
+              <p className="text-xs text-muted-foreground dark:text-zinc-400">Storage Used: <span className="text-foreground/90 dark:text-zinc-200">{formatBytes(dashboardData?.totals?.storageBytes ?? 0)}</span></p>
+              <p className="text-xs text-muted-foreground dark:text-zinc-400">Last Updated: <span className="text-foreground/90 dark:text-zinc-200">{formatDateShort(dashboardData?.totals?.lastUpdated)}</span></p>
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-2">
-              <h3 className="text-sm font-semibold text-zinc-100">Quick Actions</h3>
+            <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-4 space-y-2">
+              <h3 className="text-sm font-semibold text-foreground dark:text-zinc-100">Quick Actions</h3>
               {currentFolderPath && (
                 <Button size="sm" className="w-full justify-start bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30" onClick={() => openCreateFolder(effectiveCurrentFolderId)}>
                   Create Year Structure
                 </Button>
               )}
-              <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => openUploadDialog()}>Upload Multiple Files</Button>
-              <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => toast.info("Coming soon")}>Request Documents</Button>
-              <Button size="sm" variant="outline" className="w-full justify-start border-zinc-700" onClick={() => toast.info("Coming soon")}>View Trash</Button>
+              <Button size="sm" variant="outline" className="w-full justify-start border-border dark:border-zinc-700" onClick={() => openUploadDialog()}>Upload Multiple Files</Button>
+              <Button size="sm" variant="outline" className="w-full justify-start border-border dark:border-zinc-700" onClick={() => toast.info("Coming soon")}>Request Documents</Button>
+              <Button size="sm" variant="outline" className="w-full justify-start border-border dark:border-zinc-700" onClick={() => toast.info("Coming soon")}>View Trash</Button>
             </div>
           </aside>
         </div>
 
         <DragOverlay>
           {activeDragDoc ? (
-            <div className="bg-zinc-900/95 border border-emerald-400/40 rounded-xl p-3 shadow-[0_18px_40px_rgba(0,0,0,0.45)] w-64 opacity-90 scale-[1.02] transition-transform duration-150 will-change-transform">
+            <div className="bg-card/95 dark:bg-zinc-900/95 border border-emerald-400/40 rounded-xl p-3 shadow-[0_18px_40px_rgba(0,0,0,0.45)] w-64 opacity-90 scale-[1.02] transition-transform duration-150 will-change-transform">
               <div className="flex items-center gap-2">
                 <DocIcon mimeType={activeDragDoc.mime_type} />
                 <div className="min-w-0">
@@ -2480,11 +2480,11 @@ export default function Documents() {
       </DndContext>
 
       <Dialog open={showBulkDeleteConfirm} onOpenChange={(open) => !bulkDeleting && setShowBulkDeleteConfirm(open)}>
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
-          <DialogHeader><DialogTitle className="flex items-center gap-2 text-red-300"><Trash2 className="w-4 h-4" />Delete Selected Documents</DialogTitle></DialogHeader>
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
+          <DialogHeader><DialogTitle className="flex items-center gap-2 text-red-700 dark:text-red-300"><Trash2 className="w-4 h-4" />Delete Selected Documents</DialogTitle></DialogHeader>
           <div className="text-sm text-muted-foreground py-1">Are you sure you want to delete the selected documents?</div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowBulkDeleteConfirm(false)} className="border-zinc-700" disabled={bulkDeleting}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowBulkDeleteConfirm(false)} className="border-border dark:border-zinc-700" disabled={bulkDeleting}>Cancel</Button>
             <Button onClick={handleBulkDeleteConfirm} disabled={bulkDeleting || !selectedDocIds.length} className="bg-red-500 hover:bg-red-600 text-white font-semibold">
               {bulkDeleting ? "Deleting..." : `Delete ${selectedDocIds.length}`}
             </Button>
@@ -2500,7 +2500,7 @@ export default function Documents() {
           if (!open) setMoveTargetDoc(null);
         }}
       >
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MoveRight className="w-4 h-4 text-emerald-400" />
@@ -2527,15 +2527,15 @@ export default function Documents() {
                     onClick={() => setMoveFolderSelection(folder.fullPath)}
                     className={`w-full text-left rounded-lg border px-3 py-2 text-sm transition-colors ${
                       isCurrent
-                        ? "border-zinc-700 bg-zinc-900/60 text-zinc-500 cursor-not-allowed"
+                        ? "border-border dark:border-zinc-700 bg-muted/35 dark:bg-zinc-900/60 text-muted-foreground dark:text-zinc-500 cursor-not-allowed"
                         : isSelected
                           ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300"
-                          : "border-zinc-800 bg-zinc-900 text-muted-foreground hover:text-foreground hover:border-zinc-700"
+                          : "border-border dark:border-zinc-800 bg-background dark:bg-zinc-900 text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 dark:hover:border-zinc-700"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate" title={folder.fullPath}>{folder.fullPath}</span>
-                      {isCurrent && <span className="text-[11px] text-zinc-500">Current</span>}
+                      {isCurrent && <span className="text-[11px] text-muted-foreground dark:text-zinc-500">Current</span>}
                     </div>
                   </button>
                 );
@@ -2550,7 +2550,7 @@ export default function Documents() {
                 setShowMoveFolderDialog(false);
                 setMoveTargetDoc(null);
               }}
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               disabled={movingFolder}
             >
               Cancel
@@ -2574,7 +2574,7 @@ export default function Documents() {
           if (!open) setDateTargetDoc(null);
         }}
       >
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-emerald-400" />
@@ -2591,7 +2591,7 @@ export default function Documents() {
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Month</Label>
                 <Select value={dateMonthSelection} onValueChange={setDateMonthSelection}>
-                  <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {MONTH_NAMES.map((name, i) => (
                       <SelectItem key={i + 1} value={String(i + 1)}>{name}</SelectItem>
@@ -2602,7 +2602,7 @@ export default function Documents() {
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Year</Label>
                 <Select value={dateYearSelection} onValueChange={setDateYearSelection}>
-                  <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {yearOptions.map((y) => (
                       <SelectItem key={y} value={String(y)}>{y}</SelectItem>
@@ -2620,7 +2620,7 @@ export default function Documents() {
                 setShowDateDialog(false);
                 setDateTargetDoc(null);
               }}
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               disabled={movingDate}
             >
               Cancel
@@ -2646,7 +2646,7 @@ export default function Documents() {
           }
         }}
       >
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-2xl">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <DocIcon mimeType={searchPreviewDoc?.mime_type ?? null} />
@@ -2656,13 +2656,13 @@ export default function Documents() {
 
           {searchPreviewDoc && (
             <div className="space-y-3 py-2">
-              <div className="text-xs text-zinc-400 space-y-1">
-                <p>Folder: <span className="text-zinc-200">{prettifyFolderPath(String(searchPreviewDoc.doc_type ?? ""))}</span></p>
-                <p>Uploaded: <span className="text-zinc-200">{formatDateShort(searchPreviewDoc.updated_at)}</span> • <span className="text-zinc-200">{formatBytes(searchPreviewDoc.file_size ?? 0)}</span></p>
-                {searchPreviewDoc.description && <p>Description: <span className="text-zinc-200">{searchPreviewDoc.description}</span></p>}
+              <div className="text-xs text-muted-foreground dark:text-zinc-400 space-y-1">
+                <p>Folder: <span className="text-foreground/90 dark:text-zinc-200">{prettifyFolderPath(String(searchPreviewDoc.doc_type ?? ""))}</span></p>
+                <p>Uploaded: <span className="text-foreground/90 dark:text-zinc-200">{formatDateShort(searchPreviewDoc.updated_at)}</span> • <span className="text-foreground/90 dark:text-zinc-200">{formatBytes(searchPreviewDoc.file_size ?? 0)}</span></p>
+                {searchPreviewDoc.description && <p>Description: <span className="text-foreground/90 dark:text-zinc-200">{searchPreviewDoc.description}</span></p>}
               </div>
 
-              <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2 min-h-[220px]">
+              <div className="rounded-lg border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-2 min-h-[220px]">
                 {getMimeCategory(searchPreviewDoc.mime_type) === "image" && searchPreviewDoc.file_url ? (
                   <img src={searchPreviewDoc.file_url} alt={searchPreviewDoc.file_name || searchPreviewDoc.name} className="max-h-[380px] w-full object-contain rounded" />
                 ) : getMimeCategory(searchPreviewDoc.mime_type) === "pdf" && searchPreviewDoc.file_url ? (
@@ -2678,13 +2678,13 @@ export default function Documents() {
                       Preview may not be supported for this video format. Please download the file to view it.
                     </video>
                     {videoPreviewUnsupported && (
-                      <div className="text-sm text-zinc-400">
+                      <div className="text-sm text-muted-foreground dark:text-zinc-400">
                         Preview may not be supported for this video format. Please download the file to view it.
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="h-[220px] flex items-center justify-center text-sm text-zinc-500">Preview not available for this file type.</div>
+                  <div className="h-[220px] flex items-center justify-center text-sm text-muted-foreground dark:text-zinc-500">Preview not available for this file type.</div>
                 )}
               </div>
             </div>
@@ -2693,7 +2693,7 @@ export default function Documents() {
           <DialogFooter className="flex-wrap gap-2">
             <Button
               variant="outline"
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               onClick={() => {
                 if (!searchPreviewDoc?.file_url) return;
                 const a = document.createElement("a");
@@ -2707,7 +2707,7 @@ export default function Documents() {
             </Button>
             <Button
               variant="outline"
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               onClick={() => {
                 if (!searchPreviewDoc) return;
                 setShowSearchPreviewDialog(false);
@@ -2719,7 +2719,7 @@ export default function Documents() {
             </Button>
             <Button
               variant="outline"
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               onClick={() => {
                 if (!searchPreviewDoc) return;
                 setShowSearchPreviewDialog(false);
@@ -2730,7 +2730,7 @@ export default function Documents() {
             </Button>
             <Button
               variant="outline"
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               onClick={() => {
                 if (!searchPreviewDoc) return;
                 setShowSearchPreviewDialog(false);
@@ -2772,20 +2772,20 @@ export default function Documents() {
           if (!open) setDeleteFolderTarget(null);
         }}
       >
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle>Delete Folder</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 py-2">
-            <p className="text-sm text-zinc-300">
-              Are you sure you want to delete <span className="font-semibold text-zinc-100">{deleteFolderTarget?.name ?? "this folder"}</span>?
+            <p className="text-sm text-foreground/80 dark:text-zinc-300">
+              Are you sure you want to delete <span className="font-semibold text-foreground dark:text-zinc-100">{deleteFolderTarget?.name ?? "this folder"}</span>?
             </p>
-            <p className="text-xs text-zinc-500">This folder and its empty subfolders will be deleted.</p>
+            <p className="text-xs text-muted-foreground dark:text-zinc-500">This folder and its empty subfolders will be deleted.</p>
           </div>
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-zinc-700"
+              className="border-border dark:border-zinc-700"
               onClick={() => {
                 setShowDeleteFolderDialog(false);
                 setDeleteFolderTarget(null);
@@ -2818,7 +2818,7 @@ export default function Documents() {
           }
         }}
       >
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle>Create Folder</DialogTitle>
           </DialogHeader>
@@ -2831,7 +2831,7 @@ export default function Documents() {
                   type="button"
                   size="sm"
                   variant={createFolderMode === "standard" ? "default" : "outline"}
-                  className={createFolderMode === "standard" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                  className={createFolderMode === "standard" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-border dark:border-zinc-700"}
                   onClick={() => setCreateFolderMode("standard")}
                 >
                   Standard Folder
@@ -2841,7 +2841,7 @@ export default function Documents() {
                     type="button"
                     size="sm"
                     variant={createFolderMode === "template" ? "default" : "outline"}
-                    className={createFolderMode === "template" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                    className={createFolderMode === "template" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-border dark:border-zinc-700"}
                     onClick={() => setCreateFolderMode("template")}
                   >
                     Folder Template
@@ -2849,7 +2849,7 @@ export default function Documents() {
                 )}
               </div>
               {!canUseFolderTemplates && (
-                <p className="mt-2 text-xs text-zinc-500">Templates are available after you open a specific folder.</p>
+                <p className="mt-2 text-xs text-muted-foreground dark:text-zinc-500">Templates are available after you open a specific folder.</p>
               )}
             </div>
 
@@ -2860,7 +2860,7 @@ export default function Documents() {
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="e.g. April"
-                  className="bg-zinc-900 border-zinc-700 mt-2"
+                  className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700 mt-2"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -2873,7 +2873,7 @@ export default function Documents() {
               <div className="space-y-3">
                 <div>
                   <Label className="text-xs text-muted-foreground">Template Type</Label>
-                  <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200">
+                  <div className="mt-2 rounded-md border border-border dark:border-zinc-800 bg-muted/35 dark:bg-zinc-900/60 px-3 py-2 text-sm text-foreground/90 dark:text-zinc-200">
                     {contextTemplateType ?? templateType}
                   </div>
                 </div>
@@ -2881,15 +2881,15 @@ export default function Documents() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <Label className="text-xs text-muted-foreground">From Year</Label>
-                    <Input value={templateFromYear} onChange={(e) => setTemplateFromYear(e.target.value)} className="bg-zinc-900 border-zinc-700 mt-2" />
+                    <Input value={templateFromYear} onChange={(e) => setTemplateFromYear(e.target.value)} className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700 mt-2" />
                   </div>
                   <div>
                     <Label className="text-xs text-muted-foreground">To Year</Label>
-                    <Input value={templateToYear} onChange={(e) => setTemplateToYear(e.target.value)} className="bg-zinc-900 border-zinc-700 mt-2" />
+                    <Input value={templateToYear} onChange={(e) => setTemplateToYear(e.target.value)} className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700 mt-2" />
                   </div>
                 </div>
 
-                <label className="flex items-center gap-2 text-sm text-zinc-300">
+                <label className="flex items-center gap-2 text-sm text-foreground/80 dark:text-zinc-300">
                   <input
                     type="checkbox"
                     checked={templateCreateMonths}
@@ -2902,39 +2902,39 @@ export default function Documents() {
                     : "Create month subfolders (Jan–Dec)"}
                 </label>
 
-                <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
-                  <p className="text-xs text-zinc-400 mb-2">Preview</p>
-                  <div className="max-h-40 overflow-auto space-y-1 text-xs text-zinc-300">
+                <div className="rounded-md border border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-900/50 p-3">
+                  <p className="text-xs text-muted-foreground dark:text-zinc-400 mb-2">Preview</p>
+                  <div className="max-h-40 overflow-auto space-y-1 text-xs text-foreground/80 dark:text-zinc-300">
                     {templatePlan.years.map((y) => (
                       <div key={y}>
                         <div>{templatePlan.templateBase} / {y}</div>
                         {templatePlan.monthNames.length > 0 && (
-                          <div className="ml-4 text-zinc-500">{templatePlan.monthNames.join(" • ")}</div>
+                          <div className="ml-4 text-muted-foreground dark:text-zinc-500">{templatePlan.monthNames.join(" • ")}</div>
                         )}
                         {templatePlan.extraFolderNames.length > 0 && (
-                          <div className="ml-4 text-zinc-500">{templatePlan.extraFolderNames.join(" • ")}</div>
+                          <div className="ml-4 text-muted-foreground dark:text-zinc-500">{templatePlan.extraFolderNames.join(" • ")}</div>
                         )}
                       </div>
                     ))}
-                    {templatePlan.years.length === 0 && <div className="text-zinc-500">Select a valid year range.</div>}
+                    {templatePlan.years.length === 0 && <div className="text-muted-foreground dark:text-zinc-500">Select a valid year range.</div>}
                   </div>
-                  <p className="text-[11px] text-zinc-500 mt-2">
+                  <p className="text-[11px] text-muted-foreground dark:text-zinc-500 mt-2">
                     This will create {templatePlan.yearCount} year folders, {templatePlan.monthCount} {templatePlan.periodLabel} folders, and {templatePlan.extraCount} additional folders.
                   </p>
                 </div>
 
                 {templateProgress.active && createFolderMode === "template" && (
-                  <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-2">
-                    <p className="text-sm font-medium text-zinc-200">Creating folder structure...</p>
-                    <p className="text-xs text-zinc-500">Please wait while folders are being created.</p>
-                    <p className="text-xs text-zinc-300">{templateProgress.completed} of {templateProgress.total} folders created</p>
+                  <div className="rounded-md border border-border dark:border-zinc-800 bg-muted/35 dark:bg-zinc-900/60 p-3 space-y-2">
+                    <p className="text-sm font-medium text-foreground/90 dark:text-zinc-200">Creating folder structure...</p>
+                    <p className="text-xs text-muted-foreground dark:text-zinc-500">Please wait while folders are being created.</p>
+                    <p className="text-xs text-foreground/80 dark:text-zinc-300">{templateProgress.completed} of {templateProgress.total} folders created</p>
                     <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
                       <div
                         className="h-full bg-emerald-500 transition-all duration-300"
                         style={{ width: `${templateProgress.total > 0 ? Math.min(100, Math.round((templateProgress.completed / templateProgress.total) * 100)) : 0}%` }}
                       />
                     </div>
-                    <p className="text-[11px] text-zinc-500">{templateProgress.total > 0 ? Math.round((templateProgress.completed / templateProgress.total) * 100) : 0}%</p>
+                    <p className="text-[11px] text-muted-foreground dark:text-zinc-500">{templateProgress.total > 0 ? Math.round((templateProgress.completed / templateProgress.total) * 100) : 0}%</p>
                   </div>
                 )}
               </div>
@@ -2942,7 +2942,7 @@ export default function Documents() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" className="border-zinc-700" onClick={() => setShowCreateFolderDialog(false)} disabled={creatingFolder}>Cancel</Button>
+            <Button variant="outline" className="border-border dark:border-zinc-700" onClick={() => setShowCreateFolderDialog(false)} disabled={creatingFolder}>Cancel</Button>
             <Button
               onClick={() => void confirmCreateFolder()}
               disabled={creatingFolder || (createFolderMode === "standard" ? !newFolderName.trim() : templatePlan.yearCount <= 0)}
@@ -2962,7 +2962,7 @@ export default function Documents() {
           if (!open) resetUploadForm();
         }
       }}>
-        <DialogContent className="bg-zinc-950 border-zinc-800 max-w-md">
+        <DialogContent className="bg-popover dark:bg-zinc-950 border-border dark:border-zinc-800 max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Upload className="w-4 h-4 text-emerald-400" />Add Document</DialogTitle>
           </DialogHeader>
@@ -2970,7 +2970,7 @@ export default function Documents() {
           <div className="space-y-4 py-2">
             <div>
               <Label className="text-xs text-muted-foreground mb-1.5 block">Files</Label>
-              <div className="border-2 border-dashed border-zinc-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-500/50 transition-colors" onClick={() => fileInputRef.current?.click()}>
+              <div className="border-2 border-dashed border-border dark:border-zinc-700 rounded-lg p-4 text-center cursor-pointer hover:border-emerald-500/50 transition-colors" onClick={() => fileInputRef.current?.click()}>
                 {uploadItems.length > 0 ? (
                   <div className="space-y-2 text-left">
                     <div className="text-xs text-muted-foreground flex items-center justify-between">
@@ -2991,12 +2991,12 @@ export default function Documents() {
                             ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                             : item.status === "failed"
                               ? <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                              : <Clock3 className="w-3.5 h-3.5 text-zinc-400" />;
+                              : <Clock3 className="w-3.5 h-3.5 text-muted-foreground dark:text-zinc-400" />;
 
                         const statusLabel = item.status === "uploading" ? "Uploading" : item.status === "uploaded" ? "Uploaded" : item.status === "failed" ? "Failed" : "Pending";
 
                         return (
-                          <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+                          <div key={item.id} className="rounded-md bg-background dark:bg-zinc-900/70 border border-border dark:border-zinc-800 px-2 py-1.5">
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-2 min-w-0">
                                 <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -3004,7 +3004,7 @@ export default function Documents() {
                                 <span className="text-muted-foreground text-xs shrink-0">({formatBytes(item.file.size)})</span>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
-                                <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-300 bg-zinc-950/70">
+                                <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-border dark:border-zinc-700 text-foreground/80 dark:text-zinc-300 bg-muted/30 dark:bg-zinc-950/70">
                                   {statusIcon}
                                   {statusLabel}
                                 </span>
@@ -3013,7 +3013,7 @@ export default function Documents() {
                                 </button>
                               </div>
                             </div>
-                            {item.status === "failed" && item.error && <div className="mt-1 text-[11px] text-red-300/90 pl-6 truncate">{item.error}</div>}
+                            {item.status === "failed" && item.error && <div className="mt-1 text-[11px] text-red-700 dark:text-red-300/90 pl-6 truncate">{item.error}</div>}
                           </div>
                         );
                       })}
@@ -3039,7 +3039,7 @@ export default function Documents() {
             {uploadItems.length <= 1 && (
               <div>
                 <Label className="text-xs text-muted-foreground mb-1.5 block">Document Name</Label>
-                <Input value={uploadName} onChange={(e) => setUploadName(e.target.value)} placeholder="e.g. KynLi Q1 2026 Financials" className="bg-zinc-900 border-zinc-700" />
+                <Input value={uploadName} onChange={(e) => setUploadName(e.target.value)} placeholder="e.g. KynLi Q1 2026 Financials" className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700" />
               </div>
             )}
 
@@ -3047,7 +3047,7 @@ export default function Documents() {
 
             <div>
               <Label className="text-xs text-muted-foreground mb-1.5 block">Description <span className="opacity-50">(optional)</span></Label>
-              <Textarea value={uploadDesc} onChange={(e) => setUploadDesc(e.target.value)} placeholder="Brief description of this document..." className="bg-zinc-900 border-zinc-700 resize-none h-20" />
+              <Textarea value={uploadDesc} onChange={(e) => setUploadDesc(e.target.value)} placeholder="Brief description of this document..." className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700 resize-none h-20" />
             </div>
 
             <div>
@@ -3058,7 +3058,7 @@ export default function Documents() {
                     type="button"
                     size="sm"
                     variant={uploadDestinationMode === "current" ? "default" : "outline"}
-                    className={uploadDestinationMode === "current" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                    className={uploadDestinationMode === "current" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-border dark:border-zinc-700"}
                     onClick={() => setUploadDestinationMode("current")}
                   >
                     Current Folder
@@ -3068,14 +3068,14 @@ export default function Documents() {
                   type="button"
                   size="sm"
                   variant={uploadDestinationMode === "specific" ? "default" : "outline"}
-                  className={uploadDestinationMode === "specific" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-zinc-700"}
+                  className={uploadDestinationMode === "specific" ? "bg-emerald-500 hover:bg-emerald-600 text-black" : "border-border dark:border-zinc-700"}
                   onClick={() => setUploadDestinationMode("specific")}
                 >
                   Specific Year/Month
                 </Button>
               </div>
               {uploadDestinationMode === "current" && uploadContextPath && (
-                <p className="text-[11px] text-zinc-500 mt-2">Destination: {prettifyFolderPath(uploadContextPath)}</p>
+                <p className="text-[11px] text-muted-foreground dark:text-zinc-500 mt-2">Destination: {prettifyFolderPath(uploadContextPath)}</p>
               )}
             </div>
 
@@ -3084,7 +3084,7 @@ export default function Documents() {
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1.5 block">Folder</Label>
                   <Select value={uploadDocType} onValueChange={setUploadDocType}>
-                    <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {uploadFolderOptions.map((t) => <SelectItem key={t.fullPath} value={t.fullPath}>{t.fullPath}</SelectItem>)}
                     </SelectContent>
@@ -3095,14 +3095,14 @@ export default function Documents() {
                   <div>
                     <Label className="text-xs text-muted-foreground mb-1.5 block">Year</Label>
                     <Select value={uploadYear} onValueChange={setUploadYear}>
-                      <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue /></SelectTrigger>
                       <SelectContent>{uploadYearOptions.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
                   <div>
                     <Label className="text-xs text-muted-foreground mb-1.5 block">Month</Label>
                     <Select value={uploadMonth} onValueChange={setUploadMonth}>
-                      <SelectTrigger className="bg-zinc-900 border-zinc-700"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue /></SelectTrigger>
                       <SelectContent>{uploadMonthOptions.map((name) => <SelectItem key={name} value={String(MONTH_NAMES.indexOf(name) + 1)}>{name}</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
@@ -3112,7 +3112,7 @@ export default function Documents() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowUpload(false)} className="border-zinc-700">Cancel</Button>
+            <Button variant="outline" onClick={() => setShowUpload(false)} className="border-border dark:border-zinc-700">Cancel</Button>
             <Button onClick={handleUpload} disabled={uploadItems.length === 0 || (uploadItems.length === 1 && !uploadName.trim()) || uploading} className="bg-emerald-500 hover:bg-emerald-600 text-black font-semibold">
               {uploading ? `Uploading ${uploadItems.length} file${uploadItems.length === 1 ? "" : "s"}...` : `Upload ${uploadItems.length > 0 ? uploadItems.length : ""}`.trim()}
             </Button>

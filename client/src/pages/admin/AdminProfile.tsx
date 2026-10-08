@@ -1,7 +1,9 @@
 import { trpc } from "@/lib/trpc";
-import { AlertCircle, Eye, EyeOff, Loader2, Lock, Settings, User } from "lucide-react";
+import { AlertCircle, Eye, EyeOff, Loader2, Lock, Moon, Settings, Sun, User } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useTheme } from "@/contexts/ThemeContext";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -15,6 +17,7 @@ function Field({ label, value }: { label: string; value: string }) {
 export default function AdminProfile() {
   const { data: authUser, isLoading, error } = trpc.auth.me.useQuery();
   const changePassword = trpc.auth.changePassword.useMutation();
+  const { theme, setTheme } = useTheme();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -73,11 +76,11 @@ export default function AdminProfile() {
   if (error) {
     return (
       <div className="p-6">
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300 flex items-start gap-2">
+        <div className="rounded-xl border border-red-500/40 dark:border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
           <AlertCircle size={16} className="mt-0.5" />
           <div>
             <p className="font-medium">Unable to load admin settings</p>
-            <p className="text-red-200/90 mt-1">{error.message}</p>
+            <p className="text-red-700/90 dark:text-red-200/90 mt-1">{error.message}</p>
           </div>
         </div>
       </div>
@@ -110,6 +113,40 @@ export default function AdminProfile() {
       </div>
 
       <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">Appearance</h2>
+          <p className="text-xs text-muted-foreground">Customize how the portal looks and feels.</p>
+        </div>
+
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">Theme</p>
+            <p className="text-xs text-muted-foreground">Choose your preferred color theme for the portal.</p>
+          </div>
+
+          <ToggleGroup
+            type="single"
+            value={theme}
+            onValueChange={(value) => {
+              if (value === "light" || value === "dark") setTheme(value);
+            }}
+            variant="outline"
+            className="border border-border rounded-lg bg-background p-0.5"
+            aria-label="Theme selection"
+          >
+            <ToggleGroupItem value="light" className="gap-1.5 px-3 data-[state=on]:bg-primary/10 data-[state=on]:text-primary">
+              <Sun size={14} />
+              <span>Light</span>
+            </ToggleGroupItem>
+            <ToggleGroupItem value="dark" className="gap-1.5 px-3 data-[state=on]:bg-primary/10 data-[state=on]:text-primary">
+              <Moon size={14} />
+              <span>Dark</span>
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
         <div className="flex items-center gap-2 text-sm text-foreground font-medium">
           <Lock size={16} />
           Security
@@ -136,7 +173,7 @@ export default function AdminProfile() {
                 {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
-            {passwordTooShort && <p className="text-xs text-amber-300">Password must be at least 8 characters.</p>}
+            {passwordTooShort && <p className="text-xs text-amber-700 dark:text-amber-300">Password must be at least 8 characters.</p>}
           </div>
 
           <div className="space-y-2">
@@ -160,7 +197,7 @@ export default function AdminProfile() {
               </button>
             </div>
             {confirmPassword.length > 0 && !passwordsMatch && (
-              <p className="text-xs text-red-300">Passwords do not match.</p>
+              <p className="text-xs text-red-700 dark:text-red-300">Passwords do not match.</p>
             )}
           </div>
         </div>

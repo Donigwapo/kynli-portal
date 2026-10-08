@@ -1575,7 +1575,7 @@ export default function Financials() {
                               Edit Report
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              className="text-red-300 focus:text-red-200"
+                              className="text-red-600 dark:text-red-300 focus:text-red-700 dark:focus:text-red-200"
                               onClick={() => setDeleteConfirmTarget({ year: Number(period.year), month: Number(period.month) })}
                             >
                               Delete Report
@@ -1675,9 +1675,9 @@ export default function Financials() {
             <div ref={reviewContentScrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
             {analysisDispatchResult?.status === "processing" && statusCheckError ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
-                  <h3 className="text-sm font-semibold text-yellow-200 mb-1">Unable to check analysis status</h3>
-                  <p className="text-sm text-yellow-100">We couldn’t retrieve the financial analysis status. Please try again.</p>
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4 dark:border-yellow-500/30 dark:bg-yellow-500/10 border-yellow-600/35 bg-yellow-500/12">
+                  <h3 className="text-sm font-semibold text-yellow-800 dark:text-yellow-200 mb-1">Unable to check analysis status</h3>
+                  <p className="text-sm text-yellow-700 dark:text-yellow-100">We couldn’t retrieve the financial analysis status. Please try again.</p>
                 </div>
               </div>
             ) : analysisDispatchResult?.status === "processing" ? (
@@ -1706,15 +1706,15 @@ export default function Financials() {
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">COGS</p>
-                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(specialCogsActual)}</p>
+                    <p className="text-base font-semibold text-red-700 dark:text-red-300 mt-1">{fmtD(specialCogsActual)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Operating Expenses</p>
-                    <p className="text-base font-semibold text-red-300 mt-1">{fmtD(reviewOperatingExpenses)}</p>
+                    <p className="text-base font-semibold text-red-700 dark:text-red-300 mt-1">{fmtD(reviewOperatingExpenses)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Net Profit</p>
-                    <p className="text-base font-semibold text-emerald-300 mt-1">{fmtD(reviewNetProfit)}</p>
+                    <p className="text-base font-semibold text-emerald-700 dark:text-emerald-300 mt-1">{fmtD(reviewNetProfit)}</p>
                   </div>
                   <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">Net Margin</p>
@@ -1786,7 +1786,7 @@ export default function Financials() {
                           <span>AI will rewrite only Cameron’s Financial Summary. Financial figures and rows will not be changed.</span>
                           <span>{aiInstruction.length.toLocaleString()} / 2,000</span>
                         </div>
-                        {aiRevisionError && <p className="text-xs text-red-300">{aiRevisionError}</p>}
+                        {aiRevisionError && <p className="text-xs text-red-700 dark:text-red-300">{aiRevisionError}</p>}
                         <div className="flex items-center justify-end gap-2">
                           <Button
                             type="button"
@@ -1863,7 +1863,7 @@ export default function Financials() {
                           <span>This summary will be visible in the saved financial period after approval.</span>
                           <span>{cameronSummary.length.toLocaleString()} / {FINANCIAL_SUMMARY_MAX_LENGTH.toLocaleString()}</span>
                         </div>
-                        {historyWarning && <p className="text-xs text-amber-300">{historyWarning}</p>}
+                        {historyWarning && <p className="text-xs text-amber-700 dark:text-amber-300">{historyWarning}</p>}
                       </div>
 
                       {historyPanelOpen && (
@@ -1878,7 +1878,7 @@ export default function Financials() {
                           {summaryHistoryQuery.isLoading ? (
                             <p className="text-sm text-muted-foreground">Loading history…</p>
                           ) : summaryHistoryQuery.isError ? (
-                            <p className="text-sm text-red-300">Unable to load summary history.</p>
+                            <p className="text-sm text-red-700 dark:text-red-300">Unable to load summary history.</p>
                           ) : (summaryHistoryQuery.data?.versions?.length ?? 0) === 0 ? (
                             <p className="text-sm text-muted-foreground">No versions yet.</p>
                           ) : (
@@ -2015,7 +2015,7 @@ export default function Financials() {
                             <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewIncomeRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 flex justify-end">
-                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-700 dark:hover:text-red-300" aria-label="Remove row" onClick={() => setReviewIncomeRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
@@ -2059,7 +2059,7 @@ export default function Financials() {
                             <Input className="pl-5 text-right bg-muted/35 border-border/60" inputMode="decimal" placeholder="" value={row.budget} onChange={(e) => setReviewExpenseRows((prev) => prev.map((r) => r.localId === row.localId ? { ...r, budget: sanitizeNumericInput(e.target.value) } : r))} />
                           </div>
                           <div className="col-span-4 sm:col-span-2 flex justify-end">
-                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-300" aria-label="Remove row" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
+                            <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:bg-red-500/10 hover:text-red-700 dark:hover:text-red-300" aria-label="Remove row" onClick={() => setReviewExpenseRows((prev) => prev.filter((r) => r.localId !== row.localId))}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
@@ -2081,15 +2081,15 @@ export default function Financials() {
               </div>
             ) : analysisDispatchResult?.status === "failed" ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4">
-                  <h3 className="text-sm font-semibold text-red-300 mb-1">Financial analysis failed.</h3>
-                  <p className="text-sm text-red-200">{importFailureMessage || "Unable to extract financial data."}</p>
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 dark:border-red-500/30 dark:bg-red-500/10 border-red-600/35 bg-red-500/12">
+                  <h3 className="text-sm font-semibold text-red-700 dark:text-red-300 mb-1">Financial analysis failed.</h3>
+                  <p className="text-sm text-red-700 dark:text-red-200">{importFailureMessage || "Unable to extract financial data."}</p>
                 </div>
               </div>
             ) : (
               <>
                 {uploadedFinancialPdfResult && !analysisDispatchResult && (
-                  <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-200 flex items-center justify-between gap-3">
+                  <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-800 dark:text-yellow-200 flex items-center justify-between gap-3 dark:border-yellow-500/30 dark:bg-yellow-500/10 border-yellow-600/35 bg-yellow-500/12">
                     <span>
                       The PDF was uploaded, but analysis could not be started. Please try again.
                     </span>
@@ -2199,7 +2199,7 @@ export default function Financials() {
                   </div>
 
                   {uploadError && (
-                    <p className="text-sm text-red-400">{uploadError}</p>
+                    <p className="text-sm text-red-700 dark:text-red-400">{uploadError}</p>
                   )}
 
                   {selectedPdfFile && (

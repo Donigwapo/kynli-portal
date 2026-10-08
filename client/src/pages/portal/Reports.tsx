@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, Legend, Cell,
@@ -8,7 +9,7 @@ import {
 } from "recharts";
 import {
   DollarSign, TrendingDown, TrendingUp, BarChart2,
-  Users, ShoppingBag, Clock, Activity,
+  Users, ShoppingBag, Activity,
 } from "lucide-react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ const RED = "oklch(0.62 0.22 25)";
 const AMBER = "oklch(0.78 0.16 60)";
 
 type Period = "Year" | "Quarter" | "Month";
-type Tab = "financial" | "clients" | "sales" | "time" | "profitability";
+type Tab = "financial" | "clients" | "sales" | "profitability";
 
 const QUARTERS: Record<number, number[]> = { 1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12] };
 
@@ -77,6 +78,19 @@ function KpiCard({
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Reports() {
   const now = new Date();
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+
+  const chartTickColor = isDark ? "oklch(0.50 0.008 240)" : "var(--muted-foreground)";
+  const chartAxisLabelColor = isDark ? "oklch(0.70 0.008 240)" : "var(--foreground)";
+  const chartGridColor = isDark ? "oklch(0.25 0.008 240)" : "var(--border)";
+  const chartTooltipBg = isDark ? "oklch(0.18 0.008 240)" : "var(--popover)";
+  const chartTooltipBorder = isDark ? "1px solid oklch(0.28 0.008 240)" : "1px solid var(--border)";
+  const chartTooltipLabelColor = isDark ? "oklch(0.85 0.008 240)" : "var(--foreground)";
+  const chartLegendMuted = isDark ? "oklch(0.60 0.008 240)" : "var(--muted-foreground)";
+  const chartBudgetBar = isDark ? "oklch(0.32 0.008 240)" : "color-mix(in oklab, var(--muted-foreground) 55%, transparent)";
+  const chartSecondaryBar = isDark ? "oklch(0.45 0.008 240)" : "color-mix(in oklab, var(--muted-foreground) 70%, transparent)";
+  const chartNeutralValue = isDark ? "oklch(0.70 0.008 240)" : "var(--muted-foreground)";
   const [period, setPeriod] = useState<Period>("Year");
   const [year, setYear] = useState(now.getFullYear());
   const [quarter, setQuarter] = useState(Math.ceil((now.getMonth() + 1) / 3));
@@ -103,12 +117,6 @@ export default function Reports() {
   // Fetch sales data
   const { data: salesData = [] } = trpc.sales.getByYear.useQuery(
     { year, tenantSlug: tslug },
-    { staleTime: 30_000 }
-  );
-
-  // Fetch time data
-  const { data: timeData = [] } = trpc.time.getByYear.useQuery(
-    { year },
     { staleTime: 30_000 }
   );
 
@@ -272,28 +280,6 @@ export default function Reports() {
       Outbound: r.outbound_count ?? 0,
     })), [salesData, selectedMonths]);
 
-  // Time chart data
-  const timeChartData = useMemo(() => {
-    const byMonth: Record<number, Record<string, number>> = {};
-    const focusAreas = new Set<string>();
-    timeData
-      .filter((r: any) => selectedMonths.includes(r.month ?? 0))
-      .forEach((r: any) => {
-        const m = r.month ?? 0;
-        if (!byMonth[m]) byMonth[m] = {};
-        const fa = r.focusArea ?? "Other";
-        focusAreas.add(fa);
-        byMonth[m][fa] = (byMonth[m][fa] ?? 0) + fmtN(r.hours);
-      });
-    return {
-      data: Object.entries(byMonth).map(([m, areas]) => ({
-        month: MONTHS_SHORT[Number(m) - 1],
-        ...areas,
-      })),
-      focusAreas: Array.from(focusAreas),
-    };
-  }, [timeData, selectedMonths]);
-
   // Period label
   const periodLabel = useMemo(() => {
     if (period === "Year") return `Full Year ${year}`;
@@ -305,11 +291,8 @@ export default function Reports() {
     { key: "financial", label: "Financial P&L", icon: DollarSign },
     { key: "clients", label: "Client Analytics", icon: Users },
     { key: "sales", label: "Sales", icon: ShoppingBag },
-    { key: "time", label: "Time", icon: Clock },
     { key: "profitability", label: "Profitability", icon: BarChart2 },
   ];
-
-  const FOCUS_COLORS = [TEAL, GREEN, AMBER, RED, "oklch(0.65 0.15 270)", "oklch(0.65 0.15 320)"];
 
   return (
     <div className="p-6 space-y-6">
@@ -498,24 +481,24 @@ export default function Reports() {
                 </div>
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={revBudgetChartData} barCategoryGap="20%" barGap={3}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                    <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} vertical={false} />
+                    <XAxis dataKey="month" tick={{ fill: chartTickColor, fontSize: 12 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: chartTickColor, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
                     <Tooltip
-                      contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
-                      labelStyle={{ color: "oklch(0.85 0.008 240)" }}
+                      contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: 8 }}
+                      labelStyle={{ color: chartTooltipLabelColor }}
                       formatter={(v: number, name: string) => [`$${v.toLocaleString()}`, name]}
                     />
                     <Legend
                       wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
                       formatter={(value) => (
-                        <span style={{ color: value === "Actual" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
+                        <span style={{ color: value === "Actual" ? RED : chartLegendMuted, fontWeight: 600 }}>{value}</span>
                       )}
                     />
                     <Bar dataKey="Actual" radius={[4,4,0,0]} fill={RED} />
                     <Bar dataKey="Budget" radius={[4,4,0,0]}>
                       {revBudgetChartData.map((entry, index) => (
-                        <Cell key={`budget-${index}`} fill={entry.hasBudget ? "oklch(0.32 0.008 240)" : "transparent"} />
+                        <Cell key={`budget-${index}`} fill={entry.hasBudget ? chartBudgetBar : "transparent"} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -547,7 +530,7 @@ export default function Reports() {
                                 <div className="w-full bg-muted/30 rounded-full h-1.5">
                                   <div
                                     className="h-1.5 rounded-full transition-all"
-                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : 'oklch(0.45 0.008 240)' }}
+                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : chartSecondaryBar }}
                                   />
                                 </div>
                                 <div className="text-xs text-muted-foreground mt-0.5">{pct.toFixed(1)}%</div>
@@ -582,7 +565,7 @@ export default function Reports() {
                                 <div className="w-full bg-muted/30 rounded-full h-1.5">
                                   <div
                                     className="h-1.5 rounded-full transition-all"
-                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : 'oklch(0.45 0.008 240)' }}
+                                    style={{ width: `${barWidth}%`, backgroundColor: isTop ? RED : chartSecondaryBar }}
                                   />
                                 </div>
                                 <div className="text-xs text-muted-foreground mt-0.5">{pct.toFixed(1)}%</div>
@@ -753,7 +736,8 @@ export default function Reports() {
                           ))}
                         </Pie>
                         <Tooltip
-                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                          contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: 8 }}
+                          labelStyle={{ color: chartTooltipLabelColor }}
                           formatter={(v: number, name: string) => [v, name]}
                         />
                       </PieChart>
@@ -765,11 +749,12 @@ export default function Reports() {
                     <h3 className="font-bold text-foreground text-base mb-4">LTV by Tier</h3>
                     <ResponsiveContainer width="100%" height={280}>
                       <BarChart data={ltvBarData} layout="vertical" margin={{ left: 16, right: 24 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" horizontal={false} />
-                        <XAxis type="number" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
-                        <YAxis type="category" dataKey="name" tick={{ fill: "oklch(0.70 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} width={80} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} horizontal={false} />
+                        <XAxis type="number" tick={{ fill: chartTickColor, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
+                        <YAxis type="category" dataKey="name" tick={{ fill: chartAxisLabelColor, fontSize: 12 }} axisLine={false} tickLine={false} width={80} />
                         <Tooltip
-                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
+                          contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: 8 }}
+                          labelStyle={{ color: chartTooltipLabelColor }}
                           formatter={(v: number) => [`$${v.toLocaleString()}`, "Avg LTV"]}
                         />
                         <Bar dataKey="LTV" fill={RED} radius={[0,4,4,0]} />
@@ -881,7 +866,7 @@ export default function Reports() {
                         <td className="px-4 py-3 text-right text-foreground">
                           {r.closeRate !== null ? `${r.closeRate.toFixed(1)}%` : <span className="text-muted-foreground">—</span>}
                         </td>
-                        <td className="px-5 py-3 text-right font-bold" style={{ color: r.vsTarget > 0 ? GREEN : r.vsTarget < 0 ? RED : "oklch(0.70 0.008 240)" }}>
+                        <td className="px-5 py-3 text-right font-bold" style={{ color: r.vsTarget > 0 ? GREEN : r.vsTarget < 0 ? RED : chartNeutralValue }}>
                           {r.vsTarget > 0 ? `+${r.vsTarget}` : r.vsTarget}
                         </td>
                       </tr>
@@ -896,185 +881,24 @@ export default function Reports() {
               <h3 className="font-bold text-foreground text-base mb-4">Closed vs Target</h3>
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={closedVsTargetData} barCategoryGap="20%" barGap={3}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} vertical={false} />
+                  <XAxis dataKey="month" tick={{ fill: chartTickColor, fontSize: 12 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: chartTickColor, fontSize: 11 }} axisLine={false} tickLine={false} />
                   <Tooltip
-                    contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
-                    labelStyle={{ color: "oklch(0.85 0.008 240)" }}
+                    contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: 8 }}
+                    labelStyle={{ color: chartTooltipLabelColor }}
                   />
                   <Legend
                     wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
                     formatter={(value) => (
-                      <span style={{ color: value === "Closed" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
+                      <span style={{ color: value === "Closed" ? RED : chartLegendMuted, fontWeight: 600 }}>{value}</span>
                     )}
                   />
                   <Bar dataKey="Closed" fill={RED} radius={[4,4,0,0]} />
-                  <Bar dataKey="Target" fill="oklch(0.32 0.008 240)" radius={[4,4,0,0]} />
+                  <Bar dataKey="Target" fill={chartBudgetBar} radius={[4,4,0,0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Time Tab ── */}
-      {tab === "time" && (() => {
-        const filtered = (timeData as any[]).filter(r => selectedMonths.includes(r.month ?? 0));
-        const totalHours = filtered.reduce((s, r) => s + fmtN(r.hours), 0);
-
-        // Hours by focus area
-        const byFocus: Record<string, number> = {};
-        filtered.forEach(r => {
-          const f = r.focusArea ?? "Other";
-          byFocus[f] = (byFocus[f] ?? 0) + fmtN(r.hours);
-        });
-
-        // Identify Sales hours and Consulting hours by focus area label match
-        const salesHours = Object.entries(byFocus)
-          .filter(([k]) => k.toLowerCase().includes("sales"))
-          .reduce((s, [, v]) => s + v, 0);
-        const consultingHours = Object.entries(byFocus)
-          .filter(([k]) => k.toLowerCase().includes("consult") || k.toLowerCase().includes("delivery") || k.toLowerCase().includes("client"))
-          .reduce((s, [, v]) => s + v, 0);
-
-        // Focus area target percentages (hardcoded based on reference design; can be made configurable)
-        const FOCUS_TARGETS: Record<string, number> = {
-          "Sales": 40,
-          "Strategy & Analysis": 20,
-          "Operations": 5,
-          "Training & Leadership": 10,
-        };
-
-        // Build focus area rows sorted by hours desc
-        const focusRows = Object.entries(byFocus)
-          .map(([label, hrs]) => ({
-            label,
-            hrs,
-            pct: totalHours > 0 ? (hrs / totalHours) * 100 : 0,
-            target: FOCUS_TARGETS[label] ?? null,
-          }))
-          .sort((a, b) => b.hrs - a.hrs);
-
-        // Actual vs Target chart data
-        const actualVsTargetData = focusRows
-          .filter(r => r.target !== null)
-          .map(r => ({ name: r.label, "Actual %": Math.round(r.pct), "Target %": r.target as number }));
-
-        const periodDesc = period === "Year" ? `Full Year ${year}` : period === "Quarter" ? `Q${quarter} ${year}` : `${MONTHS_SHORT[(month ?? 1) - 1]} ${year}`;
-
-        return (
-          <div className="space-y-6">
-            {/* KPI Cards — 3 wide */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Total Hours</span>
-                  <Clock size={16} className="text-muted-foreground" style={{ color: TEAL }} />
-                </div>
-                <div className="text-3xl font-bold text-foreground">{totalHours.toFixed(1)}h</div>
-                <div className="text-xs text-muted-foreground">{periodDesc}</div>
-              </div>
-              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Sales Hours</span>
-                  <Activity size={16} style={{ color: TEAL }} />
-                </div>
-                <div className="text-3xl font-bold text-foreground">{salesHours.toFixed(1)}h</div>
-                <div className="text-xs text-muted-foreground">Target: 20% of total</div>
-              </div>
-              <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Consulting Hours</span>
-                  <Users size={16} className="text-muted-foreground" />
-                </div>
-                <div className="text-3xl font-bold text-foreground">{consultingHours.toFixed(1)}h</div>
-                <div className="text-xs text-muted-foreground">Billable delivery</div>
-              </div>
-            </div>
-
-            {filtered.length === 0 ? (
-              <div className="bg-card border border-border rounded-xl py-16 text-center text-muted-foreground text-sm">
-                No time data for this period.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                {/* Focus Area Allocation */}
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <h3 className="font-bold text-foreground text-base mb-5">Focus Area Allocation</h3>
-                  <div className="space-y-5">
-                    {focusRows.map(r => (
-                      <div key={r.label}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-medium text-foreground">{r.label}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {r.hrs.toFixed(1)}h ({r.pct.toFixed(1)}%){r.target !== null ? ` — Target: ${r.target}%` : ""}
-                          </span>
-                        </div>
-                        {/* Progress bar with white target marker */}
-                        <div className="relative h-2 rounded-full bg-muted/30 overflow-visible">
-                          <div
-                            className="h-2 rounded-full"
-                            style={{ width: `${Math.min(r.pct, 100)}%`, background: RED }}
-                          />
-                          {r.target !== null && (
-                            <div
-                              className="absolute top-1/2 -translate-y-1/2 w-0.5 h-4 bg-white rounded-full"
-                              style={{ left: `${Math.min(r.target, 100)}%` }}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-4">White line = target allocation</p>
-                </div>
-
-                {/* Actual vs Target % bar chart */}
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <h3 className="font-bold text-foreground text-base mb-4">Actual vs Target (%)</h3>
-                  {actualVsTargetData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={280}>
-                      <BarChart data={actualVsTargetData} layout="vertical" margin={{ left: 16, right: 24 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.008 240)" horizontal={false} />
-                        <XAxis
-                          type="number"
-                          tick={{ fill: "oklch(0.50 0.008 240)", fontSize: 11 }}
-                          axisLine={false}
-                          tickLine={false}
-                          tickFormatter={v => `${v}%`}
-                          domain={[0, 80]}
-                        />
-                        <YAxis
-                          type="category"
-                          dataKey="name"
-                          tick={{ fill: "oklch(0.70 0.008 240)", fontSize: 12 }}
-                          axisLine={false}
-                          tickLine={false}
-                          width={110}
-                        />
-                        <Tooltip
-                          contentStyle={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.008 240)", borderRadius: 8 }}
-                          formatter={(v: number, name: string) => [`${v}%`, name]}
-                        />
-                        <Legend
-                          wrapperStyle={{ fontSize: 13, paddingTop: 12 }}
-                          formatter={(value) => (
-                            <span style={{ color: value === "Actual %" ? RED : "oklch(0.60 0.008 240)", fontWeight: 600 }}>{value}</span>
-                          )}
-                        />
-                        <Bar dataKey="Actual %" fill={RED} radius={[0,4,4,0]} />
-                        <Bar dataKey="Target %" fill="oklch(0.35 0.008 240)" radius={[0,4,4,0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
-                      No focus area targets configured.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         );
       })()}

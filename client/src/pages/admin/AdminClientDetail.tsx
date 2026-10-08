@@ -90,6 +90,10 @@ function roleLabel(role: string) {
   }
 }
 
+function normalizeEmail(value?: string | null): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
 export default function AdminClientDetail() {
   const { slug } = useParams<{ slug: string }>();
   const [, navigate] = useLocation();
@@ -283,7 +287,7 @@ export default function AdminClientDetail() {
         </div>
         <div className="flex items-center gap-2">
           {tenant.is_churned && (
-            <Badge variant="outline" className="text-xs border-orange-500/30 text-orange-400 bg-orange-500/10">
+            <Badge variant="outline" className="text-xs border-orange-500/40 text-orange-700 dark:text-orange-400 bg-orange-500/10 dark:border-orange-500/30">
               Churned
             </Badge>
           )}
@@ -301,7 +305,7 @@ export default function AdminClientDetail() {
             <Button
               variant="outline"
               size="sm"
-              className="gap-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+              className="gap-2 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10 dark:border-emerald-500/30"
               onClick={() => restoreMutation.mutate({ slug: tenant.slug })}
               disabled={restoreMutation.isPending}
             >
@@ -311,7 +315,7 @@ export default function AdminClientDetail() {
             <Button
               variant="outline"
               size="sm"
-              className="gap-2 border-orange-500/30 text-orange-400 hover:bg-orange-500/10"
+              className="gap-2 border-orange-500/40 text-orange-700 dark:text-orange-400 hover:bg-orange-500/10 dark:border-orange-500/30"
               onClick={() => archiveMutation.mutate({ slug: tenant.slug })}
               disabled={archiveMutation.isPending}
             >
@@ -321,7 +325,7 @@ export default function AdminClientDetail() {
           <Button
             variant="outline"
             size="sm"
-            className="gap-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
+            className="gap-2 border-red-500/40 text-red-700 dark:text-red-400 hover:bg-red-500/10 dark:border-red-500/30"
             onClick={() => setDeleteConfirmOpen(true)}
           >
             <Trash2 size={13} /> Delete
@@ -438,7 +442,7 @@ export default function AdminClientDetail() {
                   <dd>
                     <Badge
                       variant="outline"
-                      className={`text-xs ${tenant.is_active ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-red-500/30 text-red-400 bg-red-500/10"}`}
+                      className={`text-xs ${tenant.is_active ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30" : "border-red-500/40 text-red-700 dark:text-red-400 bg-red-500/10 dark:border-red-500/30"}`}
                     >
                       {tenant.is_active ? "Active" : "Inactive"}
                     </Badge>
@@ -456,11 +460,11 @@ export default function AdminClientDetail() {
                   <dt className="text-muted-foreground">Portal Invite</dt>
                   <dd>
                     {tenant.invite_accepted ? (
-                      <span className="flex items-center gap-1 text-xs text-emerald-400">
+                      <span className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
                         <CheckCircle2 size={11} /> Accepted
                       </span>
                     ) : tenant.invite_sent_at ? (
-                      <span className="flex items-center gap-1 text-xs text-amber-400">
+                      <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
                         <Clock size={11} /> Sent {new Date(tenant.invite_sent_at).toLocaleDateString()}
                       </span>
                     ) : (
@@ -470,7 +474,7 @@ export default function AdminClientDetail() {
                 </div>
               </dl>
 
-              {tenant.email && !tenant.invite_accepted && (
+              {tenant.email && (
                 <div className="pt-3 border-t border-border/50">
                   <Button
                     variant="outline"
@@ -487,7 +491,11 @@ export default function AdminClientDetail() {
                     }
                   >
                     <Mail size={13} />
-                    {sendInvite.isPending ? "Sending…" : tenant.invite_sent_at ? "Resend Invite" : "Send Invite"}
+                    {sendInvite.isPending
+                      ? "Sending…"
+                      : (tenant.invite_sent_at || tenant.invite_accepted)
+                        ? "Resend Invite"
+                        : "Send Invite"}
                   </Button>
                 </div>
               )}
@@ -601,17 +609,28 @@ export default function AdminClientDetail() {
                   const isPending = !!m.invite_sent_at && !m.invite_accepted;
                   const canResend = isPending;
 
+                  const memberEmailNormalized = normalizeEmail(m.email);
+                  const tenantEmailNormalized = normalizeEmail(tenant.email);
+                  const contactNameTrimmed = tenant.contact_name?.trim() ?? "";
+                  const shouldUseTenantContactName =
+                    !!contactNameTrimmed &&
+                    !!tenantEmailNormalized &&
+                    memberEmailNormalized === tenantEmailNormalized;
+                  const displayName = shouldUseTenantContactName
+                    ? contactNameTrimmed
+                    : (m.name ?? "Unnamed");
+
                   return (
                     <TableRow key={`${m.id}-${m.email}`}>
                       <TableCell>
                         <div className="flex items-center gap-2 min-w-0">
                           <Avatar className="size-8">
                             <AvatarFallback className="text-[11px]">
-                              {initials(m.name, m.email)}
+                              {initials(displayName, m.email)}
                             </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0">
-                            <p className="text-sm text-foreground truncate">{m.name ?? "Unnamed"}</p>
+                            <p className="text-sm text-foreground truncate">{displayName}</p>
                             <p className="text-[11px] text-muted-foreground truncate">{m.source === "staff_assignment" ? "Assigned staff" : "Tenant member"}</p>
                           </div>
                         </div>
@@ -625,18 +644,18 @@ export default function AdminClientDetail() {
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className={`text-xs ${m.source === "staff_assignment" ? "border-cyan-500/30 text-cyan-400 bg-cyan-500/10" : "border-emerald-500/30 text-emerald-400 bg-emerald-500/10"}`}
+                          className={`text-xs ${m.source === "staff_assignment" ? "border-cyan-500/40 text-cyan-700 dark:text-cyan-400 bg-cyan-500/10 dark:border-cyan-500/30" : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30"}`}
                         >
                           {m.source === "staff_assignment" ? "Assigned" : "Active"}
                         </Badge>
                       </TableCell>
                       <TableCell>
                         {m.invite_accepted ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
+                          <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
                             <CheckCircle2 size={11} /> Accepted
                           </span>
                         ) : m.invite_sent_at ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-amber-400">
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
                             <Clock size={11} /> Pending
                           </span>
                         ) : (
@@ -666,7 +685,7 @@ export default function AdminClientDetail() {
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuItem
-                              className="text-red-400 focus:text-red-300"
+                              className="text-red-700 dark:text-red-400 focus:text-red-800 dark:focus:text-red-300"
                               onClick={() => {
                                 if (confirm(`Remove ${m.name ?? m.email} from ${tenant.company_name}?`)) {
                                   removeMember.mutate({ slug: tenant.slug, memberId: m.id });
@@ -697,7 +716,7 @@ export default function AdminClientDetail() {
               Their Supabase data tables will be preserved, but the client record and portal access will be gone.
               <br />
               <br />
-              <span className="text-red-400 font-medium">This action cannot be undone.</span> Consider archiving instead.
+              <span className="text-red-700 dark:text-red-400 font-medium">This action cannot be undone.</span> Consider archiving instead.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

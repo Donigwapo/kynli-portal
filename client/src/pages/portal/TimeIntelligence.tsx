@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useTheme } from "@/contexts/ThemeContext";
 import { trpc } from "@/lib/trpc";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -41,6 +42,11 @@ const CHART_COLORS = [
   "oklch(0.65 0.20 310)","oklch(0.62 0.22 25)","oklch(0.72 0.14 240)",
 ];
 
+const INPUT_BASE_DARK = "bg-[#1a1a1a] border-[#2a2a2a]";
+const INPUT_BASE_LIGHT = "bg-background border-border";
+const PANEL_DARK = "bg-[#111111] border-[#222]";
+const PANEL_LIGHT = "bg-card border-border";
+
 function isStrategic(area: string): boolean {
   const strategic = ["strategy","planning","vision","leadership","growth","business dev","client","sales","marketing","product","innovation","consulting"];
   return strategic.some(k => area.toLowerCase().includes(k));
@@ -64,6 +70,8 @@ function AddEntryModal({
   focusAreas: FocusArea[];
   taskCategories: TaskCategory[];
 }) {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const defaultDate = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -139,16 +147,17 @@ function AddEntryModal({
     onSave({ logDate, teamMember, taskCategory, focusArea, hours, minutes, delegationNote, year, month });
   }
 
-  const inputCls = "w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground";
+  const inputCls = `w-full ${isDark ? INPUT_BASE_DARK : INPUT_BASE_LIGHT} border rounded-xl px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground`;
   const labelCls = "block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2";
+  const panelCls = `${isDark ? PANEL_DARK : PANEL_LIGHT} border rounded-2xl`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-[#111111] border border-[#222] rounded-2xl w-full max-w-lg mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className={`${panelCls} w-full max-w-lg mx-4 shadow-2xl max-h-[90vh] overflow-y-auto`}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[#222]">
+        <div className={`flex items-center justify-between px-6 py-5 border-b ${isDark ? "border-[#222]" : "border-border"}`}>
           <h2 className="text-lg font-bold text-foreground">Add Time Entry</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-white/5">
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted/40 dark:hover:bg-white/5">
             <X size={18} />
           </button>
         </div>
@@ -186,7 +195,7 @@ function AddEntryModal({
               </div>
               <button
                 onClick={() => setShowAddMember(v => !v)}
-                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                className="px-3 py-2 rounded-xl border border-border dark:border-[#2a2a2a] hover:bg-muted/40 dark:hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
                 title="Add new team member"
               >
                 <UserPlus size={16} />
@@ -230,7 +239,7 @@ function AddEntryModal({
               </div>
               <button
                 onClick={() => setShowAddCategory(v => !v)}
-                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                className="px-3 py-2 rounded-xl border border-border dark:border-[#2a2a2a] hover:bg-muted/40 dark:hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
                 title="Add new task category"
               >
                 <Plus size={16} />
@@ -274,7 +283,7 @@ function AddEntryModal({
               </div>
               <button
                 onClick={() => setShowAddFocus(v => !v)}
-                className="px-3 py-2 rounded-xl border border-[#2a2a2a] hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                className="px-3 py-2 rounded-xl border border-border dark:border-[#2a2a2a] hover:bg-muted/40 dark:hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
                 title="Add new focus area"
               >
                 <Plus size={16} />
@@ -343,10 +352,10 @@ function AddEntryModal({
         </div>
 
         {/* Footer */}
-        <div className="flex gap-3 px-6 py-4 border-t border-[#222]">
+        <div className="flex gap-3 px-6 py-4 border-t border-border dark:border-[#222]">
           <button
             onClick={onClose}
-            className="flex-1 py-3 rounded-xl border border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-white/5 transition-colors"
+            className="flex-1 py-3 rounded-xl border border-border dark:border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-muted/40 dark:hover:bg-white/5 transition-colors"
           >
             Cancel
           </button>
@@ -372,6 +381,8 @@ function TeamMembersModal({
   onClose: () => void;
   teamMembers: TeamMember[];
 }) {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
   const [newName, setNewName] = useState("");
   const addMutation = trpc.time.addTeamMember.useMutation();
   const deleteMutation = trpc.time.deleteTeamMember.useMutation();
@@ -394,10 +405,10 @@ function TeamMembersModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-[#111111] border border-[#222] rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[#222]">
+      <div className="bg-card dark:bg-[#111111] border border-border dark:border-[#222] rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        <div className={`flex items-center justify-between px-6 py-5 border-b ${isDark ? "border-[#222]" : "border-border"}`}>
           <h2 className="text-base font-bold text-foreground">Manage Team Members</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-white/5">
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted/40 dark:hover:bg-white/5">
             <X size={18} />
           </button>
         </div>
@@ -408,7 +419,7 @@ function TeamMembersModal({
               value={newName}
               onChange={e => setNewName(e.target.value)}
               placeholder="Add team member name..."
-              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+              className={`flex-1 ${isDark ? INPUT_BASE_DARK : INPUT_BASE_LIGHT} border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground`}
               onKeyDown={e => e.key === "Enter" && handleAdd()}
             />
             <button
@@ -425,12 +436,12 @@ function TeamMembersModal({
           ) : (
             <div className="space-y-1 max-h-64 overflow-y-auto">
               {teamMembers.map(m => (
-                <div key={m.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-white/5">
+                <div key={m.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-muted/40 dark:hover:bg-white/5">
                   <span className="text-sm text-foreground">{m.name}</span>
                   <button
                     onClick={() => handleDelete(m.id)}
                     disabled={deleteMutation.isPending}
-                    className="text-muted-foreground hover:text-red-400 p-1 rounded disabled:opacity-50"
+                    className="text-muted-foreground hover:text-red-700 dark:hover:text-red-400 p-1 rounded disabled:opacity-50"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -439,10 +450,10 @@ function TeamMembersModal({
             </div>
           )}
         </div>
-        <div className="px-6 py-4 border-t border-[#222]">
+        <div className="px-6 py-4 border-t border-border dark:border-[#222]">
           <button
             onClick={onClose}
-            className="w-full py-2.5 rounded-xl border border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-white/5"
+            className="w-full py-2.5 rounded-xl border border-border dark:border-[#2a2a2a] text-sm font-semibold text-foreground hover:bg-muted/40 dark:hover:bg-white/5"
           >
             Done
           </button>
@@ -454,6 +465,9 @@ function TeamMembersModal({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function TimeIntelligence() {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const chartMuted = isDark ? MUTED_FG : "var(--muted-foreground)";
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -794,9 +808,9 @@ export default function TimeIntelligence() {
                   <ResponsiveContainer width="100%" height={240}>
                     <RadarChart data={radarData} margin={{ top: 10, right: 30, left: 30, bottom: 10 }}>
                       <PolarGrid stroke="var(--border)" />
-                      <PolarAngleAxis dataKey="area" tick={{ fill: MUTED_FG, fontSize: 10 }} />
+                      <PolarAngleAxis dataKey="area" tick={{ fill: chartMuted, fontSize: 10 }} />
                       <PolarRadiusAxis angle={30} domain={[0, Math.max(...radarData.map(d => d.hours))]}
-                        tick={{ fill: MUTED_FG, fontSize: 9 }} />
+                        tick={{ fill: chartMuted, fontSize: 9 }} />
                       <Radar name="Hours" dataKey="hours" stroke={TEAL} fill={TEAL} fillOpacity={0.2} />
                       <Tooltip
                         contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
@@ -837,7 +851,7 @@ export default function TimeIntelligence() {
                             </span>
                             <button
                               onClick={() => deleteMutation.mutate({ id: log.id })}
-                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 p-0.5 rounded transition-opacity"
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-700 dark:hover:text-red-400 p-0.5 rounded transition-opacity"
                             >
                               <Trash2 size={12} />
                             </button>
@@ -880,7 +894,7 @@ export default function TimeIntelligence() {
                     <span className="text-xs text-muted-foreground">What each tracked category means — and who should own it.</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-xs flex items-center gap-1" style={{ color: "oklch(0.78 0.16 60)" }}>
+                    <span className="text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">
                       <AlertTriangle size={11} /> Expert's Trap risk
                     </span>
                     <span className="text-xs flex items-center gap-1" style={{ color: TEAL }}>
@@ -900,13 +914,13 @@ export default function TimeIntelligence() {
 
                 {/* Category Metadata Setup — shown when no AI results yet */}
                 {catIntel.length === 0 && taskCategories.length > 0 && (
-                  <div className="px-5 py-4 border-b border-border bg-[#0d0d0d]">
+                  <div className="px-5 py-4 border-b border-border bg-muted/20 dark:bg-[#0d0d0d]">
                     <p className="text-xs text-muted-foreground mb-3">
                       Optional: Add descriptions and owner info per category so the AI can give better suggestions.
                     </p>
                     <div className="space-y-2">
                       {(taskCategories as TaskCategory[]).map(cat => (
-                        <div key={cat.id} className="rounded-xl border border-[#222] p-3">
+                        <div key={cat.id} className="rounded-xl border border-border dark:border-[#222] p-3">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-xs font-semibold text-foreground">{cat.label}</span>
                             {editingCatId !== cat.id ? (
@@ -925,20 +939,20 @@ export default function TimeIntelligence() {
                                 type="text" placeholder="Description (what this category means)…"
                                 value={editCatForm.description}
                                 onChange={e => setEditCatForm(f => ({ ...f, description: e.target.value }))}
-                                className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                                className={`w-full ${isDark ? INPUT_BASE_DARK : INPUT_BASE_LIGHT} border rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground`}
                               />
                               <div className="flex gap-2">
                                 <input
                                   type="text" placeholder="Owner name (e.g. Cameron)"
                                   value={editCatForm.ownerName}
                                   onChange={e => setEditCatForm(f => ({ ...f, ownerName: e.target.value }))}
-                                  className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                                  className={`flex-1 ${isDark ? INPUT_BASE_DARK : INPUT_BASE_LIGHT} border rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground`}
                                 />
                                 <input
                                   type="text" placeholder="Owner role (e.g. CEO, Bookkeeper)"
                                   value={editCatForm.ownerRole}
                                   onChange={e => setEditCatForm(f => ({ ...f, ownerRole: e.target.value }))}
-                                  className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+                                  className={`flex-1 ${isDark ? INPUT_BASE_DARK : INPUT_BASE_LIGHT} border rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground`}
                                 />
                               </div>
                             </div>
@@ -981,10 +995,10 @@ export default function TimeIntelligence() {
                             "Consulting": "oklch(0.75 0.15 192)",
                           }[row.focusArea ?? ""] ?? MUTED_FG;
                           return (
-                            <tr key={row.id} className={`hover:bg-white/[0.02] ${row.expertTrapRisk ? "bg-amber-500/5" : ""}`}>
+                            <tr key={row.id} className={`hover:bg-muted/20 dark:hover:bg-white/[0.02] ${row.expertTrapRisk ? "bg-amber-500/5" : ""}`}>
                               <td className="px-4 py-3 font-semibold text-foreground">
                                 <div className="flex items-center gap-1.5">
-                                  {row.expertTrapRisk && <AlertTriangle size={12} className="text-amber-400 shrink-0" />}
+                                  {row.expertTrapRisk && <AlertTriangle size={12} className="text-amber-700 dark:text-amber-400 shrink-0" />}
                                   {row.categoryLabel}
                                 </div>
                               </td>
@@ -1038,7 +1052,7 @@ export default function TimeIntelligence() {
                 <h2 className="text-sm font-semibold text-foreground mb-4">Team Member Hours</h2>
                 <ResponsiveContainer width="100%" height={Math.max(80, memberHoursData.length * 52)}>
                   <BarChart data={memberHoursData} layout="vertical" margin={{ top: 0, right: 60, left: 10, bottom: 0 }}>
-                    <XAxis type="number" tick={{ fill: MUTED_FG, fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <XAxis type="number" tick={{ fill: chartMuted, fontSize: 10 }} axisLine={false} tickLine={false} />
                     <YAxis type="category" dataKey="name" tick={{ fill: "var(--foreground)", fontSize: 12 }} axisLine={false} tickLine={false} width={90} />
                     <Tooltip
                       contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}

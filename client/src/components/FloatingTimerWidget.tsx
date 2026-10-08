@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useFloatingTimer } from "@/hooks/useFloatingTimer";
+import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -37,6 +38,7 @@ const PANEL_W_EXPANDED = 420;
 
 export default function FloatingTimerWidget() {
   const timer = useFloatingTimer();
+  const { theme } = useTheme();
 
   // Local, high-frequency drag position state to keep drag at 60fps without
   // pushing every move into Zustand/localStorage.
@@ -50,6 +52,7 @@ export default function FloatingTimerWidget() {
     : "shadow-[0_12px_34px_rgba(0,0,0,0.45)]";
 
   const panelWidth = timer.expanded ? PANEL_W_EXPANDED : PANEL_W_COLLAPSED;
+  const isDark = theme === "dark";
 
   // Keep local drag position synced when external store position changes (e.g., restore).
   useEffect(() => {
@@ -142,7 +145,7 @@ export default function FloatingTimerWidget() {
           showCloseButton={false}
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
-          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+          className={cn("max-w-md text-foreground", isDark ? "border-white/15 bg-[#111111]" : "border-border bg-card")}
         >
           <DialogHeader>
             <DialogTitle>Start time tracking?</DialogTitle>
@@ -153,7 +156,7 @@ export default function FloatingTimerWidget() {
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-white/15 bg-white/[0.02] hover:bg-white/[0.05]"
+              className={cn(isDark ? "border-white/15 bg-white/[0.02] hover:bg-white/[0.05]" : "border-border bg-background hover:bg-accent")}
               onClick={timer.dismissIdleReminder}
             >
               Not now
@@ -179,8 +182,10 @@ export default function FloatingTimerWidget() {
         animate={{ scale: timer.dragging ? 1.01 : 1 }}
         transition={timer.dragging ? { duration: 0 } : { type: "spring", stiffness: 300, damping: 28 }}
         className={cn(
-          "rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.90),rgba(12,12,12,0.86))]",
-          "backdrop-blur-xl",
+          "rounded-2xl border backdrop-blur-xl",
+          isDark
+            ? "border-white/10 bg-[linear-gradient(180deg,rgba(20,20,20,0.90),rgba(12,12,12,0.86))]"
+            : "border-border bg-card",
           timer.dragging ? "transition-none" : "transition-all duration-200",
           timer.dragging
             ? "shadow-[0_0_0_1px_rgba(45,212,191,0.25),0_28px_64px_rgba(0,0,0,0.52)]"
@@ -192,9 +197,9 @@ export default function FloatingTimerWidget() {
         <div className="px-3 py-2.5 flex items-center gap-2.5 select-none">
           <button
             className={cn(
-              "h-8 w-8 rounded-lg border border-white/10 bg-white/[0.03] text-muted-foreground",
-              timer.dragging ? "cursor-grabbing" : "cursor-grab",
-              "inline-flex items-center justify-center hover:bg-white/[0.06]",
+              "h-8 w-8 rounded-lg border text-muted-foreground inline-flex items-center justify-center",
+              isDark ? "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]" : "border-border bg-background hover:bg-accent",
+              timer.dragging ? "cursor-grabbing" : "cursor-grab", 
             )}
             onPointerDown={beginDrag}
             title="Drag timer"
@@ -207,7 +212,9 @@ export default function FloatingTimerWidget() {
             variant={timer.running ? "secondary" : "default"}
             className={cn(
               "h-8 w-8",
-              timer.running && "bg-cyan-500/20 hover:bg-cyan-500/25 text-cyan-100 border border-cyan-400/30",
+              timer.running && (isDark
+                ? "bg-cyan-500/20 hover:bg-cyan-500/25 text-cyan-100 border border-cyan-400/30"
+                : "bg-primary/15 hover:bg-primary/20 text-primary border border-primary/30"),
             )}
             onClick={timer.running ? timer.stop : timer.start}
             disabled={timer.loading}
@@ -223,16 +230,16 @@ export default function FloatingTimerWidget() {
 
           <div className="text-right">
             <div className="flex items-center justify-end gap-1.5">
-              <span className={cn("h-2 w-2 rounded-full", timer.running ? "bg-cyan-400 animate-pulse" : "bg-zinc-500")} />
+              <span className={cn("h-2 w-2 rounded-full", timer.running ? "bg-cyan-400 animate-pulse" : (isDark ? "bg-zinc-500" : "bg-muted-foreground"))} />
               <p className="text-xs text-muted-foreground">{timer.running ? "Running" : "Idle"}</p>
             </div>
-            <p className="text-base font-mono font-semibold tracking-wide text-cyan-100">{timer.tickingLabel}</p>
+            <p className={cn("text-base font-mono font-semibold tracking-wide", isDark ? "text-cyan-100" : "text-primary")}>{timer.tickingLabel}</p>
           </div>
 
           <Button
             size="icon"
             variant="ghost"
-            className="h-8 w-8 hover:bg-white/[0.08]"
+            className={cn("h-8 w-8", isDark ? "hover:bg-white/[0.08]" : "hover:bg-accent")}
             onClick={() => timer.setExpanded(!timer.expanded)}
             title={timer.expanded ? "Minimize" : "Expand"}
           >
@@ -242,7 +249,7 @@ export default function FloatingTimerWidget() {
           <Button
             size="icon"
             variant="ghost"
-            className="h-8 w-8 hover:bg-white/[0.08]"
+            className={cn("h-8 w-8", isDark ? "hover:bg-white/[0.08]" : "hover:bg-accent")}
             onClick={() => timer.setExpanded(false)}
             title="Close panel"
           >
@@ -258,11 +265,11 @@ export default function FloatingTimerWidget() {
               animate={{ opacity: 1, y: 0, height: "auto" }}
               exit={{ opacity: 0, y: -4, height: 0 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
-              className="border-t border-white/10 overflow-hidden"
+              className={cn("border-t overflow-hidden", isDark ? "border-white/10" : "border-border")}
             >
               <div className="px-3 pt-3 pb-2 space-y-3">
                 {timer.error && (
-                  <div className="text-xs rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-200">
+                  <div className="text-xs rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-red-700 dark:text-red-200">
                     {timer.error}
                   </div>
                 )}
@@ -274,7 +281,7 @@ export default function FloatingTimerWidget() {
                       value={timer.projectId}
                       onChange={(e) => timer.setProjectId(e.target.value)}
                       placeholder="Select or enter"
-                      className="h-8 text-xs bg-black/20 border-white/10"
+                      className={cn("h-8 text-xs", isDark ? "bg-black/20 border-white/10" : "bg-background border-border")}
                     />
                   </div>
                   <div>
@@ -283,7 +290,7 @@ export default function FloatingTimerWidget() {
                       value={timer.taskId}
                       onChange={(e) => timer.setTaskId(e.target.value)}
                       placeholder="Select or enter"
-                      className="h-8 text-xs bg-black/20 border-white/10"
+                      className={cn("h-8 text-xs", isDark ? "bg-black/20 border-white/10" : "bg-background border-border")}
                     />
                   </div>
                 </div>
@@ -296,15 +303,15 @@ export default function FloatingTimerWidget() {
                     value={timer.notesDraft}
                     onChange={(e) => timer.setNotesDraft(e.target.value)}
                     placeholder="What are you working on?"
-                    className="min-h-[72px] text-xs bg-black/20 border-white/10"
+                    className={cn("min-h-[72px] text-xs", isDark ? "bg-black/20 border-white/10" : "bg-background border-border")}
                   />
                 </div>
 
-                <div className="flex items-center justify-between text-xs rounded-md bg-white/[0.03] border border-white/10 px-2 py-1.5">
+                <div className={cn("flex items-center justify-between text-xs rounded-md border px-2 py-1.5", isDark ? "bg-white/[0.03] border-white/10" : "bg-muted/40 border-border")}>
                   <span className="inline-flex items-center gap-1 text-muted-foreground">
                     <Briefcase size={12} /> Tracked today
                   </span>
-                  <span className="font-mono text-cyan-100">{timer.todayTrackedLabel}</span>
+                  <span className={cn("font-mono", isDark ? "text-cyan-100" : "text-primary")}>{timer.todayTrackedLabel}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -317,17 +324,22 @@ export default function FloatingTimerWidget() {
                     <span className="text-xs text-muted-foreground">Billable</span>
                   </div>
 
-                  <Button size="sm" variant="outline" onClick={timer.refresh} className="h-8 text-xs border-white/15 bg-white/[0.02] hover:bg-white/[0.05]">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={timer.refresh}
+                    className={cn("h-8 text-xs", isDark ? "border-white/15 bg-white/[0.02] hover:bg-white/[0.05]" : "border-border bg-background hover:bg-accent")}
+                  >
                     <TimerReset size={12} className="mr-1" /> Refresh
                   </Button>
                 </div>
               </div>
 
-              <div className="px-3 pb-3 pt-1 flex items-center justify-end gap-2 border-t border-white/10">
+              <div className={cn("px-3 pb-3 pt-1 flex items-center justify-end gap-2 border-t", isDark ? "border-white/10" : "border-border")}>
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-8 text-xs border-white/15 bg-white/[0.02] hover:bg-white/[0.05]"
+                  className={cn("h-8 text-xs", isDark ? "border-white/15 bg-white/[0.02] hover:bg-white/[0.05]" : "border-border bg-background hover:bg-accent")}
                   onClick={timer.start}
                   disabled={timer.loading}
                 >

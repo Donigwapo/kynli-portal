@@ -22,6 +22,7 @@ import {
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { usePortal } from "../contexts/PortalContext";
+import { useTheme } from "../contexts/ThemeContext";
 import { trpc } from "../lib/trpc";
 import { PACKAGE_TIERS, TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import ChangePasswordDialog from "./ChangePasswordDialog";
@@ -84,6 +85,7 @@ interface PortalLayoutProps {
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
+  const { theme } = useTheme();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, aiCoachingPeriod, aiFinancialPeriod } = usePortal();
 
@@ -333,6 +335,8 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
   const baseNav = isAdmin && !impersonatingTenantSlug ? ADMIN_NAV : CLIENT_NAV;
 
+  const isActualClientLogin = user?.role === "client";
+
   const navItems = baseNav.filter(item => {
         if (item.id === "activity_log") {
           // Admin-only, and hidden during View-as-Client impersonation.
@@ -369,8 +373,12 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
       });
 
 
-  const initials = user?.name
-    ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
+  const sidebarDisplayName = user?.role === "client"
+    ? (activeWorkspaceName ?? displayLabel ?? user?.name ?? "—")
+    : (user?.name ?? "—");
+
+  const initials = sidebarDisplayName
+    ? sidebarDisplayName.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "?";
 
   const workspaceInitials = (name: string) =>
@@ -542,15 +550,31 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     }
   }
 
+  const isDark = theme === "dark";
+
+  const shellBackgroundColor = isDark ? "#0a0a0a" : "var(--background)";
+  const sidebarBackgroundColor = isDark ? "#111111" : "var(--sidebar)";
+  const sidebarBorderColor = isDark ? "#1f1f1f" : "var(--sidebar-border)";
+  const sidebarCaptionColor = isDark ? "#666" : "var(--muted-foreground)";
+  const navDefaultColor = isDark ? "#888" : "var(--sidebar-foreground)";
+  const navDisabledColor = isDark ? "#666" : "var(--muted-foreground)";
+  const navActiveColor = isDark ? "#00d4aa" : "var(--sidebar-primary)";
+  const navActiveBackground = isDark ? "rgba(0,212,170,0.08)" : "var(--sidebar-accent)";
+  const accountNameColor = isDark ? "#e5e5e5" : "var(--sidebar-foreground)";
+  const accountMetaColor = isDark ? "#555" : "var(--muted-foreground)";
+  const avatarBg = isDark ? "rgba(0,212,170,0.15)" : "color-mix(in oklab, var(--sidebar-primary) 18%, transparent)";
+  const avatarColor = isDark ? "#00d4aa" : "var(--sidebar-primary)";
+  const navDotColor = isDark ? "#00d4aa" : "var(--sidebar-primary)";
+
   return (
-    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#0a0a0a" }}>
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: shellBackgroundColor }}>
       {/* Sidebar */}
       <aside
         className="flex flex-col w-48 shrink-0 border-r"
-        style={{ backgroundColor: "#111111", borderColor: "#1f1f1f" }}
+        style={{ backgroundColor: sidebarBackgroundColor, borderColor: sidebarBorderColor }}
       >
         {/* Logo / Workspace switcher */}
-        <div className="relative flex flex-col items-center px-3 py-4 border-b gap-1.5" style={{ borderColor: "#1f1f1f" }}>
+        <div className="relative flex flex-col items-center px-3 py-4 border-b gap-1.5" style={{ borderColor: sidebarBorderColor }}>
           {canSwitchWorkspace ? (
             <Popover open={workspacePickerOpen} onOpenChange={setWorkspacePickerOpen}>
               <PopoverTrigger asChild>
@@ -568,22 +592,32 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                     {canSwitchWorkspace && (
                       <span
                         title="Switch Business"
-                        className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full border border-white/20 bg-zinc-900/80 shadow-sm flex items-center justify-center pointer-events-none"
+                        className={cn(
+                          "absolute top-0.5 right-0.5 h-4 w-4 rounded-full border shadow-sm flex items-center justify-center pointer-events-none",
+                          isDark ? "border-white/20 bg-zinc-900/80" : "border-border bg-card"
+                        )}
                       >
-                        <ChevronsUpDown size={10} className="text-white" />
+                        <ChevronsUpDown size={10} className={cn(isDark ? "text-white" : "text-foreground")} />
                       </span>
                     )}
                   </div>
                   {!impersonatingTenantSlug && (
-                    <span className="text-xs truncate w-full text-center" style={{ color: "#666" }}>
+                    <span className="text-xs truncate w-full text-center" style={{ color: sidebarCaptionColor }}>
                       {isClientUser ? (activeWorkspaceName ?? displayLabel) : displayLabel}
                     </span>
                   )}
                 </button>
               </PopoverTrigger>
 
-              <PopoverContent align="start" side="right" className="w-72 p-2 border-zinc-800 bg-zinc-950 text-zinc-100">
-                <div className="px-2 py-1.5 text-xs uppercase tracking-wide text-zinc-500">Switch workspace</div>
+              <PopoverContent
+                align="start"
+                side="right"
+                className={cn(
+                  "w-72 p-2",
+                  isDark ? "border-zinc-800 bg-zinc-950 text-zinc-100" : "border-border bg-popover text-popover-foreground"
+                )}
+              >
+                <div className={cn("px-2 py-1.5 text-xs uppercase tracking-wide", isDark ? "text-zinc-500" : "text-muted-foreground")}>Switch workspace</div>
                 <div className="max-h-72 overflow-y-auto space-y-1">
                   {workspaceOptions.map((w) => {
                     const active = w.slug === activeWorkspaceSlug;
@@ -594,17 +628,19 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                         onClick={() => void handleWorkspaceSwitch(w.slug)}
                         className={cn(
                           "w-full flex items-center gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                          active ? "bg-teal-500/15 text-teal-300" : "hover:bg-zinc-900 text-zinc-200",
+                          active
+                            ? (isDark ? "bg-teal-500/15 text-teal-300" : "bg-primary/10 text-primary")
+                            : (isDark ? "hover:bg-zinc-900 text-zinc-200" : "hover:bg-accent text-foreground"),
                         )}
                       >
-                        <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center text-[10px] font-semibold text-zinc-300">
+                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold", isDark ? "bg-zinc-800 text-zinc-300" : "bg-muted text-muted-foreground")}>
                           {workspaceInitials(w.companyName)}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-medium">{w.companyName}</div>
-                          <div className="truncate text-xs text-zinc-500">{w.slug}</div>
+                          <div className={cn("truncate text-xs", isDark ? "text-zinc-500" : "text-muted-foreground")}>{w.slug}</div>
                         </div>
-                        {active ? <Check size={14} className="text-teal-300" /> : null}
+                        {active ? <Check size={14} className={cn(isDark ? "text-teal-300" : "text-primary")} /> : null}
                       </button>
                     );
                   })}
@@ -621,7 +657,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 />
               </div>
               {!impersonatingTenantSlug && (
-                <span className="text-xs truncate w-full text-center" style={{ color: "#666" }}>
+                <span className="text-xs truncate w-full text-center" style={{ color: sidebarCaptionColor }}>
                   {isClientUser ? (activeWorkspaceName ?? displayLabel) : displayLabel}
                 </span>
               )}
@@ -633,14 +669,20 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
         {/* Impersonation banner */}
         {impersonatingTenantSlug && (
-          <div className="mx-3 mt-2 px-2 py-1.5 rounded" style={{ backgroundColor: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
-            <p className="text-xs font-medium leading-tight" style={{ color: "#f59e0b" }}>Viewing as client</p>
+          <div
+            className="mx-3 mt-2 px-2 py-1.5 rounded"
+            style={{
+              backgroundColor: isDark ? "rgba(245,158,11,0.1)" : "color-mix(in oklab, var(--chart-5) 16%, transparent)",
+              border: isDark ? "1px solid rgba(245,158,11,0.2)" : "1px solid color-mix(in oklab, var(--chart-5) 35%, var(--border))",
+            }}
+          >
+            <p className="text-xs font-medium leading-tight" style={{ color: isDark ? "#f59e0b" : "color-mix(in oklab, var(--chart-5) 75%, var(--foreground))" }}>Viewing as client</p>
             <button
               onClick={() => {
                 void handleExitViewClick();
               }}
               className="text-xs underline mt-0.5 hover:opacity-80 transition-opacity"
-              style={{ color: "rgba(245,158,11,0.7)" }}
+              style={{ color: isDark ? "rgba(245,158,11,0.7)" : "color-mix(in oklab, var(--chart-5) 60%, var(--foreground))" }}
             >
               Exit view
             </button>
@@ -660,36 +702,40 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 ? isClientMeetingActive
                 : (location === item.href || (item.href !== "/portal" && item.href.length > 6 && location.startsWith(item.href)));
 
+            const clientComingSoon = isActualClientLogin && (item.id === "clients" || item.id === "sales_tracker");
+            const isDisabled = !!item.disabled || clientComingSoon;
+            const disabledLabel = isDisabled ? (item.disabledLabel ?? "Coming soon") : undefined;
+
             const navRow = (
               <div
                 className={cn(
                   "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-all duration-150",
-                  item.disabled
+                  isDisabled
                     ? "opacity-45 cursor-not-allowed"
                     : isActive
                       ? "font-medium"
                       : "hover:opacity-80"
                 )}
-                style={item.disabled
-                  ? { color: "#666", backgroundColor: "transparent" }
+                style={isDisabled
+                  ? { color: navDisabledColor, backgroundColor: "transparent" }
                   : isActive
-                    ? { color: "#00d4aa", backgroundColor: "rgba(0,212,170,0.08)" }
-                    : { color: "#888" }
+                    ? { color: navActiveColor, backgroundColor: navActiveBackground }
+                    : { color: navDefaultColor }
                 }
-                aria-disabled={item.disabled ? "true" : undefined}
-                title={item.disabledLabel || undefined}
+                aria-disabled={isDisabled ? "true" : undefined}
+                title={disabledLabel || undefined}
               >
                 <span className="shrink-0">{item.icon}</span>
                 <span className="truncate">{item.label}</span>
-                {item.disabledLabel ? (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-zinc-500">{item.disabledLabel}</span>
+                {disabledLabel ? (
+                  <span className={cn("ml-auto text-[10px] uppercase tracking-wide", isDark ? "text-zinc-500" : "text-muted-foreground")}>{disabledLabel}</span>
                 ) : isActive ? (
-                  <span className="ml-auto shrink-0 w-1 h-1 rounded-full" style={{ backgroundColor: "#00d4aa" }} />
+                  <span className="ml-auto shrink-0 w-1 h-1 rounded-full" style={{ backgroundColor: navDotColor }} />
                 ) : null}
               </div>
             );
 
-            if (item.disabled) {
+            if (isDisabled) {
               return <div key={item.id}>{navRow}</div>;
             }
 
@@ -702,17 +748,17 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
         </nav>
 
         {/* User section */}
-        <div className="border-t p-3" style={{ borderColor: "#1f1f1f" }}>
+        <div className="border-t p-3" style={{ borderColor: sidebarBorderColor }}>
           <div className="flex items-center gap-2 mb-2.5">
             <div
               className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs font-semibold"
-              style={{ backgroundColor: "rgba(0,212,170,0.15)", color: "#00d4aa" }}
+              style={{ backgroundColor: avatarBg, color: avatarColor }}
             >
               {initials}
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-medium truncate leading-tight" style={{ color: "#e5e5e5" }}>{user?.name ?? "—"}</p>
-              <p className="text-xs truncate leading-tight" style={{ color: "#555" }}>{user?.email ?? ""}</p>
+              <p className="text-xs font-medium truncate leading-tight" style={{ color: accountNameColor }}>{sidebarDisplayName}</p>
+              <p className="text-xs truncate leading-tight" style={{ color: accountMetaColor }}>{user?.email ?? ""}</p>
             </div>
           </div>
           {/* Change Password — only for client users (not admins, not impersonating) */}
@@ -720,7 +766,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
             <button
               onClick={() => setChangePasswordOpen(true)}
               className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80 mb-1.5"
-              style={{ color: "#555" }}
+              style={{ color: accountMetaColor }}
             >
               <KeyRound size={12} />
               <span>Change Password</span>
@@ -740,7 +786,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               await logout();
             }}
             className="flex items-center gap-1.5 text-xs transition-colors w-full hover:opacity-80"
-            style={{ color: "#555" }}
+            style={{ color: accountMetaColor }}
           >
             <LogOut size={12} />
             <span>Sign Out</span>
@@ -754,7 +800,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           showCloseButton={false}
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
-          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+          className={cn("max-w-md text-foreground", isDark ? "border-white/15 bg-[#111111]" : "border-border bg-card")}
         >
           <DialogHeader>
             <DialogTitle>Stop timer and exit client view?</DialogTitle>
@@ -770,7 +816,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 setExitViewConfirmOpen(false);
                 setPendingExitTimerEntryId(null);
               }}
-              className="inline-flex h-9 items-center justify-center rounded-md border border-white/15 bg-white/[0.02] px-3 text-sm hover:bg-white/[0.05]"
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm",
+                isDark ? "border-white/15 bg-white/[0.02] hover:bg-white/[0.05]" : "border-border bg-background hover:bg-accent"
+              )}
             >
               Cancel
             </button>
@@ -778,7 +827,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               type="button"
               disabled={exitViewLoading}
               onClick={() => void handleConfirmStopTimerAndExit()}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-teal-500 px-3 text-sm text-black hover:bg-teal-400 disabled:opacity-60"
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm disabled:opacity-60",
+                isDark ? "bg-teal-500 text-black hover:bg-teal-400" : "bg-primary text-primary-foreground hover:bg-primary/90"
+              )}
             >
               {exitViewLoading ? "Stopping..." : "Stop Timer & Exit"}
             </button>
@@ -792,7 +844,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           showCloseButton={false}
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
-          className="max-w-md border-white/15 bg-[#111111] text-foreground"
+          className={cn("max-w-md text-foreground", isDark ? "border-white/15 bg-[#111111]" : "border-border bg-card")}
         >
           <DialogHeader>
             <DialogTitle>Switch workspace and stop timer?</DialogTitle>
@@ -811,7 +863,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 setPendingSwitchTargetName(null);
                 setPendingSwitchTimerEntryId(null);
               }}
-              className="inline-flex h-9 items-center justify-center rounded-md border border-white/15 bg-white/[0.02] px-3 text-sm hover:bg-white/[0.05]"
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm",
+                isDark ? "border-white/15 bg-white/[0.02] hover:bg-white/[0.05]" : "border-border bg-background hover:bg-accent"
+              )}
             >
               Cancel
             </button>
@@ -819,7 +874,10 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               type="button"
               disabled={switchTimerLoading}
               onClick={() => void handleConfirmStopTimerAndSwitch()}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-teal-500 px-3 text-sm text-black hover:bg-teal-400 disabled:opacity-60"
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-md px-3 text-sm disabled:opacity-60",
+                isDark ? "bg-teal-500 text-black hover:bg-teal-400" : "bg-primary text-primary-foreground hover:bg-primary/90"
+              )}
             >
               {switchTimerLoading ? "Stopping..." : "Stop Timer & Switch"}
             </button>
@@ -834,7 +892,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
       />
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "#0a0a0a" }}>
+      <main className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: shellBackgroundColor }}>
         <div className="flex-1 overflow-y-auto">
           {children}
         </div>

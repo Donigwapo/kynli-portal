@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowDownRight, ArrowUpRight, Minus, Target } from "lucide-react";
 import { useState } from "react";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   CartesianGrid,
   Legend,
@@ -17,15 +18,21 @@ import { trpc } from "../../lib/trpc";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-function TrendIcon({ current, previous, lowerIsBetter = false }: { current: number; previous: number; lowerIsBetter?: boolean }) {
+function TrendIcon({ current, previous, lowerIsBetter = false, isDark }: { current: number; previous: number; lowerIsBetter?: boolean; isDark: boolean }) {
   if (current === previous) return <Minus size={14} className="text-muted-foreground" />;
   const improved = lowerIsBetter ? current < previous : current > previous;
   return improved
-    ? <ArrowUpRight size={14} className="text-emerald-400" />
-    : <ArrowDownRight size={14} className="text-red-400" />;
+    ? <ArrowUpRight size={14} className={isDark ? "text-emerald-400" : "text-emerald-700"} />
+    : <ArrowDownRight size={14} className={isDark ? "text-red-400" : "text-red-700"} />;
 }
 
 export default function KpiDashboard() {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const chartGrid = isDark ? "oklch(0.25 0.01 220)" : "var(--border)";
+  const chartTick = isDark ? "oklch(0.60 0.01 220)" : "var(--muted-foreground)";
+  const chartTooltipBg = isDark ? "oklch(0.16 0.01 220)" : "var(--card)";
+  const chartTooltipBorder = isDark ? "1px solid oklch(0.25 0.01 220)" : "1px solid var(--border)";
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const { impersonatingTenantSlug } = usePortal();
@@ -90,6 +97,7 @@ export default function KpiDashboard() {
                     current={latest.cac ?? 0}
                     previous={prev.cac ?? 0}
                     lowerIsBetter
+                    isDark={isDark}
                   />
                   <span className="text-xs text-muted-foreground">vs last month</span>
                 </div>
@@ -111,6 +119,7 @@ export default function KpiDashboard() {
                     current={latest.churn_rate ?? 0}
                     previous={prev.churn_rate ?? 0}
                     lowerIsBetter
+                    isDark={isDark}
                   />
                   <span className="text-xs text-muted-foreground">vs last month</span>
                 </div>
@@ -131,6 +140,7 @@ export default function KpiDashboard() {
                   <TrendIcon
                     current={latest.ltv ?? 0}
                     previous={prev.ltv ?? 0}
+                    isDark={isDark}
                   />
                   <span className="text-xs text-muted-foreground">vs last month</span>
                 </div>
@@ -154,14 +164,14 @@ export default function KpiDashboard() {
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.01 220)" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.60 0.01 220)" }} />
-                <YAxis tick={{ fontSize: 11, fill: "oklch(0.60 0.01 220)" }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: chartTick }} />
+                <YAxis tick={{ fontSize: 11, fill: chartTick }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                 <Tooltip
-                  contentStyle={{ background: "oklch(0.16 0.01 220)", border: "1px solid oklch(0.25 0.01 220)", borderRadius: "8px", fontSize: 12 }}
+                  contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: "8px", fontSize: 12 }}
                   formatter={(v: number) => [`$${v.toLocaleString()}`, undefined]}
                 />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: chartTick }} />
                 <Line type="monotone" dataKey="LTV" stroke="oklch(0.72 0.14 195)" strokeWidth={2} dot={{ r: 3 }} connectNulls />
                 <Line type="monotone" dataKey="CAC" stroke="oklch(0.60 0.22 25)" strokeWidth={2} dot={{ r: 3 }} connectNulls />
               </LineChart>
@@ -181,11 +191,11 @@ export default function KpiDashboard() {
           ) : (
             <ResponsiveContainer width="100%" height={180}>
               <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.25 0.01 220)" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "oklch(0.60 0.01 220)" }} />
-                <YAxis tick={{ fontSize: 11, fill: "oklch(0.60 0.01 220)" }} tickFormatter={(v) => `${v}%`} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: chartTick }} />
+                <YAxis tick={{ fontSize: 11, fill: chartTick }} tickFormatter={(v) => `${v}%`} />
                 <Tooltip
-                  contentStyle={{ background: "oklch(0.16 0.01 220)", border: "1px solid oklch(0.25 0.01 220)", borderRadius: "8px", fontSize: 12 }}
+                  contentStyle={{ background: chartTooltipBg, border: chartTooltipBorder, borderRadius: "8px", fontSize: 12 }}
                   formatter={(v: number) => [`${v}%`, undefined]}
                 />
                 <Line type="monotone" dataKey="Churn %" stroke="oklch(0.65 0.20 310)" strokeWidth={2} dot={{ r: 3 }} connectNulls />

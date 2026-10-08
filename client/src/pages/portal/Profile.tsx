@@ -6,9 +6,11 @@ import {
   requestNotificationPermission,
 } from "@/lib/firebase";
 import { PACKAGE_LABELS } from "@shared/tiers";
-import { AlertCircle, Bell, Building2, CheckCircle2, Loader2, User } from "lucide-react";
+import { AlertCircle, Bell, Building2, CheckCircle2, Loader2, Moon, Sun, User } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useTheme } from "@/contexts/ThemeContext";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -22,6 +24,7 @@ function Field({ label, value }: { label: string; value: string }) {
 export default function Profile() {
   const { impersonatingTenantSlug } = usePortal();
   const [isEnablingNotifications, setIsEnablingNotifications] = useState(false);
+  const { theme, setTheme } = useTheme();
 
   const utils = trpc.useUtils();
   const registerPushToken = trpc.notifications.registerPushToken.useMutation();
@@ -126,11 +129,11 @@ export default function Profile() {
   if (error) {
     return (
       <div className="p-6">
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300 flex items-start gap-2">
+        <div className="rounded-xl border border-red-500/40 dark:border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
           <AlertCircle size={16} className="mt-0.5" />
           <div>
             <p className="font-medium">Unable to load profile</p>
-            <p className="text-red-200/90 mt-1">{error.message}</p>
+            <p className="text-red-700/90 dark:text-red-200/90 mt-1">{error.message}</p>
           </div>
         </div>
       </div>
@@ -162,7 +165,7 @@ export default function Profile() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <CheckCircle2 size={14} className={tenant.invite_accepted ? "text-emerald-400" : "text-amber-400"} />
+                  <CheckCircle2 size={14} className={tenant.invite_accepted ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"} />
                   Invite status: <span className="text-foreground font-medium">{inviteAccepted}</span>
                 </div>
               </div>
@@ -205,6 +208,40 @@ export default function Profile() {
         Signed in as <span className="text-foreground font-medium">{authUser?.email ?? "Unknown user"}</span>
       </div>
 
+      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">Appearance</h2>
+          <p className="text-xs text-muted-foreground">Customize how the portal looks and feels.</p>
+        </div>
+
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">Theme</p>
+            <p className="text-xs text-muted-foreground">Choose your preferred color theme for the portal.</p>
+          </div>
+
+          <ToggleGroup
+            type="single"
+            value={theme}
+            onValueChange={(value) => {
+              if (value === "light" || value === "dark") setTheme(value);
+            }}
+            variant="outline"
+            className="border border-border rounded-lg bg-background p-0.5"
+            aria-label="Theme selection"
+          >
+            <ToggleGroupItem value="light" className="gap-1.5 px-3 data-[state=on]:bg-primary/10 data-[state=on]:text-primary">
+              <Sun size={14} />
+              <span>Light</span>
+            </ToggleGroupItem>
+            <ToggleGroupItem value="dark" className="gap-1.5 px-3 data-[state=on]:bg-primary/10 data-[state=on]:text-primary">
+              <Moon size={14} />
+              <span>Dark</span>
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-3">
         <div className="flex items-center gap-2 text-sm text-foreground font-medium">
           <Bell size={16} />
@@ -214,12 +251,12 @@ export default function Profile() {
           Permission: <span className="text-foreground font-medium">{permissionState}</span>
         </p>
         {!permissionDiagnostics.secureContext && (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <div className="rounded-md border border-amber-500/40 dark:border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
             Notifications require HTTPS in production. For local development, use <span className="font-semibold">localhost</span>.
           </div>
         )}
         {permissionState === "denied" && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+          <div className="rounded-md border border-red-500/40 dark:border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-200">
             Notifications are currently blocked by your browser. In Chrome: click the lock icon → Site settings → Notifications → Allow, then refresh.
           </div>
         )}

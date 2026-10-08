@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { usePortal } from "@/contexts/PortalContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
@@ -27,6 +28,11 @@ type EditState = {
 
 export default function SalesTracker() {
   const now = new Date();
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const chartTick = isDark ? MUTED_FG : "var(--muted-foreground)";
+  const chartLegendColor = isDark ? MUTED_FG : "var(--muted-foreground)";
+  const rowValueMuted = isDark ? MUTED_FG : "var(--muted-foreground)";
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1; // 1-based
   const [year, setYear] = useState(currentYear);
@@ -214,13 +220,13 @@ export default function SalesTracker() {
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: MUTED_FG, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <XAxis dataKey="month" tick={{ fill: chartTick, fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: chartTick, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
               <Tooltip
                 contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
                 labelStyle={{ color: "var(--foreground)" }}
               />
-              <Legend wrapperStyle={{ fontSize: 11, color: MUTED_FG }} />
+              <Legend wrapperStyle={{ fontSize: 11, color: chartLegendColor }} />
               <Bar dataKey="Signed" fill={TEAL} radius={[3, 3, 0, 0]} />
               <Bar dataKey="Target" fill={GREEN} radius={[3, 3, 0, 0]} />
               <Bar dataKey="Referrals" fill={AMBER} radius={[3, 3, 0, 0]} />
@@ -307,7 +313,7 @@ export default function SalesTracker() {
                         ) : (
                           <span
                             className={`font-bold ${rowMuted ? "" : ""}`}
-                            style={{ color: rowMuted ? MUTED_FG : (row.signed_clients > 0 ? TEAL : MUTED_FG) }}
+                            style={{ color: rowMuted ? rowValueMuted : (row.signed_clients > 0 ? TEAL : rowValueMuted) }}
                           >
                             {row.signed_clients}
                           </span>
@@ -325,7 +331,7 @@ export default function SalesTracker() {
                             className="w-16 bg-background border border-border rounded px-2 py-0.5 text-sm text-right text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                           />
                         ) : (
-                          <span style={{ color: rowMuted ? MUTED_FG : (row.referral_count > 0 ? GREEN : MUTED_FG) }}>
+                          <span style={{ color: rowMuted ? rowValueMuted : (row.referral_count > 0 ? GREEN : rowValueMuted) }}>
                             {row.referral_count}
                           </span>
                         )}
@@ -342,7 +348,7 @@ export default function SalesTracker() {
                             className="w-16 bg-background border border-border rounded px-2 py-0.5 text-sm text-right text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                           />
                         ) : (
-                          <span style={{ color: rowMuted ? MUTED_FG : (row.outbound_count > 0 ? AMBER : MUTED_FG) }}>
+                          <span style={{ color: rowMuted ? rowValueMuted : (row.outbound_count > 0 ? AMBER : rowValueMuted) }}>
                             {row.outbound_count}
                           </span>
                         )}
@@ -360,7 +366,7 @@ export default function SalesTracker() {
                             <button
                               onClick={() => saveEdit(row.month)}
                               disabled={upsertMutation.isPending}
-                              className="p-1 rounded hover:bg-muted/30 text-green-400 disabled:opacity-50"
+                              className="p-1 rounded hover:bg-muted/30 text-green-700 dark:text-green-400 disabled:opacity-50"
                               title="Save"
                             >
                               <Check size={14} />

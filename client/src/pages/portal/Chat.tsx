@@ -222,7 +222,7 @@ function MessageBubble({
             </Badge>
           )}
           {isInternalNote && (
-            <Badge variant="outline" className="text-[10px] px-1 py-0 border-amber-400/35 bg-amber-500/10 text-amber-300">
+            <Badge variant="outline" className="text-[10px] px-1 py-0 border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-300">
               Internal Note
             </Badge>
           )}
@@ -237,8 +237,8 @@ function MessageBubble({
             highlighted ? "ring-2 ring-cyan-400/70 ring-offset-1 ring-offset-background" : ""
           }
             ${isMine
-              ? (isInternalNote ? "bg-amber-500/20 text-amber-100 border border-amber-400/35 rounded-tr-sm" : "bg-primary text-primary-foreground rounded-tr-sm")
-              : (isInternalNote ? "bg-amber-500/10 border border-amber-400/30 text-amber-100 rounded-tl-sm" : "bg-card border border-border text-foreground rounded-tl-sm")
+              ? (isInternalNote ? "bg-amber-500/20 text-amber-900 dark:text-amber-100 border border-amber-400/35 rounded-tr-sm" : "bg-primary text-primary-foreground rounded-tr-sm")
+              : (isInternalNote ? "bg-amber-500/10 border border-amber-400/30 text-amber-900 dark:text-amber-100 rounded-tl-sm" : "bg-card border border-border text-foreground rounded-tl-sm")
             }`}
         >
           {(msg.replyToMessageId || msg.replyToSenderName || msg.replyToMessagePreview) && (
@@ -267,8 +267,8 @@ function MessageBubble({
               <div
                 className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] ${
                   msg.localStatus === "sending"
-                    ? "border-blue-400/30 bg-blue-500/10 text-blue-200"
-                    : "border-red-400/30 bg-red-500/10 text-red-200"
+                    ? "border-blue-400/30 bg-blue-500/10 text-blue-700 dark:text-blue-200"
+                    : "border-red-400/30 bg-red-500/10 text-red-700 dark:text-red-200"
                 }`}
               >
                 {msg.localStatus === "sending" ? (
@@ -342,7 +342,7 @@ function MessageBubble({
               onClick={() => onOpenThread?.(msg)}
               className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
                 threadActive
-                  ? "bg-cyan-500/15 text-cyan-300 border border-cyan-400/30"
+                  ? "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-400/30"
                   : "bg-muted/40 text-primary hover:bg-muted/60 border border-border"
               }`}
             >
@@ -600,7 +600,7 @@ function ComposeBar({
           </div>
           <div className="space-y-1 max-h-40 overflow-auto pr-1">
             {attachments.map((item, idx) => (
-              <div key={item.id} className="rounded-md bg-zinc-900/70 border border-zinc-800 px-2 py-1.5">
+              <div key={item.id} className="rounded-md bg-muted/35 dark:bg-zinc-900/70 border border-border dark:border-zinc-800 px-2 py-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     {fileIcon(item.file.type)}
@@ -1920,19 +1920,19 @@ export default function Chat() {
                 <h2 className="text-base font-semibold text-foreground truncate">Workspace Chat</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">Workspace: {activeConversation?.title?.replace(/\s+Workspace Chat$/, "") || activeConversation?.title || "Workspace"}</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-400/30 bg-amber-500/10 text-amber-300">Viewing as Client</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-zinc-700 bg-zinc-900/60 text-zinc-300">You are: {user?.name || user?.email || "Team Member"}{user?.role ? ` (${roleLabel(user.role)})` : ""}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-400/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">Viewing as Client</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-border dark:border-zinc-700 bg-muted/35 dark:bg-zinc-900/60 text-foreground/80 dark:text-zinc-300">You are: {user?.name || user?.email || "Team Member"}{user?.role ? ` (${roleLabel(user.role)})` : ""}</span>
                 </div>
-                <div className="mt-3 inline-flex items-center rounded-lg border border-zinc-700 bg-zinc-900/70 p-0.5">
+                <div className="mt-3 inline-flex items-center rounded-lg border border-border dark:border-zinc-700 bg-muted/25 dark:bg-zinc-900/70 p-0.5">
                   <button
                     onClick={() => setWorkspaceChatTab("workspace_public")}
-                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "workspace_public" ? "bg-primary/20 text-primary border border-primary/30" : "text-zinc-400 hover:text-zinc-200"}`}
+                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "workspace_public" ? "bg-primary/20 text-primary border border-primary/30" : "text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-200"}`}
                   >
                     Client Conversation
                   </button>
                   <button
                     onClick={() => setWorkspaceChatTab("staff_only")}
-                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "staff_only" ? "bg-amber-500/15 text-amber-300 border border-amber-400/30" : "text-zinc-400 hover:text-zinc-200"}`}
+                    className={`px-2 py-1 text-[11px] rounded-md transition ${chatVisibilityScope === "staff_only" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-400/30" : "text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-200"}`}
                   >
                     Internal Notes 🔒
                   </button>
@@ -2075,7 +2075,7 @@ export default function Chat() {
       )}
 
       {isWorkspaceChatMode && !threadMsg && (
-        <aside className="w-[30%] min-w-[280px] max-w-[380px] border-l border-border bg-[#0f1012] p-4 overflow-y-auto">
+        <aside className="w-[30%] min-w-[280px] max-w-[380px] border-l border-border bg-muted/20 dark:bg-[#0f1012] p-4 overflow-y-auto">
           <h3 className="text-sm font-semibold text-foreground">Workspace Members</h3>
           <p className="text-[11px] text-muted-foreground mt-1">People participating in this workspace conversation</p>
 
@@ -2091,15 +2091,15 @@ export default function Chat() {
                     <PopoverTrigger asChild>
                       <button
                         type="button"
-                        className="w-full text-left rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 hover:border-zinc-700 hover:bg-zinc-900/80 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        className="w-full text-left rounded-lg border border-border dark:border-zinc-800 bg-muted/35 dark:bg-zinc-900/60 px-3 py-2.5 hover:border-muted-foreground/40 dark:hover:border-zinc-700 hover:bg-muted/50 dark:hover:bg-zinc-900/80 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                       >
                         <div className="flex items-start gap-2">
-                          <div className="w-7 h-7 rounded-full border border-zinc-700 bg-zinc-800 text-[10px] font-semibold text-zinc-200 flex items-center justify-center">
+                          <div className="w-7 h-7 rounded-full border border-border dark:border-zinc-700 bg-muted dark:bg-zinc-800 text-[10px] font-semibold text-foreground dark:text-zinc-200 flex items-center justify-center">
                             {(m.initials || m.displayName?.charAt(0) || "?").toUpperCase()}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
-                            <p className="text-[11px] text-zinc-400">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
+                            <p className="text-xs font-medium text-foreground dark:text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
+                            <p className="text-[11px] text-muted-foreground dark:text-zinc-400">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
                           </div>
                           {m.isOnline ? (
                             <span
@@ -2112,11 +2112,11 @@ export default function Chat() {
                         </div>
                       </button>
                     </PopoverTrigger>
-                    <PopoverContent align="end" className="w-64 border-zinc-800 bg-[#121316] text-zinc-100">
+                    <PopoverContent align="end" className="w-64 border-border dark:border-zinc-800 bg-popover dark:bg-[#121316] text-popover-foreground dark:text-zinc-100">
                       <div className="space-y-3">
                         <div>
-                          <p className="text-sm font-semibold text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
-                          <p className="text-xs text-zinc-400 mt-0.5">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
+                          <p className="text-sm font-semibold text-foreground dark:text-zinc-100 truncate">{m.displayName}{isMe ? " (You)" : ""}</p>
+                          <p className="text-xs text-muted-foreground dark:text-zinc-400 mt-0.5">{m.role ? roleLabel(m.role) : "Workspace Member"}</p>
                         </div>
                         <Button
                           type="button"
@@ -2144,14 +2144,14 @@ export default function Chat() {
 
   const floatingDmWindow = isWorkspaceChatMode && resolvedFloatingDm ? (
     <div className="fixed bottom-4 right-4 z-[70] w-[360px] max-w-[calc(100vw-2rem)]">
-      <div className="rounded-xl border border-zinc-700/80 bg-[#111215] shadow-[0_14px_40px_rgba(0,0,0,0.55)] overflow-hidden">
-        <div className="px-3 py-2.5 border-b border-zinc-800 bg-zinc-950/80 flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full border border-zinc-700 bg-zinc-800 text-[11px] font-semibold text-zinc-100 flex items-center justify-center">
+      <div className="rounded-xl border border-border dark:border-zinc-700/80 bg-popover dark:bg-[#111215] shadow-[0_14px_40px_rgba(0,0,0,0.55)] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-border dark:border-zinc-800 bg-muted/30 dark:bg-zinc-950/80 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full border border-border dark:border-zinc-700 bg-muted dark:bg-zinc-800 text-[11px] font-semibold text-foreground dark:text-zinc-100 flex items-center justify-center">
             {(floatingMemberResolved?.initials || resolvedFloatingDm.title?.charAt(0) || "?").toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-zinc-100 truncate">{resolvedFloatingDm.title}</p>
-            <p className="text-[11px] text-zinc-400 truncate flex items-center gap-1.5">
+            <p className="text-sm font-semibold text-foreground dark:text-zinc-100 truncate">{resolvedFloatingDm.title}</p>
+            <p className="text-[11px] text-muted-foreground dark:text-zinc-400 truncate flex items-center gap-1.5">
               {floatingMemberResolved?.role ? roleLabel(floatingMemberResolved.role) : "Member"}
               {floatingMemberResolved?.isOnline ? (
                 <span
@@ -2165,7 +2165,7 @@ export default function Chat() {
           </div>
           <button
             type="button"
-            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70"
+            className="p-1 rounded-md text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-100 hover:bg-muted dark:hover:bg-zinc-800/70"
             onClick={() => setIsFloatingDmMinimized((v) => !v)}
             title={isFloatingDmMinimized ? "Expand" : "Minimize"}
           >
@@ -2173,7 +2173,7 @@ export default function Chat() {
           </button>
           <button
             type="button"
-            className="p-1 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/70"
+            className="p-1 rounded-md text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-100 hover:bg-muted dark:hover:bg-zinc-800/70"
             onClick={() => {
               setFloatingDm(null);
               setFloatingMember(null);
@@ -2189,10 +2189,10 @@ export default function Chat() {
 
         {isFloatingDmMinimized ? null : (
           <>
-            <div className="h-[360px] overflow-y-auto px-3 py-3 space-y-1 bg-zinc-950/30">
+            <div className="h-[360px] overflow-y-auto px-3 py-3 space-y-1 bg-muted/25 dark:bg-zinc-950/30">
               {floatingMessages.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-center px-4">
-                  <p className="text-xs text-zinc-400">This is the beginning of your direct conversation.</p>
+                  <p className="text-xs text-muted-foreground dark:text-zinc-400">This is the beginning of your direct conversation.</p>
                 </div>
               ) : (
                 floatingMessages.map((msg) => {
@@ -2218,7 +2218,7 @@ export default function Chat() {
                 })
               )}
             </div>
-            <div className="border-t border-zinc-800 px-3 pb-3 pt-2 bg-zinc-950/70">
+            <div className="border-t border-border dark:border-zinc-800 px-3 pb-3 pt-2 bg-muted/25 dark:bg-zinc-950/70">
               <ComposeBar
                 onSend={handleFloatingSend}
                 onSendFiles={handleFloatingSendFiles}
@@ -2236,7 +2236,7 @@ export default function Chat() {
   ) : null;
 
   const conversationSidebar = (
-    <aside className="border-r border-border bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
+    <aside className="border-r border-border bg-muted/20 dark:bg-[#0f1012] flex flex-col min-h-0 overflow-y-auto">
       <div className="px-4 py-4 border-b border-border/80">
         <h1 className="text-sm font-semibold tracking-wide text-foreground">
           {user?.role === "client" ? "Assigned Accountants" : "Client Conversations"}
@@ -2314,16 +2314,16 @@ export default function Chat() {
               }
             }}
             placeholder={unifiedSearchEnabled ? "Search messages or @people..." : "Search messages..."}
-            className="pl-8 h-8 text-xs bg-zinc-900/70 border-zinc-800"
+            className="pl-8 h-8 text-xs bg-background dark:bg-zinc-900/70 border-border dark:border-zinc-800"
           />
           {unifiedSearchEnabled && cmdOpen && (
-            <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-cyan-400/20 bg-zinc-900/80 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
+            <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 rounded-xl border border-cyan-400/20 bg-popover dark:bg-zinc-900/80 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150">
               <div className="px-2 pt-2 pb-1 flex items-center gap-1">
                 {(["all","people","messages","files"] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => { setCmdTab(tab); setCmdIndex(0); }}
-                    className={"text-[10px] uppercase tracking-wide rounded-md px-2 py-1 transition " + (cmdTab===tab ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/20" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/70")}
+                    className={"text-[10px] uppercase tracking-wide rounded-md px-2 py-1 transition " + (cmdTab===tab ? "bg-cyan-500/20 text-cyan-700 dark:text-cyan-200 border border-cyan-400/20" : "text-muted-foreground dark:text-zinc-400 hover:text-foreground dark:hover:text-zinc-200 hover:bg-muted dark:hover:bg-zinc-800/70")}
                   >
                     {tab}
                   </button>
@@ -2361,24 +2361,24 @@ export default function Chat() {
                         setSearchQuery("");
                         setCmdOpen(false);
                       }}
-                      className={"w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 transition " + (active ? "bg-cyan-500/15 border border-cyan-400/25" : "hover:bg-zinc-800/80 border border-transparent")}
+                      className={"w-full text-left rounded-lg px-2.5 py-2 flex items-center gap-2 transition " + (active ? "bg-cyan-500/15 border border-cyan-400/25" : "hover:bg-muted dark:hover:bg-zinc-800/80 border border-transparent")}
                     >
-                      <div className="w-7 h-7 rounded-full bg-zinc-800 text-zinc-200 text-xs font-semibold flex items-center justify-center">{(u.initials || u.displayName?.charAt(0) || "?").toUpperCase()}</div>
+                      <div className="w-7 h-7 rounded-full bg-muted dark:bg-zinc-800 text-foreground dark:text-zinc-200 text-xs font-semibold flex items-center justify-center">{(u.initials || u.displayName?.charAt(0) || "?").toUpperCase()}</div>
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs text-zinc-100 truncate">{u.displayName}</div>
-                        <div className="text-[11px] text-zinc-400 truncate">@{String((u.displayName||"").toLowerCase().replace(/\s+/g,'.'))}</div>
+                        <div className="text-xs text-foreground dark:text-zinc-100 truncate">{u.displayName}</div>
+                        <div className="text-[11px] text-muted-foreground dark:text-zinc-400 truncate">@{String((u.displayName||"").toLowerCase().replace(/\s+/g,'.'))}</div>
                       </div>
                       <span className="w-2 h-2 rounded-full bg-emerald-400/70" />
                     </button>
                   );
                 })}
                 {(cmdTab === "all" || cmdTab === "people") && (peopleSearchResults as any[]).length === 0 && (
-                  <div className="px-3 py-3 text-xs text-zinc-400">No people found</div>
+                  <div className="px-3 py-3 text-xs text-muted-foreground dark:text-zinc-400">No people found</div>
                 )}
               </div>
-              <button className="w-full px-3 py-2 border-t border-zinc-800 text-left hover:bg-zinc-800/60 transition">
-                <div className="text-xs text-cyan-200">+ Start a new DM</div>
-                <div className="text-[11px] text-zinc-400">Message someone new</div>
+              <button className="w-full px-3 py-2 border-t border-border dark:border-zinc-800 text-left hover:bg-muted dark:hover:bg-zinc-800/60 transition">
+                <div className="text-xs text-cyan-700 dark:text-cyan-200">+ Start a new DM</div>
+                <div className="text-[11px] text-muted-foreground dark:text-zinc-400">Message someone new</div>
               </button>
             </div>
           )}
@@ -2388,7 +2388,7 @@ export default function Chat() {
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
         {groupedConversations.map(([group, items]) => (
           <div key={group}>
-            <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-zinc-500 font-semibold">{group}</div>
+            <div className="px-2 pb-1.5 text-[10px] tracking-[0.14em] uppercase text-muted-foreground dark:text-zinc-500 font-semibold">{group}</div>
             <div className="space-y-1">
               {items.map((conv) => {
                 const active = conv.key === selectedConversationKey;
@@ -2404,11 +2404,11 @@ export default function Chat() {
                       `w-full text-left rounded-xl border px-2.5 py-2 transition-all ` +
                       (active
                         ? "border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(45,212,191,0.15)]"
-                        : "border-transparent hover:border-zinc-700 hover:bg-zinc-900/60")
+                        : "border-transparent hover:border-muted-foreground/40 dark:hover:border-zinc-700 hover:bg-muted dark:hover:bg-zinc-900/60")
                     }
                   >
                     <div className="flex items-start gap-2.5">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-200" : "bg-zinc-800 text-zinc-300"}`}>
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-cyan-400/20 text-cyan-700 dark:text-cyan-200" : "bg-muted dark:bg-zinc-800 text-foreground/80 dark:text-zinc-300"}`}>
                         {(conv.title?.charAt(0) || "?").toUpperCase()}
                       </div>
                       <div className="min-w-0 flex-1">

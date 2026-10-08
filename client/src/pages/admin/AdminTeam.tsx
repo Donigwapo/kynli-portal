@@ -51,10 +51,10 @@ const ROLE_LABELS: Record<StaffRole, string> = {
 };
 
 const ROLE_COLORS: Record<StaffRole, string> = {
-  admin: "bg-red-500/20 text-red-400 border-red-500/30",
-  accounting_manager: "bg-teal-500/20 text-teal-400 border-teal-500/30",
-  tax_manager: "bg-purple-500/20 text-purple-400 border-purple-500/30",
-  accountant: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  admin: "bg-red-500/10 text-red-700 border-red-500/30 dark:bg-red-500/20 dark:text-red-400",
+  accounting_manager: "bg-teal-500/10 text-teal-700 border-teal-500/30 dark:bg-teal-500/20 dark:text-teal-400",
+  tax_manager: "bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/20 dark:text-purple-400",
+  accountant: "bg-blue-500/10 text-blue-700 border-blue-500/30 dark:bg-blue-500/20 dark:text-blue-400",
 };
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -150,17 +150,17 @@ export default function AdminTeam() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Users className="w-6 h-6 text-teal-400" />
+          <h1 className="text-2xl font-bold text-foreground dark:text-white flex items-center gap-2">
+            <Users className="w-6 h-6 text-primary dark:text-teal-400" />
             Team Members
           </h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-muted-foreground mt-1">
             Manage your team of {staff.length} advisor{staff.length !== 1 ? "s" : ""}
           </p>
         </div>
         <Button
           onClick={() => setInviteOpen(true)}
-          className="bg-teal-500 hover:bg-teal-600 text-black font-semibold"
+          className="bg-primary text-primary-foreground hover:bg-primary/90 dark:bg-teal-500 dark:hover:bg-teal-600 dark:text-black font-semibold"
         >
           <UserPlus className="w-4 h-4 mr-2" />
           Add Team Member
@@ -169,9 +169,9 @@ export default function AdminTeam() {
 
       {/* Staff List */}
       {isLoading ? (
-        <div className="text-gray-400 text-sm">Loading team members...</div>
+        <div className="text-muted-foreground text-sm">Loading team members...</div>
       ) : staff.length === 0 ? (
-        <div className="text-center py-16 text-gray-500">
+        <div className="text-center py-16 text-muted-foreground">
           <Users className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="text-lg font-medium">No team members yet</p>
           <p className="text-sm mt-1">Click "Add Team Member" to get started</p>
@@ -196,60 +196,60 @@ export default function AdminTeam() {
 
       {/* Invite Dialog */}
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-        <DialogContent className="bg-[#111] border-white/10 text-white max-w-md">
+        <DialogContent className="bg-card dark:bg-[#111] border-border dark:border-white/10 text-foreground dark:text-white max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <UserPlus className="w-5 h-5 text-teal-400" />
+            <DialogTitle className="text-foreground dark:text-white flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-primary dark:text-teal-400" />
               Add Team Member
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Full Name</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Full Name</label>
               <Input
                 value={inviteName}
                 onChange={(e) => setInviteName(e.target.value)}
                 placeholder="e.g. Sarah Johnson"
-                className="bg-white/5 border-white/10 text-white placeholder:text-gray-600"
+                className="bg-background dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-600"
               />
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Email Address</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Email Address</label>
               <Input
                 type="email"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="e.g. sarah@kynliconsulting.com"
-                className="bg-white/5 border-white/10 text-white placeholder:text-gray-600"
+                className="bg-background dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-600"
               />
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Role</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Role</label>
               <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as StaffRole)}>
-                <SelectTrigger className="bg-white/5 border-white/10 text-white">
+                <SelectTrigger className="bg-background dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-[#1a1a1a] border-white/10">
+                <SelectContent className="bg-popover dark:bg-[#1a1a1a] border-border dark:border-white/10">
                   {(Object.entries(ROLE_LABELS) as [StaffRole, string][]).map(([val, label]) => (
-                    <SelectItem key={val} value={val} className="text-white hover:bg-white/10">
+                    <SelectItem key={val} value={val} className="text-foreground dark:text-white hover:bg-muted dark:hover:bg-white/10">
                       {label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-muted-foreground">
               After adding, create a Supabase Auth account for this email and run the SQL to link their UID.
             </p>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setInviteOpen(false)} className="text-gray-400">
+            <Button variant="ghost" onClick={() => setInviteOpen(false)} className="text-muted-foreground">
               Cancel
             </Button>
             <Button
               onClick={handleInvite}
               disabled={!inviteEmail || !inviteName || inviteMutation.isPending}
-              className="bg-teal-500 hover:bg-teal-600 text-black font-semibold"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 dark:bg-teal-500 dark:hover:bg-teal-600 dark:text-black font-semibold"
             >
               {inviteMutation.isPending ? "Adding..." : "Add Member"}
             </Button>
@@ -259,31 +259,31 @@ export default function AdminTeam() {
 
       {/* Edit Dialog */}
       <Dialog open={!!editMember} onOpenChange={(o) => !o && setEditMember(null)}>
-        <DialogContent className="bg-[#111] border-white/10 text-white max-w-md">
+        <DialogContent className="bg-card dark:bg-[#111] border-border dark:border-white/10 text-foreground dark:text-white max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <Pencil className="w-5 h-5 text-teal-400" />
+            <DialogTitle className="text-foreground dark:text-white flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-primary dark:text-teal-400" />
               Edit Team Member
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Full Name</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Full Name</label>
               <Input
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="bg-white/5 border-white/10 text-white"
+                className="bg-background dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white"
               />
             </div>
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Role</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Role</label>
               <Select value={editRole} onValueChange={(v) => setEditRole(v as StaffRole)}>
-                <SelectTrigger className="bg-white/5 border-white/10 text-white">
+                <SelectTrigger className="bg-background dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-[#1a1a1a] border-white/10">
+                <SelectContent className="bg-popover dark:bg-[#1a1a1a] border-border dark:border-white/10">
                   {(Object.entries(ROLE_LABELS) as [StaffRole, string][]).map(([val, label]) => (
-                    <SelectItem key={val} value={val} className="text-white hover:bg-white/10">
+                    <SelectItem key={val} value={val} className="text-foreground dark:text-white hover:bg-muted dark:hover:bg-white/10">
                       {label}
                     </SelectItem>
                   ))}
@@ -292,13 +292,13 @@ export default function AdminTeam() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setEditMember(null)} className="text-gray-400">
+            <Button variant="ghost" onClick={() => setEditMember(null)} className="text-muted-foreground">
               Cancel
             </Button>
             <Button
               onClick={handleEdit}
               disabled={!editName || updateMutation.isPending}
-              className="bg-teal-500 hover:bg-teal-600 text-black font-semibold"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 dark:bg-teal-500 dark:hover:bg-teal-600 dark:text-black font-semibold"
             >
               {updateMutation.isPending ? "Saving..." : "Save Changes"}
             </Button>
@@ -308,15 +308,15 @@ export default function AdminTeam() {
 
       {/* Remove Confirm */}
       <AlertDialog open={removeId !== null} onOpenChange={(o) => !o && setRemoveId(null)}>
-        <AlertDialogContent className="bg-[#111] border-white/10 text-white">
+        <AlertDialogContent className="bg-card dark:bg-[#111] border-border dark:border-white/10 text-foreground dark:text-white">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-white">Remove Team Member?</AlertDialogTitle>
-            <AlertDialogDescription className="text-gray-400">
+            <AlertDialogTitle className="text-foreground dark:text-white">Remove Team Member?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
               This will permanently remove them from the portal. Their Supabase Auth account will not be deleted automatically.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="bg-white/5 border-white/10 text-white hover:bg-white/10">
+            <AlertDialogCancel className="bg-transparent dark:bg-white/5 border-border dark:border-white/10 text-foreground dark:text-white hover:bg-muted dark:hover:bg-white/10">
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
@@ -362,23 +362,23 @@ function StaffCard({
   const activeClients = tenants.filter((t) => t.is_active);
 
   return (
-    <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden">
+    <div className="bg-card dark:bg-white/5 border border-border dark:border-white/10 rounded-xl overflow-hidden">
       {/* Card Header */}
       <div className="flex items-center gap-4 p-4">
         {/* Avatar */}
-        <div className="w-10 h-10 rounded-full bg-teal-500/20 border border-teal-500/30 flex items-center justify-center text-teal-400 font-bold text-sm flex-shrink-0">
+        <div className="w-10 h-10 rounded-full bg-primary/10 dark:bg-teal-500/20 border border-primary/20 dark:border-teal-500/30 flex items-center justify-center text-primary dark:text-teal-400 font-bold text-sm flex-shrink-0">
           {(member.name ?? member.email)[0].toUpperCase()}
         </div>
 
         {/* Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-white text-sm">{member.name ?? "—"}</span>
+            <span className="font-semibold text-foreground dark:text-white text-sm">{member.name ?? "—"}</span>
             <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${ROLE_COLORS[role] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30"}`}>
               {ROLE_LABELS[role] ?? role}
             </span>
           </div>
-          <p className="text-xs text-gray-500 mt-0.5 truncate">{member.email}</p>
+          <p className="text-xs text-muted-foreground dark:text-gray-500 mt-0.5 truncate">{member.email}</p>
         </div>
 
         {/* Actions */}
@@ -387,7 +387,7 @@ function StaffCard({
             size="sm"
             variant="ghost"
             onClick={onToggleExpand}
-            className="text-gray-400 hover:text-teal-400 hover:bg-white/5 h-8 px-2 gap-1"
+            className="text-muted-foreground dark:text-gray-400 hover:text-primary dark:hover:text-teal-400 hover:bg-muted dark:hover:bg-white/5 h-8 px-2 gap-1"
           >
             <Building2 className="w-3.5 h-3.5" />
             <span className="text-xs">{assignments.length > 0 ? assignments.length : "Clients"}</span>
@@ -397,7 +397,7 @@ function StaffCard({
             size="sm"
             variant="ghost"
             onClick={onEdit}
-            className="text-gray-400 hover:text-white hover:bg-white/5 h-8 w-8 p-0"
+            className="text-muted-foreground dark:text-gray-400 hover:text-foreground dark:hover:text-white hover:bg-muted dark:hover:bg-white/5 h-8 w-8 p-0"
           >
             <Pencil className="w-3.5 h-3.5" />
           </Button>
@@ -405,7 +405,7 @@ function StaffCard({
             size="sm"
             variant="ghost"
             onClick={onRemove}
-            className="text-gray-400 hover:text-red-400 hover:bg-red-500/10 h-8 w-8 p-0"
+            className="text-muted-foreground dark:text-gray-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 h-8 w-8 p-0"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </Button>
@@ -414,12 +414,12 @@ function StaffCard({
 
       {/* Client Assignments Panel */}
       {isExpanded && (
-        <div className="border-t border-white/10 p-4 bg-black/20">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        <div className="border-t border-border dark:border-white/10 p-4 bg-muted/20 dark:bg-black/20">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
             Client Assignments
           </p>
           {activeClients.length === 0 ? (
-            <p className="text-xs text-gray-600">No active clients found.</p>
+            <p className="text-xs text-muted-foreground dark:text-gray-600">No active clients found.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {activeClients.map((tenant) => {
@@ -430,18 +430,18 @@ function StaffCard({
                     className={`flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition-colors ${
                       assigned
                         ? "bg-teal-500/10 border-teal-500/30"
-                        : "bg-white/3 border-white/8 hover:bg-white/5"
+                        : "bg-background dark:bg-white/3 border-border dark:border-white/8 hover:bg-muted/40 dark:hover:bg-white/5"
                     }`}
                   >
-                    <span className={assigned ? "text-teal-300" : "text-gray-300"}>
+                    <span className={assigned ? "text-primary dark:text-teal-300" : "text-foreground/80 dark:text-gray-300"}>
                       {tenant.company_name}
                     </span>
                     <button
                       onClick={() => assigned ? onUnassign(tenant.slug) : onAssign(tenant.slug)}
                       className={`ml-2 rounded-full p-1 transition-colors ${
                         assigned
-                          ? "bg-teal-500/20 text-teal-400 hover:bg-red-500/20 hover:text-red-400"
-                          : "bg-white/10 text-gray-400 hover:bg-teal-500/20 hover:text-teal-400"
+                          ? "bg-primary/20 text-primary dark:bg-teal-500/20 dark:text-teal-400 hover:bg-red-500/15 dark:hover:bg-red-500/20 hover:text-red-700 dark:hover:text-red-400"
+                          : "bg-muted text-muted-foreground dark:bg-white/10 dark:text-gray-400 hover:bg-primary/20 dark:hover:bg-teal-500/20 hover:text-primary dark:hover:text-teal-400"
                       }`}
                       title={assigned ? "Unassign" : "Assign"}
                     >

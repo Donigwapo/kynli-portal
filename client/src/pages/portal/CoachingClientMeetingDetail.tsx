@@ -9,6 +9,6 @@ export default function CoachingClientMeetingDetail() {
   }, [navigate]);
 
   return (
-    <div className="p-6 text-sm text-zinc-400">Redirecting to Client Meeting workspace...</div>
+    <div className="p-6 text-sm text-muted-foreground dark:text-zinc-400">Redirecting to Client Meeting workspace...</div>
   );
 }

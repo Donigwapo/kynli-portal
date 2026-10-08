@@ -33,7 +33,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 const TEAL = "oklch(0.75 0.15 192)";
 const GREEN = "oklch(0.68 0.18 145)";
 const RED = "oklch(0.62 0.22 25)";
-const MUTED_FG = "oklch(0.50 0.008 240)";
+const MUTED_FG = "var(--muted-foreground)";
 const OPEN_ITEMS_DISPLAY_LIMIT = 5;
 
 type OpenActionItemRow = {
@@ -362,7 +362,6 @@ export default function Overview() {
   const priorities = (prioritiesQuery.data as Array<any>) || [];
   const openPriorities = priorities.filter((p) => !p.completed);
   const displayedOpenPriorities = openPriorities.slice(0, OPEN_ITEMS_DISPLAY_LIMIT);
-
   const displayedOpenActionItems = openActionItems.slice(0, OPEN_ITEMS_DISPLAY_LIMIT);
 
   return (
@@ -488,19 +487,19 @@ export default function Overview() {
           </div>
 
           {!coachingCardsEnabled ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
               Select a client via “Viewing as client” to manage coaching priorities.
             </div>
           ) : prioritiesQuery.isLoading ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading priorities…</div>
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading priorities…</div>
           ) : prioritiesQuery.isError ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load priorities for this client.</div>
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load priorities for this client.</div>
           ) : (
             <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
               {openPriorities.length > 0 ? (
                 <>
                   {displayedOpenPriorities.map((p) => (
-                    <div key={p.id} className="flex items-center gap-3 rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-3 py-2">
+                    <div key={p.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] px-3 py-2">
                       <Checkbox
                         checked={!!p.completed}
                         onCheckedChange={(checked) => {
@@ -508,7 +507,7 @@ export default function Overview() {
                           togglePriorityMutation.mutate({ id: p.id, completed: checked === true, tenantSlug: coachingTenantSlug });
                         }}
                         disabled={!canEditPriorities || togglePriorityMutation.isPending}
-                        className="border-[oklch(0.30_0.01_240)] bg-[oklch(0.13_0.004_240)]"
+                        className="border-border bg-background dark:border-[oklch(0.30_0.01_240)] dark:bg-[oklch(0.13_0.004_240)]"
                       />
                       <Link
                         href="/portal/coaching"
@@ -531,7 +530,7 @@ export default function Overview() {
                   ) : null}
                 </>
               ) : (
-                <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open coaching priorities.</div>
+                <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open coaching priorities.</div>
               )}
             </div>
           )}
@@ -544,21 +543,21 @@ export default function Overview() {
           </div>
 
           {!coachingCardsEnabled ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
               Select a client via “Viewing as client” to view open client action items.
             </div>
           ) : meetingsQuery.isLoading || openItemsLoading ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading open action items…</div>
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Loading open action items…</div>
           ) : meetingsQuery.isError ? (
-            <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load client meetings.</div>
+            <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">Unable to load client meetings.</div>
           ) : (
             <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
               {openActionItems.length === 0 ? (
-                <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open client action items.</div>
+                <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-3 text-sm text-muted-foreground">No open client action items.</div>
               ) : (
                 <>
                   {displayedOpenActionItems.map((row) => (
-                    <div key={row.actionItemId} className="flex items-start gap-3 rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-3 py-2.5">
+                    <div key={row.actionItemId} className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] px-3 py-2.5">
                       <Checkbox
                         checked={false}
                         onCheckedChange={(checked) => {
@@ -570,7 +569,7 @@ export default function Overview() {
                           });
                         }}
                         disabled={actionItemStatusMutation.isPending}
-                        className="border-[oklch(0.30_0.01_240)] bg-[oklch(0.13_0.004_240)]"
+                        className="border-border bg-background dark:border-[oklch(0.30_0.01_240)] dark:bg-[oklch(0.13_0.004_240)]"
                       />
                       <div className="min-w-0 flex-1">
                         {row.meetingId ? (
@@ -620,11 +619,11 @@ export default function Overview() {
             </div>
 
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3">
+              <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-3">
                 <p className="text-xs text-foreground/70">Clients signed</p>
                 <p className="text-2xl font-semibold text-foreground mt-1">{ytdSigned}</p>
               </div>
-              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-3">
+              <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-3">
                 <p className="text-xs text-foreground/70">Annual client target</p>
                 <p className="text-2xl font-semibold text-foreground mt-1">{annualTarget}</p>
               </div>
@@ -656,7 +655,7 @@ export default function Overview() {
             </div>
 
             {actualVsBudgetChartData.length === 0 ? (
-              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No financial periods available for this year.
               </div>
             ) : (
@@ -686,7 +685,7 @@ export default function Overview() {
             </div>
 
             {revenueTrendData.length === 0 ? (
-              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No revenue periods available for this year.
               </div>
             ) : (
@@ -713,7 +712,7 @@ export default function Overview() {
             </div>
 
             {activeClientMix.length === 0 ? (
-              <div className="rounded-lg border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] p-4 text-sm text-muted-foreground">
                 No active clients available.
               </div>
             ) : (
@@ -742,7 +741,7 @@ export default function Overview() {
                 </div>
                 <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
                   {activeClientMix.map((entry, idx) => (
-                    <div key={entry.name} className="flex items-center justify-between text-xs rounded-md border border-[oklch(0.18_0.004_240)] bg-[oklch(0.12_0.004_240)] px-2.5 py-2">
+                    <div key={entry.name} className="flex items-center justify-between text-xs rounded-md border border-border bg-muted/30 dark:border-[oklch(0.18_0.004_240)] dark:bg-[oklch(0.12_0.004_240)] px-2.5 py-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: mixColors[idx % mixColors.length] }} />
                         <span className="text-foreground/70 truncate">{entry.name}</span>

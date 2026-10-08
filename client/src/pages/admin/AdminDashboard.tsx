@@ -56,9 +56,9 @@ export default function AdminDashboard() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Active</p>
-              <CheckCircle2 size={14} className="text-emerald-400" />
+              <CheckCircle2 size={14} className="text-emerald-700 dark:text-emerald-400" />
             </div>
-            <p className="text-3xl font-bold text-emerald-400">{isLoading ? "—" : active.length}</p>
+            <p className="text-3xl font-bold text-emerald-700 dark:text-emerald-400">{isLoading ? "—" : active.length}</p>
           </CardContent>
         </Card>
 
@@ -66,9 +66,9 @@ export default function AdminDashboard() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Inactive</p>
-              <XCircle size={14} className="text-red-400" />
+              <XCircle size={14} className="text-red-700 dark:text-red-400" />
             </div>
-            <p className="text-3xl font-bold text-red-400">{isLoading ? "—" : inactive.length}</p>
+            <p className="text-3xl font-bold text-red-700 dark:text-red-400">{isLoading ? "—" : inactive.length}</p>
           </CardContent>
         </Card>
 
@@ -76,9 +76,9 @@ export default function AdminDashboard() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs text-muted-foreground uppercase tracking-wider">CFO Clients</p>
-              <Package size={14} className="text-violet-400" />
+              <Package size={14} className="text-violet-700 dark:text-violet-400" />
             </div>
-            <p className="text-3xl font-bold text-violet-400">{isLoading ? "—" : tierCounts["cfo"] ?? 0}</p>
+            <p className="text-3xl font-bold text-violet-700 dark:text-violet-400">{isLoading ? "—" : tierCounts["cfo"] ?? 0}</p>
           </CardContent>
         </Card>
       </div>
@@ -194,7 +194,7 @@ export default function AdminDashboard() {
                     <Badge variant="outline" className={`text-xs ${PACKAGE_COLORS[t.package_tier as PackageTier]}`}>
                       {PACKAGE_LABELS[t.package_tier as PackageTier]}
                     </Badge>
-                    <Badge variant="outline" className={`text-xs ${t.is_active ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" : "border-red-500/30 text-red-400 bg-red-500/10"}`}>
+                    <Badge variant="outline" className={`text-xs ${t.is_active ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30" : "border-red-500/40 text-red-700 dark:text-red-400 bg-red-500/10 dark:border-red-500/30"}`}>
                       {t.is_active ? "Active" : "Inactive"}
                     </Badge>
                     <ArrowRight size={12} className="text-muted-foreground/40 group-hover:text-primary transition-colors" />

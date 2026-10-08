@@ -58,20 +58,20 @@ type TenantRow = {
 function StatusBadge({ tenant }: { tenant: TenantRow }) {
   if (tenant.is_churned) {
     return (
-      <Badge variant="outline" className="text-xs border-orange-500/30 text-orange-400 bg-orange-500/10">
+      <Badge variant="outline" className="text-xs border-orange-500/40 text-orange-700 dark:text-orange-400 bg-orange-500/10 dark:border-orange-500/30">
         Churned
       </Badge>
     );
   }
   if (tenant.is_active) {
     return (
-      <Badge variant="outline" className="text-xs border-emerald-500/30 text-emerald-400 bg-emerald-500/10">
+      <Badge variant="outline" className="text-xs border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30">
         Active
       </Badge>
     );
   }
   return (
-    <Badge variant="outline" className="text-xs border-red-500/30 text-red-400 bg-red-500/10">
+    <Badge variant="outline" className="text-xs border-red-500/40 text-red-700 dark:text-red-400 bg-red-500/10 dark:border-red-500/30">
       Inactive
     </Badge>
   );
@@ -159,7 +159,7 @@ export default function AdminClients() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
+          <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-700 dark:text-amber-400">
             <Users size={20} />
           </div>
           <div>
@@ -167,7 +167,7 @@ export default function AdminClients() {
             <p className="text-sm text-muted-foreground mt-0.5">
               {tenants?.length ?? 0} total clients
               {tenants && tenants.filter(t => t.is_churned).length > 0 && (
-                <span className="ml-2 text-orange-400">
+                <span className="ml-2 text-orange-700 dark:text-orange-400">
                   · {tenants.filter(t => t.is_churned).length} churned
                 </span>
               )}
@@ -272,7 +272,7 @@ export default function AdminClients() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-8 px-2 text-xs text-muted-foreground hover:text-cyan-400 gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="h-8 px-2 text-xs text-muted-foreground hover:text-cyan-700 dark:hover:text-cyan-400 gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
                             onClick={() => navigate(`/admin/clients/${tenant.slug}`)}
                           >
                             <ExternalLink size={13} />
@@ -311,7 +311,7 @@ export default function AdminClients() {
                               <DropdownMenuSeparator className="bg-border" />
                               {tenant.is_churned ? (
                                 <DropdownMenuItem
-                                  className="text-sm gap-2 cursor-pointer text-emerald-400 focus:text-emerald-400"
+                                  className="text-sm gap-2 cursor-pointer text-emerald-700 dark:text-emerald-400 focus:text-emerald-700 dark:focus:text-emerald-400"
                                   onClick={() => restore.mutate({ slug: tenant.slug })}
                                   disabled={restore.isPending}
                                 >
@@ -320,7 +320,7 @@ export default function AdminClients() {
                                 </DropdownMenuItem>
                               ) : (
                                 <DropdownMenuItem
-                                  className="text-sm gap-2 cursor-pointer text-orange-400 focus:text-orange-400"
+                                  className="text-sm gap-2 cursor-pointer text-orange-700 dark:text-orange-400 focus:text-orange-700 dark:focus:text-orange-400"
                                   onClick={() => archive.mutate({ slug: tenant.slug })}
                                   disabled={archive.isPending}
                                 >

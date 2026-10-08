@@ -4,6 +4,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "../lib/trpc";
 import { PACKAGE_TIERS, TAB_ACCESS, hasAccess, type PackageTier } from "../../../shared/tiers";
 import { Lock } from "lucide-react";
+import { useTheme } from "@/contexts/ThemeContext";
 
 interface TierGateProps {
   /** The TAB_ACCESS key for the feature this route requires */
@@ -36,6 +37,7 @@ const FEATURE_LABELS: Record<string, string> = {
  */
 export default function TierGate({ featureKey, children }: TierGateProps) {
   const { user } = useAuth();
+  const { theme } = useTheme();
   const { impersonatingTenantSlug } = usePortal();
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
 
@@ -76,21 +78,22 @@ export default function TierGate({ featureKey, children }: TierGateProps) {
     const featureLabel = FEATURE_LABELS[featureKey] ?? featureKey;
     const requiredLabel = TIER_LABELS[requiredTier] ?? requiredTier;
     const currentLabel = TIER_LABELS[activeTier] ?? activeTier;
+    const isDark = theme === "dark";
 
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] px-6 text-center">
-        <div className="rounded-full bg-white/5 p-5 mb-6">
-          <Lock className="w-10 h-10 text-[#00C2CB]" />
+        <div className={isDark ? "rounded-full bg-white/5 p-5 mb-6" : "rounded-full bg-primary/10 p-5 mb-6 border border-primary/20"}>
+          <Lock className={isDark ? "w-10 h-10 text-[#00C2CB]" : "w-10 h-10 text-primary"} />
         </div>
-        <h2 className="text-2xl font-semibold text-white mb-2">
+        <h2 className={isDark ? "text-2xl font-semibold text-white mb-2" : "text-2xl font-semibold text-foreground mb-2"}>
           {featureLabel} is not included in your plan
         </h2>
-        <p className="text-white/60 max-w-md mb-1">
-          Your current package is <span className="text-white font-medium">{currentLabel}</span>.
+        <p className={isDark ? "text-white/60 max-w-md mb-1" : "text-muted-foreground max-w-md mb-1"}>
+          Your current package is <span className={isDark ? "text-white font-medium" : "text-foreground font-medium"}>{currentLabel}</span>.
           This feature requires the{" "}
-          <span className="text-[#00C2CB] font-medium">{requiredLabel}</span> package or higher.
+          <span className={isDark ? "text-[#00C2CB] font-medium" : "text-primary font-medium"}>{requiredLabel}</span> package or higher.
         </p>
-        <p className="text-white/40 text-sm mt-4">
+        <p className={isDark ? "text-white/40 text-sm mt-4" : "text-muted-foreground text-sm mt-4"}>
           Contact your KynLi advisor to upgrade your package and unlock this feature.
         </p>
       </div>

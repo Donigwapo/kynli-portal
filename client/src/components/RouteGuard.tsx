@@ -67,6 +67,16 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       return;
     }
 
+    const isActualClientLogin = user?.role === "client";
+    if (
+      isActualClientLogin &&
+      !impersonatingTenantSlug &&
+      (location === "/portal/clients" || location === "/portal/sales")
+    ) {
+      navigate("/portal");
+      return;
+    }
+
     if (location === "/portal/notes") {
       const canAccessNotes = isStaffOrAdmin && !!impersonatingTenantSlug;
       if (!canAccessNotes) {
