@@ -18,6 +18,8 @@ import {
   ChevronsUpDown,
   CalendarDays,
   ShieldAlert,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -85,7 +87,7 @@ interface PortalLayoutProps {
 export default function PortalLayout({ children, isAdmin = false }: PortalLayoutProps) {
   const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
-  const { theme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { impersonatingTenantSlug, setImpersonatingTenantSlug, aiCoachingPeriod, aiFinancialPeriod } = usePortal();
 
@@ -565,6 +567,9 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
   const avatarBg = isDark ? "rgba(0,212,170,0.15)" : "color-mix(in oklab, var(--sidebar-primary) 18%, transparent)";
   const avatarColor = isDark ? "#00d4aa" : "var(--sidebar-primary)";
   const navDotColor = isDark ? "#00d4aa" : "var(--sidebar-primary)";
+  const appearanceLabelColor = isDark ? "#666" : "var(--muted-foreground)";
+  const appearanceCardBg = isDark ? "rgba(255,255,255,0.02)" : "var(--sidebar-accent)";
+  const appearanceCardBorder = isDark ? "rgba(255,255,255,0.10)" : "var(--sidebar-border)";
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ backgroundColor: shellBackgroundColor }}>
@@ -747,8 +752,59 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           })}
         </nav>
 
-        {/* User section */}
+        {/* Appearance + User section */}
         <div className="border-t p-3" style={{ borderColor: sidebarBorderColor }}>
+          <div
+            className="mb-2.5 rounded-md border p-2"
+            style={{ backgroundColor: appearanceCardBg, borderColor: appearanceCardBorder }}
+          >
+            <p className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: appearanceLabelColor }}>
+              Appearance
+            </p>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => setTheme("light")}
+                className={cn(
+                  "h-7 rounded-md border text-[11px] font-medium flex items-center justify-center gap-1 transition-colors",
+                  theme === "light"
+                    ? (isDark
+                      ? "border-teal-400/40 bg-teal-500/15 text-teal-200"
+                      : "border-primary/40 bg-primary/15 text-primary")
+                    : (isDark
+                      ? "border-white/10 bg-white/[0.02] text-zinc-300 hover:bg-white/[0.06]"
+                      : "border-border bg-background text-foreground/80 hover:bg-accent")
+                )}
+                aria-pressed={theme === "light"}
+                aria-label="Switch to Light Mode"
+                title="Light Mode"
+              >
+                <Sun size={12} />
+                <span>Light</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme("dark")}
+                className={cn(
+                  "h-7 rounded-md border text-[11px] font-medium flex items-center justify-center gap-1 transition-colors",
+                  theme === "dark"
+                    ? (isDark
+                      ? "border-teal-400/40 bg-teal-500/15 text-teal-200"
+                      : "border-primary/40 bg-primary/15 text-primary")
+                    : (isDark
+                      ? "border-white/10 bg-white/[0.02] text-zinc-300 hover:bg-white/[0.06]"
+                      : "border-border bg-background text-foreground/80 hover:bg-accent")
+                )}
+                aria-pressed={theme === "dark"}
+                aria-label="Switch to Dark Mode"
+                title="Dark Mode"
+              >
+                <Moon size={12} />
+                <span>Dark</span>
+              </button>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 mb-2.5">
             <div
               className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs font-semibold"
