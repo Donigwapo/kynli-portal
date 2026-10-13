@@ -92,6 +92,8 @@ function getBrandedInviteUrl(inviteToken: string, portalOrigin?: string): string
 export type StaffRole = "admin" | "accounting_manager" | "tax_manager" | "accountant";
 export type UserRole = StaffRole | "client";
 
+export type PortalUserStatus = "active" | "inactive";
+
 export type PortalUser = {
   id: number;
   supabase_uid: string | null;
@@ -100,6 +102,10 @@ export type PortalUser = {
   role: UserRole;
   tenant_slug: string | null;
   must_reset_password: boolean;
+  status?: PortalUserStatus | null;
+  deactivated_at?: string | null;
+  deactivated_by?: number | null;
+  last_deactivation_event_id?: string | null;
   invite_sent_at?: string | null;
   invite_accepted?: boolean;
   created_at: string;
@@ -122,6 +128,26 @@ export type StaffAssignment = {
   staff_id: number;
   tenant_slug: string;
   assigned_at: string;
+};
+
+export type StaffDeactivationSnapshotRow = {
+  id: number;
+  deactivation_event_id: string;
+  staff_user_id: number;
+  tenant_slug: string;
+  original_assigned_at: string | null;
+  snapshot_at: string;
+  restoration_status: "pending" | "restored" | "skipped_conflict" | "skipped_ineligible" | "skipped_missing_client" | "skipped_not_authorized";
+  restoration_reason: string | null;
+  restored_at: string | null;
+};
+
+export type StaffReactivationPreviewItem = {
+  tenant_slug: string;
+  tenant_name: string | null;
+  classification: "eligible_restore" | "assigned_to_active_accountant" | "client_inactive_or_missing" | "not_authorized";
+  blocking_staff_ids: number[];
+  blocking_staff_names: string[];
 };
 
 export type PortalTenant = {
@@ -385,6 +411,10 @@ export async function getPortalUserByEmail(email: string): Promise<PortalUser | 
   };
 
   rows.sort((a, b) => {
+    const aStatus = a.status ?? "active";
+    const bStatus = b.status ?? "active";
+    if (aStatus !== bStatus) return aStatus === "active" ? -1 : 1;
+
     const r = roleRank(a.role) - roleRank(b.role);
     if (r !== 0) return r;
     const aUpdated = new Date(a.updated_at || a.created_at || 0).getTime();
@@ -3499,15 +3529,66 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
   accountant: "Accountant",
 };
 
+export type StaffListItem = PortalUser & {
+  assigned_client_count: number;
+  previous_assignment_count: number;
+};
+
+export function isPortalUserActive(user: Pick<PortalUser, "status"> | null | undefined): boolean {
+  return !!user && (user.status ?? "active") === "active";
+}
+
 /** List all staff members (non-client portal_users) */
-export async function listStaff(): Promise<PortalUser[]> {
+export async function listStaff(): Promise<StaffListItem[]> {
   const { data, error } = await supabase
     .from("portal_users")
     .select("*")
     .in("role", STAFF_ROLES)
     .order("created_at", { ascending: true });
   if (error) throw new Error(`listStaff: ${error.message}`);
-  return (data ?? []) as PortalUser[];
+
+  const staffRows = (data ?? []) as PortalUser[];
+  const staffIds = Array.from(new Set(staffRows.map((s) => Number(s.id)).filter((id) => Number.isFinite(id) && id > 0)));
+
+  let assignmentCounts = new Map<number, number>();
+  if (staffIds.length > 0) {
+    const { data: assignmentRows, error: assignmentError } = await supabase
+      .from("staff_client_assignments")
+      .select("staff_id")
+      .in("staff_id", staffIds);
+    if (assignmentError) throw new Error(`listStaff.assignments: ${assignmentError.message}`);
+
+    for (const row of (assignmentRows ?? []) as Array<{ staff_id: number | null }>) {
+      const sid = Number(row.staff_id ?? 0);
+      if (!sid) continue;
+      assignmentCounts.set(sid, (assignmentCounts.get(sid) ?? 0) + 1);
+    }
+  }
+
+  let previousCounts = new Map<number, number>();
+  if (staffIds.length > 0) {
+    const { data: eventRows, error: eventError } = await supabase
+      .from("staff_deactivation_events")
+      .select("staff_user_id,snapshot_count,status,deactivated_at")
+      .in("staff_user_id", staffIds)
+      .order("deactivated_at", { ascending: false });
+
+    if (!eventError) {
+      for (const row of (eventRows ?? []) as Array<{ staff_user_id: number | null; snapshot_count: number | null; status: string | null }>) {
+        const sid = Number(row.staff_user_id ?? 0);
+        if (!sid) continue;
+        if (previousCounts.has(sid)) continue;
+        previousCounts.set(sid, Number(row.snapshot_count ?? 0));
+      }
+    }
+  }
+
+  return staffRows.map((staff) => ({
+    ...staff,
+    status: (staff.status ?? "active") as PortalUserStatus,
+    assigned_client_count: assignmentCounts.get(Number(staff.id)) ?? 0,
+    previous_assignment_count: previousCounts.get(Number(staff.id)) ?? 0,
+  }));
 }
 
 /** Get a single staff member by id */
@@ -3535,6 +3616,10 @@ export async function createStaffMember(params: {
       role: params.role,
       tenant_slug: null,
       must_reset_password: true,
+      status: "active",
+      deactivated_at: null,
+      deactivated_by: null,
+      last_deactivation_event_id: null,
     })
     .select()
     .single();
@@ -3588,10 +3673,15 @@ export async function getAssignedStaff(tenantSlug: string): Promise<PortalUser[]
 }
 
 /** Assign a staff member to a client tenant */
-export async function assignStaffToClient(staffId: number, tenantSlug: string): Promise<void> {
-  const { error } = await supabase
-    .from("staff_client_assignments")
-    .upsert({ staff_id: staffId, tenant_slug: tenantSlug }, { onConflict: "staff_id,tenant_slug" });
+export async function assignStaffToClient(staffId: number, tenantSlug: string, actorUserId: number): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+
+  const { error } = await supabase.rpc("assign_staff_to_client_locked", {
+    p_staff_user_id: staffId,
+    p_tenant_slug: safeSlug,
+    p_actor_user_id: actorUserId,
+  });
+
   if (error) throw new Error(`assignStaffToClient: ${error.message}`);
 }
 
@@ -3603,6 +3693,149 @@ export async function unassignStaffFromClient(staffId: number, tenantSlug: strin
     .eq("staff_id", staffId)
     .eq("tenant_slug", tenantSlug);
   if (error) throw new Error(`unassignStaffFromClient: ${error.message}`);
+}
+
+export async function deactivateStaffMember(staffUserId: number, actorUserId: number): Promise<{ deactivation_event_id: string; assignment_count: number }> {
+  const { data, error } = await supabase.rpc("deactivate_staff_member", {
+    p_staff_user_id: staffUserId,
+    p_actor_user_id: actorUserId,
+  });
+
+  if (error) throw new Error(`deactivateStaffMember: ${error.message}`);
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row?.deactivation_event_id) throw new Error("deactivateStaffMember: missing deactivation event id");
+
+  return {
+    deactivation_event_id: String(row.deactivation_event_id),
+    assignment_count: Number(row.assignment_count ?? 0),
+  };
+}
+
+export async function previewStaffReactivation(staffUserId: number): Promise<StaffReactivationPreviewItem[]> {
+  const { data, error } = await supabase.rpc("preview_staff_reactivation", {
+    p_staff_user_id: staffUserId,
+  });
+
+  if (error) throw new Error(`previewStaffReactivation: ${error.message}`);
+
+  return ((data ?? []) as Array<any>).map((row) => ({
+    tenant_slug: String(row.tenant_slug ?? ""),
+    tenant_name: row.tenant_name == null ? null : String(row.tenant_name),
+    classification: String(row.classification ?? "client_inactive_or_missing") as StaffReactivationPreviewItem["classification"],
+    blocking_staff_ids: Array.isArray(row.blocking_staff_ids) ? row.blocking_staff_ids.map((v: any) => Number(v)).filter((n: number) => Number.isFinite(n) && n > 0) : [],
+    blocking_staff_names: Array.isArray(row.blocking_staff_names) ? row.blocking_staff_names.map((v: any) => String(v)) : [],
+  }));
+}
+
+export async function reactivateStaffMember(staffUserId: number, actorUserId: number): Promise<{
+  deactivation_event_id: string;
+  restored_count: number;
+  skipped_conflict_count: number;
+  skipped_ineligible_count: number;
+  skipped_missing_count: number;
+}> {
+  const { data, error } = await supabase.rpc("reactivate_staff_member", {
+    p_staff_user_id: staffUserId,
+    p_actor_user_id: actorUserId,
+  });
+
+  if (error) throw new Error(`reactivateStaffMember: ${error.message}`);
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row?.deactivation_event_id) throw new Error("reactivateStaffMember: missing deactivation event id");
+
+  return {
+    deactivation_event_id: String(row.deactivation_event_id),
+    restored_count: Number(row.restored_count ?? 0),
+    skipped_conflict_count: Number(row.skipped_conflict_count ?? 0),
+    skipped_ineligible_count: Number(row.skipped_ineligible_count ?? 0),
+    skipped_missing_count: Number(row.skipped_missing_count ?? 0),
+  };
+}
+
+export async function listPendingAssignmentSnapshots(staffUserId: number): Promise<StaffDeactivationSnapshotRow[]> {
+  const { data: userRow, error: userError } = await supabase
+    .from("portal_users")
+    .select("last_deactivation_event_id")
+    .eq("id", staffUserId)
+    .maybeSingle();
+
+  if (userError) throw new Error(`listPendingAssignmentSnapshots.userLookup: ${userError.message}`);
+  const eventId = userRow?.last_deactivation_event_id;
+  if (!eventId) return [];
+
+  const { data, error } = await supabase
+    .from("staff_assignment_snapshots")
+    .select("id,deactivation_event_id,staff_user_id,tenant_slug,original_assigned_at,snapshot_at,restoration_status,restoration_reason,restored_at")
+    .eq("staff_user_id", staffUserId)
+    .eq("deactivation_event_id", eventId)
+    .order("id", { ascending: true });
+
+  if (error) throw new Error(`listPendingAssignmentSnapshots: ${error.message}`);
+  return (data ?? []) as StaffDeactivationSnapshotRow[];
+}
+
+export async function listActiveAccountantsByTenant(tenantSlug: string): Promise<Array<{ id: number; name: string | null; email: string | null; role: string }>> {
+  const { data, error } = await supabase
+    .from("staff_client_assignments")
+    .select("staff_id, portal_users(id,name,email,role,status)")
+    .eq("tenant_slug", tenantSlug);
+
+  if (error) throw new Error(`listActiveAccountantsByTenant: ${error.message}`);
+
+  const out: Array<{ id: number; name: string | null; email: string | null; role: string }> = [];
+  for (const row of (data ?? []) as Array<any>) {
+    const u = row.portal_users as any;
+    if (!u) continue;
+    const status = String(u.status ?? "active");
+    const role = String(u.role ?? "");
+    if (status !== "active") continue;
+    if (!(["accountant", "accounting_manager", "tax_manager"] as const).includes(role as any)) continue;
+    out.push({ id: Number(u.id), name: u.name ?? null, email: u.email ?? null, role });
+  }
+
+  return out;
+}
+
+export async function countActiveAdmins(): Promise<number> {
+  const { count, error } = await supabase
+    .from("portal_users")
+    .select("id", { head: true, count: "exact" })
+    .eq("role", "admin")
+    .eq("status", "active");
+
+  if (error) throw new Error(`countActiveAdmins: ${error.message}`);
+  return Number(count ?? 0);
+}
+
+export async function listStaffAssignmentSnapshots(staffUserId: number): Promise<StaffDeactivationSnapshotRow[]> {
+  const { data, error } = await supabase
+    .from("staff_assignment_snapshots")
+    .select("id,deactivation_event_id,staff_user_id,tenant_slug,original_assigned_at,snapshot_at,restoration_status,restoration_reason,restored_at")
+    .eq("staff_user_id", staffUserId)
+    .order("snapshot_at", { ascending: false })
+    .order("id", { ascending: true });
+
+  if (error) throw new Error(`listStaffAssignmentSnapshots: ${error.message}`);
+  return (data ?? []) as StaffDeactivationSnapshotRow[];
+}
+
+export async function listTenantLookupBySlugs(slugs: string[]): Promise<Map<string, { company_name: string; is_active: boolean }>> {
+  const cleaned = Array.from(new Set(slugs.map((s) => sanitizeTenantSlug(s)).filter(Boolean)));
+  if (!cleaned.length) return new Map();
+
+  const { data, error } = await supabase
+    .from("portal_tenants")
+    .select("slug,company_name,is_active")
+    .in("slug", cleaned);
+
+  if (error) throw new Error(`listTenantLookupBySlugs: ${error.message}`);
+
+  return new Map(
+    ((data ?? []) as Array<{ slug: string; company_name: string; is_active: boolean }>).map((row) => [
+      sanitizeTenantSlug(row.slug),
+      { company_name: row.company_name, is_active: row.is_active },
+    ]),
+  );
 }
 
 export async function listTenantMembers(tenantSlug: string): Promise<TenantMember[]> {
@@ -4500,6 +4733,27 @@ export async function updateCoachingPriorityCompletion(input: {
     .select("*")
     .single();
   if (error || !data) throw new Error(error?.message || "Failed to update coaching priority");
+  return data as CoachingPriority;
+}
+
+export async function updateCoachingPriorityTitle(input: {
+  tenant_slug: string;
+  id: string;
+  title: string;
+}): Promise<CoachingPriority> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+  const title = String(input.title || "").trim();
+  if (!title) throw new Error("Priority title is required.");
+
+  const { data, error } = await supabase
+    .from("coaching_priorities")
+    .update({ title, updated_at: new Date().toISOString() })
+    .eq("tenant_slug", safeSlug)
+    .eq("id", input.id)
+    .select("*")
+    .single();
+
+  if (error || !data) throw new Error(error?.message || "Failed to update coaching priority title");
   return data as CoachingPriority;
 }
 

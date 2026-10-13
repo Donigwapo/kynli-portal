@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, CheckSquare, ListChecks, MoreHorizontal, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckSquare, ListChecks, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { TRPCClientErrorLike } from "@trpc/client";
@@ -144,6 +144,15 @@ export default function CoachingDashboard() {
     onError: (err) => toast.error(err.message || "Unable to delete priority."),
   });
 
+  const updateTitleMutation = trpc.coaching.prioritiesUpdateTitle.useMutation({
+    onSuccess: async () => {
+      await prioritiesQuery.refetch();
+      setEditingPriorityId(null);
+      setEditingPriorityTitle("");
+    },
+    onError: (err) => toast.error(err.message || "Unable to update priority title."),
+  });
+
   const deleteTriggerPeriodMutation = trpc.coaching.deleteTriggerMonitorPeriod.useMutation({
     onSuccess: async () => {
       setDeletePeriodDialogOpen(false);
@@ -170,6 +179,8 @@ export default function CoachingDashboard() {
 
   const [newTitle, setNewTitle] = useState("");
   const [newClientActionTitle, setNewClientActionTitle] = useState("");
+  const [editingPriorityId, setEditingPriorityId] = useState<string | null>(null);
+  const [editingPriorityTitle, setEditingPriorityTitle] = useState("");
   const [deletePeriodDialogOpen, setDeletePeriodDialogOpen] = useState(false);
   const [pendingDeletePeriod, setPendingDeletePeriod] = useState<TriggerPeriodTile | null>(null);
 
@@ -263,6 +274,36 @@ export default function CoachingDashboard() {
   const handleCreateCoachingPriority = () => {
     if (!canEditPriorities || !newTitle.trim() || createMutation.isPending) return;
     createMutation.mutate({ year: currentYear, tenantSlug, title: newTitle.trim() });
+  };
+
+  const startEditingPriority = (priority: any) => {
+    if (!canEditPriorities) return;
+    setEditingPriorityId(String(priority.id));
+    setEditingPriorityTitle(String(priority.title || ""));
+  };
+
+  const cancelEditingPriority = () => {
+    setEditingPriorityId(null);
+    setEditingPriorityTitle("");
+  };
+
+  const saveEditingPriority = (priority: any) => {
+    if (!canEditPriorities || updateTitleMutation.isPending) return;
+    const id = String(priority.id || "");
+    const nextTitle = String(editingPriorityTitle || "").trim();
+    const currentTitle = String(priority.title || "").trim();
+
+    if (!id) return;
+    if (!nextTitle) {
+      toast.error("Priority title is required.");
+      return;
+    }
+    if (nextTitle === currentTitle) {
+      cancelEditingPriority();
+      return;
+    }
+
+    updateTitleMutation.mutate({ id, title: nextTitle, tenantSlug });
   };
 
   useEffect(() => {
@@ -540,33 +581,97 @@ export default function CoachingDashboard() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,56%)_minmax(0,44%)] gap-4 xl:gap-6 items-start">
               <div className="space-y-2.5">
-                {openPriorities.length > 0 ? openPriorities.map((p) => (
-                  <div
-                    key={p.id}
-                    className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-700/80 bg-muted/30 dark:bg-zinc-900/35 px-4 py-3"
-                  >
-                    <label className="flex items-center gap-3 min-w-0 cursor-pointer">
-                      <Checkbox
-                        checked={!!p.completed}
-                        onCheckedChange={(checked) => {
-                          if (!canEditPriorities) return;
-                          toggleMutation.mutate({ id: p.id, completed: checked === true, tenantSlug });
-                        }}
-                        disabled={!canEditPriorities || toggleMutation.isPending}
-                      />
-                      <span className="text-[15px] sm:text-base font-medium text-foreground truncate">{p.title}</span>
-                    </label>
-                    <button
-                      type="button"
-                      className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-400 hover:text-foreground/90 dark:hover:text-zinc-200"
-                      onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
-                      disabled={!canEditPriorities || deleteMutation.isPending}
-                      aria-label={`Delete ${p.title}`}
+                {openPriorities.length > 0 ? openPriorities.map((p) => {
+                  const isEditing = editingPriorityId === String(p.id);
+                  const trimmedEditTitle = String(editingPriorityTitle || "").trim();
+                  const trimmedCurrentTitle = String(p.title || "").trim();
+                  const canSaveEdit = canEditPriorities && trimmedEditTitle.length > 0 && trimmedEditTitle !== trimmedCurrentTitle && !updateTitleMutation.isPending;
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-700/80 bg-muted/30 dark:bg-zinc-900/35 px-4 py-3 gap-3"
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                )) : (
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <Checkbox
+                          checked={!!p.completed}
+                          onCheckedChange={(checked) => {
+                            if (!canEditPriorities) return;
+                            toggleMutation.mutate({ id: p.id, completed: checked === true, tenantSlug });
+                          }}
+                          disabled={!canEditPriorities || toggleMutation.isPending}
+                        />
+                        {isEditing ? (
+                          <Input
+                            value={editingPriorityTitle}
+                            onChange={(e) => setEditingPriorityTitle(e.target.value)}
+                            className="h-9 rounded-lg bg-background dark:bg-zinc-950/70 border-border dark:border-zinc-700 text-sm"
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                saveEditingPriority(p);
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelEditingPriority();
+                              }
+                            }}
+                          />
+                        ) : (
+                          <span className="text-[15px] sm:text-base font-medium text-foreground truncate">{p.title}</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isEditing ? (
+                          <>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="default"
+                              className="h-8 px-2.5"
+                              onClick={() => saveEditingPriority(p)}
+                              disabled={!canSaveEdit}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 px-2.5"
+                              onClick={cancelEditingPriority}
+                              disabled={updateTitleMutation.isPending}
+                            >
+                              Cancel
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="opacity-20 group-hover:opacity-70 transition-opacity text-muted-foreground dark:text-zinc-400 hover:text-foreground/90 dark:hover:text-zinc-200"
+                              onClick={() => startEditingPriority(p)}
+                              disabled={!canEditPriorities}
+                              aria-label={`Edit ${p.title}`}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-400 hover:text-foreground/90 dark:hover:text-zinc-200"
+                              onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
+                              disabled={!canEditPriorities || deleteMutation.isPending}
+                              aria-label={`Delete ${p.title}`}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }) : (
                   <div className="rounded-xl border border-border dark:border-zinc-700 bg-muted/20 dark:bg-zinc-900/30 p-4 text-sm text-muted-foreground dark:text-zinc-400">
                     No open priorities yet.
                   </div>
@@ -576,33 +681,97 @@ export default function CoachingDashboard() {
               <div className="space-y-3">
                 <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground dark:text-zinc-500">Completed</p>
                 <div className="space-y-2.5">
-                  {completedPriorities.length > 0 ? completedPriorities.map((p) => (
-                    <div
-                      key={p.id}
-                      className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/20 px-4 py-3"
-                    >
-                      <label className="flex items-center gap-3 min-w-0 cursor-pointer">
-                        <Checkbox
-                          checked={!!p.completed}
-                          onCheckedChange={(checked) => {
-                            if (!canEditPriorities) return;
-                            toggleMutation.mutate({ id: p.id, completed: checked === true, tenantSlug });
-                          }}
-                          disabled={!canEditPriorities || toggleMutation.isPending}
-                        />
-                        <span className="text-[15px] text-muted-foreground dark:text-zinc-500 line-through truncate">{p.title}</span>
-                      </label>
-                      <button
-                        type="button"
-                        className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300"
-                        onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
-                        disabled={!canEditPriorities || deleteMutation.isPending}
-                        aria-label={`Delete ${p.title}`}
+                  {completedPriorities.length > 0 ? completedPriorities.map((p) => {
+                    const isEditing = editingPriorityId === String(p.id);
+                    const trimmedEditTitle = String(editingPriorityTitle || "").trim();
+                    const trimmedCurrentTitle = String(p.title || "").trim();
+                    const canSaveEdit = canEditPriorities && trimmedEditTitle.length > 0 && trimmedEditTitle !== trimmedCurrentTitle && !updateTitleMutation.isPending;
+
+                    return (
+                      <div
+                        key={p.id}
+                        className="group flex items-center justify-between rounded-2xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/20 px-4 py-3 gap-3"
                       >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )) : (
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <Checkbox
+                            checked={!!p.completed}
+                            onCheckedChange={(checked) => {
+                              if (!canEditPriorities) return;
+                              toggleMutation.mutate({ id: p.id, completed: checked === true, tenantSlug });
+                            }}
+                            disabled={!canEditPriorities || toggleMutation.isPending}
+                          />
+                          {isEditing ? (
+                            <Input
+                              value={editingPriorityTitle}
+                              onChange={(e) => setEditingPriorityTitle(e.target.value)}
+                              className="h-9 rounded-lg bg-background dark:bg-zinc-950/70 border-border dark:border-zinc-700 text-sm"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  saveEditingPriority(p);
+                                } else if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelEditingPriority();
+                                }
+                              }}
+                            />
+                          ) : (
+                            <span className="text-[15px] text-muted-foreground dark:text-zinc-500 line-through truncate">{p.title}</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isEditing ? (
+                            <>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="default"
+                                className="h-8 px-2.5"
+                                onClick={() => saveEditingPriority(p)}
+                                disabled={!canSaveEdit}
+                              >
+                                Save
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 px-2.5"
+                                onClick={cancelEditingPriority}
+                                disabled={updateTitleMutation.isPending}
+                              >
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="opacity-20 group-hover:opacity-70 transition-opacity text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300"
+                                onClick={() => startEditingPriority(p)}
+                                disabled={!canEditPriorities}
+                                aria-label={`Edit ${p.title}`}
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className="opacity-20 group-hover:opacity-60 transition-opacity text-muted-foreground dark:text-zinc-500 hover:text-foreground/80 dark:hover:text-zinc-300"
+                                onClick={() => deleteMutation.mutate({ id: p.id, tenantSlug })}
+                                disabled={!canEditPriorities || deleteMutation.isPending}
+                                aria-label={`Delete ${p.title}`}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }) : (
                     <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/10 dark:bg-zinc-900/15 p-4 text-sm text-muted-foreground dark:text-zinc-500">
                       No completed priorities yet.
                     </div>

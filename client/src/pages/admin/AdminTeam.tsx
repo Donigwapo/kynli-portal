@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Users,
   UserPlus,
   Pencil,
-  Trash2,
+  UserX,
+  UserCheck,
   ChevronDown,
   ChevronUp,
   X,
@@ -42,6 +43,22 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type StaffRole = "admin" | "accounting_manager" | "tax_manager" | "accountant";
+type StaffStatus = "active" | "inactive";
+type StaffFilter = "all" | "active" | "inactive";
+
+type ReactivationClassification =
+  | "eligible_restore"
+  | "assigned_to_active_accountant"
+  | "client_inactive_or_missing"
+  | "not_authorized";
+
+type ReactivationPreviewItem = {
+  tenantSlug: string;
+  tenantName: string;
+  classification: ReactivationClassification;
+  blockingStaffIds: number[];
+  blockingStaffNames: string[];
+};
 
 const ROLE_LABELS: Record<StaffRole, string> = {
   admin: "Admin",
@@ -76,8 +93,10 @@ export default function AdminTeam() {
   const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState<StaffRole>("accountant");
 
-  // Remove confirm state
-  const [removeId, setRemoveId] = useState<number | null>(null);
+  // Deactivate/reactivate state
+  const [deactivateId, setDeactivateId] = useState<number | null>(null);
+  const [reactivateTarget, setReactivateTarget] = useState<{ id: number; name: string | null; email: string } | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StaffFilter>("all");
 
   // Expanded assignment panel per staff member
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -104,11 +123,27 @@ export default function AdminTeam() {
     onError: (e) => toast.error(e.message),
   });
 
-  const removeMutation = trpc.staff.remove.useMutation({
-    onSuccess: () => {
+  const deactivateMutation = trpc.staff.deactivate.useMutation({
+    onSuccess: (data) => {
       utils.staff.list.invalidate();
-      setRemoveId(null);
-      toast.success("Team member removed");
+      setDeactivateId(null);
+      toast.success(`Team member deactivated. ${data.releasedAssignmentCount} client assignment${data.releasedAssignmentCount === 1 ? "" : "s"} released.`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const reactivatePreviewQuery = trpc.staff.reactivatePreview.useQuery(
+    { id: reactivateTarget?.id ?? 0 },
+    { enabled: !!reactivateTarget }
+  );
+
+  const reactivateMutation = trpc.staff.reactivate.useMutation({
+    onSuccess: (data) => {
+      utils.staff.list.invalidate();
+      setReactivateTarget(null);
+      toast.success(
+        `Team member reactivated. Restored ${data.restoredCount} assignment${data.restoredCount === 1 ? "" : "s"}; skipped ${data.skippedConflictCount + data.skippedIneligibleCount + data.skippedMissingCount}.`
+      );
     },
     onError: (e) => toast.error(e.message),
   });
@@ -145,6 +180,14 @@ export default function AdminTeam() {
     setEditRole(m.role as StaffRole);
   };
 
+  const filteredStaff = useMemo(() => {
+    return staff.filter((member: any) => {
+      const status = (member.status ?? "active") as StaffStatus;
+      if (statusFilter === "all") return true;
+      return status === statusFilter;
+    });
+  }, [staff, statusFilter]);
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
@@ -157,6 +200,29 @@ export default function AdminTeam() {
           <p className="text-sm text-muted-foreground mt-1">
             Manage your team of {staff.length} advisor{staff.length !== 1 ? "s" : ""}
           </p>
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={statusFilter === "all" ? "default" : "outline"}
+              onClick={() => setStatusFilter("all")}
+            >
+              All
+            </Button>
+            <Button
+              size="sm"
+              variant={statusFilter === "active" ? "default" : "outline"}
+              onClick={() => setStatusFilter("active")}
+            >
+              Active
+            </Button>
+            <Button
+              size="sm"
+              variant={statusFilter === "inactive" ? "default" : "outline"}
+              onClick={() => setStatusFilter("inactive")}
+            >
+              Inactive
+            </Button>
+          </div>
         </div>
         <Button
           onClick={() => setInviteOpen(true)}
@@ -170,15 +236,15 @@ export default function AdminTeam() {
       {/* Staff List */}
       {isLoading ? (
         <div className="text-muted-foreground text-sm">Loading team members...</div>
-      ) : staff.length === 0 ? (
+      ) : filteredStaff.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <Users className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="text-lg font-medium">No team members yet</p>
-          <p className="text-sm mt-1">Click "Add Team Member" to get started</p>
+          <p className="text-lg font-medium">No team members for this filter</p>
+          <p className="text-sm mt-1">Try another filter or add a team member</p>
         </div>
       ) : (
         <div className="space-y-3">
-          {staff.map((member) => (
+          {filteredStaff.map((member: any) => (
             <StaffCard
               key={member.id}
               member={member}
@@ -186,7 +252,8 @@ export default function AdminTeam() {
               isExpanded={expandedId === member.id}
               onToggleExpand={() => setExpandedId(expandedId === member.id ? null : member.id)}
               onEdit={() => openEdit(member)}
-              onRemove={() => setRemoveId(member.id)}
+              onDeactivate={() => setDeactivateId(member.id)}
+              onReactivate={() => setReactivateTarget({ id: member.id, name: member.name ?? null, email: member.email })}
               onAssign={(tenantSlug) => assignMutation.mutate({ staffId: member.id, tenantSlug })}
               onUnassign={(tenantSlug) => unassignMutation.mutate({ staffId: member.id, tenantSlug })}
             />
@@ -306,13 +373,18 @@ export default function AdminTeam() {
         </DialogContent>
       </Dialog>
 
-      {/* Remove Confirm */}
-      <AlertDialog open={removeId !== null} onOpenChange={(o) => !o && setRemoveId(null)}>
+      {/* Deactivate Confirm */}
+      <AlertDialog open={deactivateId !== null} onOpenChange={(o) => !o && setDeactivateId(null)}>
         <AlertDialogContent className="bg-card dark:bg-[#111] border-border dark:border-white/10 text-foreground dark:text-white">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground dark:text-white">Remove Team Member?</AlertDialogTitle>
-            <AlertDialogDescription className="text-muted-foreground">
-              This will permanently remove them from the portal. Their Supabase Auth account will not be deleted automatically.
+            <AlertDialogTitle className="text-foreground dark:text-white">Deactivate Team Member?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground space-y-2">
+              <span className="block">
+                Deactivating this accountant will revoke their portal access and unassign their current clients.
+              </span>
+              <span className="block">
+                Their previous assignments will be saved and may be automatically restored when they are reactivated, provided those clients have not been assigned to another accountant.
+              </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -320,14 +392,82 @@ export default function AdminTeam() {
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => removeId !== null && removeMutation.mutate({ id: removeId })}
+              onClick={() => deactivateId !== null && deactivateMutation.mutate({ id: deactivateId })}
               className="bg-red-500 hover:bg-red-600 text-white"
+              disabled={deactivateMutation.isPending}
             >
-              Remove
+              {deactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Reactivate Preview Dialog */}
+      <Dialog open={!!reactivateTarget} onOpenChange={(open) => !open && setReactivateTarget(null)}>
+        <DialogContent className="bg-card dark:bg-[#111] border-border dark:border-white/10 text-foreground dark:text-white max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-foreground dark:text-white flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-primary dark:text-teal-400" />
+              Reactivate Team Member
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 text-sm">
+            <p>
+              Reactivating <span className="font-semibold">{reactivateTarget?.name ?? reactivateTarget?.email}</span> may restore previous assignments where no active accountant currently exists.
+            </p>
+
+            {reactivatePreviewQuery.isLoading ? (
+              <p className="text-muted-foreground">Loading assignment preview...</p>
+            ) : reactivatePreviewQuery.error ? (
+              <p className="text-red-600">Failed to load preview: {reactivatePreviewQuery.error.message}</p>
+            ) : (
+              <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                {(reactivatePreviewQuery.data?.preview ?? []).length === 0 ? (
+                  <p className="text-muted-foreground">No previous assignments found for this deactivation cycle.</p>
+                ) : (
+                  (reactivatePreviewQuery.data?.preview ?? []).map((item: ReactivationPreviewItem) => {
+                    const classificationLabel =
+                      item.classification === "eligible_restore"
+                        ? "Eligible for automatic restoration"
+                        : item.classification === "assigned_to_active_accountant"
+                        ? "Currently assigned to another active accountant"
+                        : item.classification === "not_authorized"
+                        ? "No longer authorized"
+                        : "Client inactive or missing";
+
+                    return (
+                      <div key={item.tenantSlug} className="rounded border border-border dark:border-white/10 px-3 py-2">
+                        <div className="font-medium">{item.tenantName}</div>
+                        <div className="text-xs text-muted-foreground">{item.tenantSlug}</div>
+                        <div className="mt-1 text-xs">{classificationLabel}</div>
+                        {item.blockingStaffNames.length > 0 && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Assigned to: {item.blockingStaffNames.join(", ")}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReactivateTarget(null)} className="text-muted-foreground">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => reactivateTarget && reactivateMutation.mutate({ id: reactivateTarget.id })}
+              disabled={reactivateMutation.isPending || reactivatePreviewQuery.isLoading}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 dark:bg-teal-500 dark:hover:bg-teal-600 dark:text-black font-semibold"
+            >
+              {reactivateMutation.isPending ? "Reactivating..." : "Reactivate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -339,23 +479,37 @@ function StaffCard({
   isExpanded,
   onToggleExpand,
   onEdit,
-  onRemove,
+  onDeactivate,
+  onReactivate,
   onAssign,
   onUnassign,
 }: {
-  member: { id: number; name: string | null; email: string; role: string; created_at: string };
+  member: {
+    id: number;
+    name: string | null;
+    email: string;
+    role: string;
+    created_at: string;
+    status?: StaffStatus | null;
+    assigned_client_count?: number;
+    previous_assignment_count?: number;
+  };
   tenants: { slug: string; company_name: string; is_active: boolean }[];
   isExpanded: boolean;
   onToggleExpand: () => void;
   onEdit: () => void;
-  onRemove: () => void;
+  onDeactivate: () => void;
+  onReactivate: () => void;
   onAssign: (slug: string) => void;
   onUnassign: (slug: string) => void;
 }) {
   const role = member.role as StaffRole;
+  const status = (member.status ?? "active") as StaffStatus;
+  const isInactive = status === "inactive";
+
   const { data: assignments = [] } = trpc.staff.getAssignments.useQuery(
     { staffId: member.id },
-    { enabled: isExpanded }
+    { enabled: isExpanded && !isInactive }
   );
 
   const assignedSlugs = new Set(assignments.map((a) => a.tenant_slug));
@@ -377,6 +531,15 @@ function StaffCard({
             <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${ROLE_COLORS[role] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30"}`}>
               {ROLE_LABELS[role] ?? role}
             </span>
+            <Badge
+              variant="outline"
+              className={isInactive
+                ? "text-amber-700 border-amber-500/40 bg-amber-500/10 dark:text-amber-300"
+                : "text-emerald-700 border-emerald-500/40 bg-emerald-500/10 dark:text-emerald-300"
+              }
+            >
+              {isInactive ? "Inactive" : "Active"}
+            </Badge>
           </div>
           <p className="text-xs text-muted-foreground dark:text-gray-500 mt-0.5 truncate">{member.email}</p>
         </div>
@@ -388,10 +551,16 @@ function StaffCard({
             variant="ghost"
             onClick={onToggleExpand}
             className="text-muted-foreground dark:text-gray-400 hover:text-primary dark:hover:text-teal-400 hover:bg-muted dark:hover:bg-white/5 h-8 px-2 gap-1"
+            disabled={isInactive}
+            title={isInactive ? "Inactive team members cannot hold active assignments" : "View and manage assignments"}
           >
             <Building2 className="w-3.5 h-3.5" />
-            <span className="text-xs">{assignments.length > 0 ? assignments.length : "Clients"}</span>
-            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            <span className="text-xs">
+              {isInactive
+                ? `${Number(member.previous_assignment_count ?? 0)} previous`
+                : (member.assigned_client_count != null ? String(member.assigned_client_count) : (assignments.length > 0 ? String(assignments.length) : "Clients"))}
+            </span>
+            {!isInactive && (isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
           </Button>
           <Button
             size="sm"
@@ -401,19 +570,32 @@ function StaffCard({
           >
             <Pencil className="w-3.5 h-3.5" />
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onRemove}
-            className="text-muted-foreground dark:text-gray-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 h-8 w-8 p-0"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
+          {isInactive ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onReactivate}
+              className="text-muted-foreground dark:text-gray-400 hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-emerald-500/10 h-8 px-2"
+            >
+              <UserCheck className="w-3.5 h-3.5 mr-1" />
+              <span className="text-xs">Reactivate</span>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onDeactivate}
+              className="text-muted-foreground dark:text-gray-400 hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 h-8 px-2"
+            >
+              <UserX className="w-3.5 h-3.5 mr-1" />
+              <span className="text-xs">Deactivate</span>
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Client Assignments Panel */}
-      {isExpanded && (
+      {isExpanded && !isInactive && (
         <div className="border-t border-border dark:border-white/10 p-4 bg-muted/20 dark:bg-black/20">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
             Client Assignments

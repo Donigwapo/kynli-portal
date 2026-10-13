@@ -3,6 +3,18 @@ import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { supabaseClient } from "@/lib/supabase";
 import type { EmailOtpType, Session } from "@supabase/supabase-js";
+import {
+  isRecoveryRequested,
+  type CallbackParams,
+  shouldAllowRecoveryTransition,
+} from "@/lib/authCallbackRecovery";
+
+const RECOVERY_VERIFIED_KEY = "kynli:recovery:verified";
+
+function clearRecoveryVerifiedFlag() {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(RECOVERY_VERIFIED_KEY);
+}
 
 function getApiBase() {
   if (typeof window !== "undefined") return window.location.origin;
@@ -17,13 +29,6 @@ const OTP_TYPES = new Set<EmailOtpType>([
   "email_change",
 ]);
 
-type CallbackParams = {
-  accessToken: string | null;
-  refreshToken: string | null;
-  tokenHash: string | null;
-  code: string | null;
-  type: string | null;
-};
 
 function readCallbackParams(): CallbackParams {
   const url = new URL(window.location.href);
@@ -38,8 +43,10 @@ function readCallbackParams(): CallbackParams {
     tokenHash: get("token_hash"),
     code: get("code"),
     type: get("type"),
+    flow: get("flow"),
   };
 }
+
 
 async function waitForSession(timeoutMs = 8000): Promise<Session | null> {
   const {
@@ -69,9 +76,11 @@ export default function AuthCallback() {
   useEffect(() => {
     let cancelled = false;
 
-    async function resolveSupabaseSessionFromCallback(): Promise<Session | null> {
+    async function resolveSupabaseSessionFromCallback(): Promise<{ session: Session | null; recoveryFlow: boolean; recoveryTransitionAllowed: boolean }> {
       const params = readCallbackParams();
       const otpType = params.type as EmailOtpType | null;
+      const recoveryFlow = isRecoveryRequested(params);
+      let passwordRecoveryEventSeen = false;
 
       console.info("[AuthCallback] callback params detected", {
         hasAccessToken: Boolean(params.accessToken),
@@ -79,10 +88,34 @@ export default function AuthCallback() {
         hasTokenHash: Boolean(params.tokenHash),
         hasCode: Boolean(params.code),
         type: params.type,
+        flow: params.flow,
+        recoveryFlow,
       });
 
       if (params.accessToken && params.refreshToken) {
         console.info("[AuthCallback] access/refresh token pair detected; setting session");
+
+        const recoveryEventPromise = new Promise<boolean>((resolve) => {
+          let settled = false;
+          const timeout = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              subscription.data.subscription.unsubscribe();
+              resolve(false);
+            }
+          }, 1500);
+
+          const subscription = supabaseClient.auth.onAuthStateChange((event) => {
+            if (settled) return;
+            if (event === "PASSWORD_RECOVERY") {
+              settled = true;
+              clearTimeout(timeout);
+              subscription.data.subscription.unsubscribe();
+              resolve(true);
+            }
+          });
+        });
+
         const { error } = await supabaseClient.auth.setSession({
           access_token: params.accessToken,
           refresh_token: params.refreshToken,
@@ -91,17 +124,69 @@ export default function AuthCallback() {
           console.error("[AuthCallback] token setSession failed", error.message);
           throw new Error(`Failed to set session from callback tokens: ${error.message}`);
         }
-        console.info("[AuthCallback] token exchange success via setSession");
+
+        passwordRecoveryEventSeen = await recoveryEventPromise;
+
+        console.info("[AuthCallback] token exchange success via setSession", {
+          passwordRecoveryEventSeen,
+        });
       } else if (params.code) {
         console.info("[AuthCallback] OAuth code detected; exchanging for session");
+        const recoveryEventPromise = new Promise<boolean>((resolve) => {
+          let settled = false;
+          const timeout = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              subscription.data.subscription.unsubscribe();
+              resolve(false);
+            }
+          }, 1500);
+
+          const subscription = supabaseClient.auth.onAuthStateChange((event) => {
+            if (settled) return;
+            if (event === "PASSWORD_RECOVERY") {
+              settled = true;
+              clearTimeout(timeout);
+              subscription.data.subscription.unsubscribe();
+              resolve(true);
+            }
+          });
+        });
+
         const { error } = await supabaseClient.auth.exchangeCodeForSession(params.code);
         if (error) {
           console.error("[AuthCallback] code exchange failed", error.message);
           throw new Error(`Failed to exchange callback code: ${error.message}`);
         }
-        console.info("[AuthCallback] token exchange success via code");
+
+        passwordRecoveryEventSeen = await recoveryEventPromise;
+
+        console.info("[AuthCallback] token exchange success via code", {
+          passwordRecoveryEventSeen,
+        });
       } else if (params.tokenHash && otpType && OTP_TYPES.has(otpType)) {
         console.info("[AuthCallback] token_hash detected; verifying OTP", { type: otpType });
+        const recoveryEventPromise = new Promise<boolean>((resolve) => {
+          let settled = false;
+          const timeout = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              subscription.data.subscription.unsubscribe();
+              resolve(false);
+            }
+          }, 1500);
+
+          const subscription = supabaseClient.auth.onAuthStateChange((event) => {
+            if (settled) return;
+            if (event === "PASSWORD_RECOVERY") {
+              settled = true;
+              clearTimeout(timeout);
+              subscription.data.subscription.unsubscribe();
+              resolve(true);
+            }
+          });
+        });
+
         const { error } = await supabaseClient.auth.verifyOtp({
           type: otpType,
           token_hash: params.tokenHash,
@@ -110,23 +195,52 @@ export default function AuthCallback() {
           console.error("[AuthCallback] token_hash verify failed", error.message);
           throw new Error(`Failed to verify OTP callback token: ${error.message}`);
         }
-        console.info("[AuthCallback] token exchange success via verifyOtp", { type: otpType });
+
+        passwordRecoveryEventSeen = await recoveryEventPromise;
+
+        console.info("[AuthCallback] token exchange success via verifyOtp", {
+          type: otpType,
+          passwordRecoveryEventSeen,
+        });
       } else {
         console.info("[AuthCallback] no callback token payload found; checking existing session");
       }
 
       const session = await waitForSession(8000);
+      const recoveryTransitionAllowed = shouldAllowRecoveryTransition(params, {
+        passwordRecoveryEventSeen,
+      });
+
       console.info("[AuthCallback] Supabase session detected", {
         hasSession: Boolean(session),
         email: session?.user?.email ?? null,
+        passwordRecoveryEventSeen,
+        recoveryTransitionAllowed,
       });
 
-      return session;
+      return { session, recoveryFlow, recoveryTransitionAllowed };
     }
 
     async function run() {
       try {
-        const session = await resolveSupabaseSessionFromCallback();
+        const { session, recoveryFlow, recoveryTransitionAllowed } = await resolveSupabaseSessionFromCallback();
+
+        if (recoveryFlow) {
+          if (!recoveryTransitionAllowed || !session?.user) {
+            clearRecoveryVerifiedFlag();
+            await supabaseClient.auth.signOut().catch(() => undefined);
+            console.warn("[AuthCallback] recovery flow rejected or missing valid session");
+            if (!cancelled) navigate("/login?reset=invalid");
+            return;
+          }
+
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem(RECOVERY_VERIFIED_KEY, "1");
+          }
+
+          if (!cancelled) navigate("/reset-password");
+          return;
+        }
 
         if (!session?.user) {
           console.warn("[AuthCallback] No authenticated user found in session");
@@ -186,6 +300,7 @@ export default function AuthCallback() {
           navigate(redirectTarget);
         }
       } catch (err) {
+        clearRecoveryVerifiedFlag();
         console.error("[AuthCallback] Unexpected error:", err);
         if (!cancelled) navigate("/login");
       }
@@ -202,7 +317,7 @@ export default function AuthCallback() {
     <div className="min-h-screen bg-background flex items-center justify-center">
       <div className="flex items-center gap-3 text-sm text-muted-foreground">
         <Loader2 className="animate-spin" size={18} />
-        <span>Finalizing your invite and signing you in…</span>
+        <span>Finalizing secure sign-in…</span>
       </div>
     </div>
   );

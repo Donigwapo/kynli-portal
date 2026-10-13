@@ -117,9 +117,18 @@ import {
   createStaffMember,
   updateStaffMember,
   removeStaffMember,
+  getStaffById,
   getStaffAssignments,
   assignStaffToClient,
   unassignStaffFromClient,
+  deactivateStaffMember,
+  reactivateStaffMember,
+  previewStaffReactivation,
+  listPendingAssignmentSnapshots,
+  listTenantLookupBySlugs,
+  listActiveAccountantsByTenant,
+  countActiveAdmins,
+  isPortalUserActive,
   listTenantMembers,
   upsertTenantMember,
   resendTenantMemberInvite,
@@ -154,6 +163,7 @@ import {
   listCoachingPriorities,
   createCoachingPriority,
   updateCoachingPriorityCompletion,
+  updateCoachingPriorityTitle,
   deleteCoachingPriority,
   reorderCoachingPriorities,
   type WorkspaceNote,
@@ -5798,6 +5808,25 @@ export const appRouter = router({
         await deleteCoachingPriority(slug, input.id);
         return { success: true };
       }),
+    prioritiesUpdateTitle: protectedProcedure
+      .input(z.object({
+        id: z.string().uuid(),
+        title: z.string().min(1),
+        tenantSlug: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        if (!isStaffActor(ctx.user)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Clients cannot update priorities." });
+        }
+        await assertTierAccess(ctx.user, "coaching", input.tenantSlug);
+        const slug = await resolveChatTenantSlug(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const row = await updateCoachingPriorityTitle({
+          tenant_slug: slug,
+          id: input.id,
+          title: input.title,
+        });
+        return { success: true, item: row };
+      }),
     prioritiesReorder: protectedProcedure
       .input(z.object({
         year: z.number().int().min(2000).max(2100),
@@ -9376,8 +9405,39 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
 
     remove: adminProcedure
       .input(z.object({ id: z.number() }))
+      .mutation(async () => {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Hard deletion is disabled in normal admin workflows. Use deactivate/reactivate.",
+        });
+      }),
+
+    deactivate: adminProcedure
+      .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        await removeStaffMember(input.id);
+        const target = await getStaffById(input.id);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "Team member not found" });
+
+        if (target.role === "client") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Only staff users can be deactivated." });
+        }
+
+        if ((target.status ?? "active") === "inactive") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Team member is already inactive." });
+        }
+
+        if (Number(target.id) === Number(ctx.user.id)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate your own account." });
+        }
+
+        if (target.role === "admin") {
+          const activeAdminCount = await countActiveAdmins();
+          if (activeAdminCount <= 1) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot deactivate the last active admin." });
+          }
+        }
+
+        const result = await deactivateStaffMember(input.id, Number(ctx.user.id));
 
         await writeActivityLog({
           req: ctx.req,
@@ -9386,22 +9446,105 @@ Write a 3-4 paragraph summary covering: overall performance, key highlights, are
           entity_type: "user",
           entity_id: String(input.id),
           metadata: {
-            source: "staff.remove",
+            source: "staff.deactivate",
+            deactivation_event_id: result.deactivation_event_id,
+            released_assignment_count: result.assignment_count,
+            previous_status: target.status ?? "active",
           },
           status: "success",
         });
 
-        return { success: true };
+        return {
+          success: true,
+          deactivationEventId: result.deactivation_event_id,
+          releasedAssignmentCount: result.assignment_count,
+        };
+      }),
+
+    reactivatePreview: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const target = await getStaffById(input.id);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "Team member not found" });
+
+        if ((target.status ?? "active") !== "inactive") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Team member is not inactive." });
+        }
+
+        const [preview, snapshots] = await Promise.all([
+          previewStaffReactivation(input.id),
+          listPendingAssignmentSnapshots(input.id),
+        ]);
+
+        const allSlugs = Array.from(new Set(preview.map((p) => p.tenant_slug).filter(Boolean)));
+        const tenantLookup = await listTenantLookupBySlugs(allSlugs);
+
+        return {
+          userId: input.id,
+          deactivationEventId: target.last_deactivation_event_id ?? null,
+          previousAssignmentCount: snapshots.length,
+          preview: preview.map((row) => ({
+            tenantSlug: row.tenant_slug,
+            tenantName: row.tenant_name ?? tenantLookup.get(sanitizeTenantSlug(row.tenant_slug))?.company_name ?? row.tenant_slug,
+            classification: row.classification,
+            blockingStaffIds: row.blocking_staff_ids,
+            blockingStaffNames: row.blocking_staff_names,
+          })),
+        };
+      }),
+
+    reactivate: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const target = await getStaffById(input.id);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "Team member not found" });
+
+        if ((target.status ?? "active") !== "inactive") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Team member is not inactive." });
+        }
+
+        const result = await reactivateStaffMember(input.id, Number(ctx.user.id));
+
+        await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "member_added",
+          entity_type: "user",
+          entity_id: String(input.id),
+          metadata: {
+            source: "staff.reactivate",
+            deactivation_event_id: result.deactivation_event_id,
+            restored_count: result.restored_count,
+            skipped_conflict_count: result.skipped_conflict_count,
+            skipped_ineligible_count: result.skipped_ineligible_count,
+            skipped_missing_count: result.skipped_missing_count,
+          },
+          status: "success",
+        });
+
+        return {
+          success: true,
+          deactivationEventId: result.deactivation_event_id,
+          restoredCount: result.restored_count,
+          skippedConflictCount: result.skipped_conflict_count,
+          skippedIneligibleCount: result.skipped_ineligible_count,
+          skippedMissingCount: result.skipped_missing_count,
+        };
       }),
 
     getAssignments: adminProcedure
       .input(z.object({ staffId: z.number() }))
-      .query(async ({ input }) => getStaffAssignments(input.staffId)),
+      .query(async ({ input }) => {
+        const staff = await getStaffById(input.staffId);
+        if (!staff) return [];
+        if ((staff.status ?? "active") !== "active") return [];
+        return getStaffAssignments(input.staffId);
+      }),
 
     assignClient: adminProcedure
       .input(z.object({ staffId: z.number(), tenantSlug: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        await assignStaffToClient(input.staffId, input.tenantSlug);
+        await assignStaffToClient(input.staffId, input.tenantSlug, Number(ctx.user.id));
 
         await writeActivityLog({
           req: ctx.req,

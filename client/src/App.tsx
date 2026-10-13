@@ -10,6 +10,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import AuthCallback from "./pages/AuthCallback";
+import ResetPassword from "./pages/ResetPassword";
 
 // Portal pages
 import Overview from "./pages/portal/Overview";
@@ -72,6 +73,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/login" component={Login} />
       <Route path="/auth/callback" component={AuthCallback} />
+      <Route path="/reset-password" component={ResetPassword} />
 
       {/* Client Portal — protected, tier-gated */}
       {/* Set password page — shown after magic-link invite, no layout wrapper needed */}

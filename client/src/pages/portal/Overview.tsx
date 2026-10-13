@@ -667,7 +667,13 @@ export default function Overview() {
                   <Tooltip
                     contentStyle={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: 12 }}
                     labelStyle={{ color: "var(--foreground)" }}
-                    formatter={(v: any, name: any) => [v == null ? "—" : fmtD(Number(v)), name === "actualRevenue" ? "Actual Revenue" : "Budget Revenue"]}
+                    formatter={(v: any, name: any) => {
+                      const seriesName = String(name ?? "").trim();
+                      const tooltipLabel = seriesName === "Actual Revenue"
+                        ? "Actual Revenue"
+                        : "Budgeted Revenue";
+                      return [v == null ? "—" : fmtD(Number(v)), tooltipLabel];
+                    }}
                   />
                   <Bar dataKey="actualRevenue" name="Actual Revenue" fill={TEAL} radius={[3, 3, 0, 0]} />
                   <Bar dataKey="budgetRevenue" name="Budget Revenue" fill={GREEN} radius={[3, 3, 0, 0]} />

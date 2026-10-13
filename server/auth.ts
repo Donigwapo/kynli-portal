@@ -72,6 +72,11 @@ export async function getPortalUserFromRequest(req: Request): Promise<PortalUser
 
   // Fetch fresh user data from DB
   const user = await getPortalUserByEmail(payload.email);
+  if (!user) return null;
+
+  const status = (user.status ?? "active");
+  if (status !== "active") return null;
+
   return user;
 }
 
@@ -316,6 +321,11 @@ export function registerAuthRoutes(app: Express) {
         return;
       }
 
+      if ((portalUser.status ?? "active") !== "active") {
+        res.status(403).json({ error: "Your account is inactive. Contact your administrator." });
+        return;
+      }
+
       await issueSessionCookie(req, res, portalUser);
 
       res.json({
@@ -377,6 +387,11 @@ export function registerAuthRoutes(app: Express) {
 
       if (!portalUser) {
         res.status(403).json({ error: "No portal account found for this email." });
+        return;
+      }
+
+      if ((portalUser.status ?? "active") !== "active") {
+        res.status(403).json({ error: "Your account is inactive. Contact your administrator." });
         return;
       }
 
