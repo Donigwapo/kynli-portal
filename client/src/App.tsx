@@ -39,6 +39,7 @@ import AdminChat from "./pages/admin/AdminChat";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminTeam from "./pages/admin/AdminTeam";
 import AdminProfile from "./pages/admin/AdminProfile";
+import AdminFinancialOversight from "./pages/admin/AdminFinancialOversight";
 
 function PortalRoute({ component: Component, featureKey }: { component: React.ComponentType; featureKey?: string }) {
   return (
@@ -103,6 +104,7 @@ function Router() {
       <Route path="/admin/team" component={() => <AdminRoute component={AdminTeam} />} />
       <Route path="/admin/profile" component={() => <AdminRoute component={AdminProfile} />} />
       <Route path="/admin/activity-log" component={() => <AdminRoute component={ActivityLogPage} />} />
+      <Route path="/admin/financial-oversight" component={() => <AdminRoute component={AdminFinancialOversight} />} />
 
       {/* 404 */}
       <Route path="/404" component={NotFound} />

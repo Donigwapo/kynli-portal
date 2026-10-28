@@ -456,6 +456,42 @@ export async function getAllPortalTenants(): Promise<PortalTenant[]> {
   return (data || []) as PortalTenant[];
 }
 
+export async function listActivePortalTenantsForValidationStrict(limit = 200): Promise<Array<{ slug: string; company_name: string }>> {
+  const cappedLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
+  const { data, error } = await supabase
+    .from("portal_tenants")
+    .select("slug, company_name, is_active")
+    .eq("is_active", true)
+    .neq("slug", "kynli_internal")
+    .order("company_name", { ascending: true })
+    .limit(cappedLimit);
+
+  if (error) {
+    throw new Error(error.message || "Failed to retrieve active tenants for validation.");
+  }
+
+  return ((data || []) as Array<Record<string, unknown>>)
+    .map((row) => ({
+      slug: sanitizeTenantSlug(String(row.slug ?? "")),
+      company_name: String(row.company_name ?? row.slug ?? "").trim() || String(row.slug ?? ""),
+    }))
+    .filter((row) => !!row.slug);
+}
+
+export async function countActivePortalTenantsForValidationStrict(): Promise<number> {
+  const { count, error } = await supabase
+    .from("portal_tenants")
+    .select("slug", { count: "exact", head: true })
+    .eq("is_active", true)
+    .neq("slug", "kynli_internal");
+
+  if (error) {
+    throw new Error(error.message || "Failed to count active tenants for validation.");
+  }
+
+  return Number(count || 0);
+}
+
 export async function upsertPortalTenant(tenant: Partial<PortalTenant> & { slug: string; company_name: string }): Promise<PortalTenant | null> {
   const { data, error } = await supabase
     .from("portal_tenants")
@@ -887,19 +923,72 @@ export type FinancialPeriod = {
   month: number;
 };
 
-export async function listFinancialPeriods(slug: string): Promise<FinancialPeriod[]> {
-  const { data, error } = await supabase
-    .from(`${slug}_financials`)
-    .select("year,month")
-    .order("year", { ascending: true })
-    .order("month", { ascending: true });
+export type FinancialCorePeriod = {
+  year: number;
+  month: number;
+  revenue: number;
+  expenses: number;
+  cogs_actual: number;
+  other_income_actual: number;
+  other_expense_actual: number;
+  net_profit: number;
+};
 
-  if (error) return [];
+export type FinancialLineItemAmount = {
+  year: number;
+  month: number;
+  amount: number;
+};
 
+export type FinancialValidationDataIssue = {
+  year: number;
+  month: number;
+  reasonCode:
+    | "missing_required_field"
+    | "invalid_required_field"
+    | "invalid_period_coordinates"
+    | "invalid_line_item_amount";
+  field?: "revenue" | "expenses" | "net_profit" | "amount";
+  source: "financials" | "line_items";
+};
+
+export type FinancialCorePeriodsValidationResult = {
+  periods: FinancialCorePeriod[];
+  invalidPeriods: FinancialValidationDataIssue[];
+  optionalFieldsCompatMode: "standard" | "legacy_missing_optional_columns";
+};
+
+export type FinancialLineItemsValidationResult = {
+  lineItems: FinancialLineItemAmount[];
+  invalidPeriods: FinancialValidationDataIssue[];
+};
+
+export type FinancialValidationCoverageMode =
+  | "current_year_only"
+  | "include_previous_years"
+  | "custom_start_month";
+
+export type FinancialValidationSettings = {
+  tenant_slug: string;
+  coverage_mode: FinancialValidationCoverageMode;
+  custom_start_year: number | null;
+  custom_start_month: number | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type FinancialValidationSettingsResolved = {
+  settings: FinancialValidationSettings;
+  isDefault: boolean;
+};
+
+export const DEFAULT_FINANCIAL_VALIDATION_COVERAGE_MODE: FinancialValidationCoverageMode = "current_year_only";
+
+function normalizeFinancialPeriods(rows: Array<Record<string, unknown>>): FinancialPeriod[] {
   const seen = new Set<string>();
   const periods: FinancialPeriod[] = [];
 
-  for (const row of (data || []) as Array<Record<string, unknown>>) {
+  for (const row of rows) {
     const year = Number(row.year);
     const month = Number(row.month);
     if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) continue;
@@ -910,6 +999,339 @@ export async function listFinancialPeriods(slug: string): Promise<FinancialPerio
   }
 
   return periods;
+}
+
+export async function listFinancialPeriods(slug: string): Promise<FinancialPeriod[]> {
+  const { data, error } = await supabase
+    .from(`${slug}_financials`)
+    .select("year,month")
+    .order("year", { ascending: true })
+    .order("month", { ascending: true });
+
+  if (error) return [];
+  return normalizeFinancialPeriods((data || []) as Array<Record<string, unknown>>);
+}
+
+export async function listFinancialPeriodsStrict(slug: string): Promise<FinancialPeriod[]> {
+  const { data, error } = await supabase
+    .from(`${slug}_financials`)
+    .select("year,month")
+    .order("year", { ascending: true })
+    .order("month", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message || "Failed to load financial periods.");
+  }
+
+  return normalizeFinancialPeriods((data || []) as Array<Record<string, unknown>>);
+}
+
+function parseStrictNumericField(
+  row: Record<string, unknown>,
+  field: string,
+): { ok: true; value: number } | { ok: false; reason: "missing" | "invalid" } {
+  const raw = row[field];
+  if (raw == null || raw === "") {
+    return { ok: false, reason: "missing" };
+  }
+  const parsed = typeof raw === "number" ? raw : Number(String(raw));
+  if (!Number.isFinite(parsed)) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, value: parsed };
+}
+
+function parseOptionalLegacyNumericField(row: Record<string, unknown>, field: string): number {
+  const raw = row[field];
+  if (raw == null || raw === "") return 0;
+  const parsed = typeof raw === "number" ? raw : Number(String(raw));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid optional numeric field: ${field}`);
+  }
+  return parsed;
+}
+
+function normalizeFinancialCorePeriodsWithIssues(
+  rows: Array<Record<string, unknown>>,
+  optionalFieldMode: "standard" | "legacy_missing_optional_columns",
+): FinancialCorePeriodsValidationResult {
+  const seen = new Set<string>();
+  const periods: FinancialCorePeriod[] = [];
+  const invalidPeriods: FinancialValidationDataIssue[] = [];
+
+  for (const row of rows) {
+    const year = Number(row.year);
+    const month = Number(row.month);
+
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+      invalidPeriods.push({
+        year: Number.isInteger(year) ? year : 0,
+        month: Number.isInteger(month) ? month : 0,
+        reasonCode: "invalid_period_coordinates",
+        source: "financials",
+      });
+      continue;
+    }
+
+    const key = `${year}-${month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const revenue = parseStrictNumericField(row, "revenue");
+    if (!revenue.ok) {
+      invalidPeriods.push({
+        year,
+        month,
+        reasonCode: revenue.reason === "missing" ? "missing_required_field" : "invalid_required_field",
+        field: "revenue",
+        source: "financials",
+      });
+      continue;
+    }
+
+    const expenses = parseStrictNumericField(row, "expenses");
+    if (!expenses.ok) {
+      invalidPeriods.push({
+        year,
+        month,
+        reasonCode: expenses.reason === "missing" ? "missing_required_field" : "invalid_required_field",
+        field: "expenses",
+        source: "financials",
+      });
+      continue;
+    }
+
+    const netProfit = parseStrictNumericField(row, "net_profit");
+    if (!netProfit.ok) {
+      invalidPeriods.push({
+        year,
+        month,
+        reasonCode: netProfit.reason === "missing" ? "missing_required_field" : "invalid_required_field",
+        field: "net_profit",
+        source: "financials",
+      });
+      continue;
+    }
+
+    let cogsActual: number;
+    let otherIncomeActual: number;
+    let otherExpenseActual: number;
+
+    try {
+      if (optionalFieldMode === "legacy_missing_optional_columns") {
+        cogsActual = 0;
+        otherIncomeActual = 0;
+        otherExpenseActual = 0;
+      } else {
+        cogsActual = parseOptionalLegacyNumericField(row, "cogs_actual");
+        otherIncomeActual = parseOptionalLegacyNumericField(row, "other_income_actual");
+        otherExpenseActual = parseOptionalLegacyNumericField(row, "other_expense_actual");
+      }
+    } catch {
+      invalidPeriods.push({
+        year,
+        month,
+        reasonCode: "invalid_required_field",
+        source: "financials",
+      });
+      continue;
+    }
+
+    periods.push({
+      year,
+      month,
+      revenue: revenue.value,
+      expenses: expenses.value,
+      cogs_actual: cogsActual,
+      other_income_actual: otherIncomeActual,
+      other_expense_actual: otherExpenseActual,
+      net_profit: netProfit.value,
+    });
+  }
+
+  periods.sort((a, b) => (a.year - b.year) || (a.month - b.month));
+  return {
+    periods,
+    invalidPeriods,
+    optionalFieldsCompatMode: optionalFieldMode,
+  };
+}
+
+export async function listFinancialCorePeriodsStrict(slug: string): Promise<FinancialCorePeriodsValidationResult> {
+  const tableName = `${slug}_financials`;
+  const primary = await supabase
+    .from(tableName)
+    .select("year,month,revenue,expenses,cogs_actual,other_income_actual,other_expense_actual,net_profit")
+    .order("year", { ascending: true })
+    .order("month", { ascending: true });
+
+  if (!primary.error) {
+    return normalizeFinancialCorePeriodsWithIssues((primary.data || []) as Array<Record<string, unknown>>, "standard");
+  }
+
+  const code = (primary.error as any)?.code;
+  if (code === "42703") {
+    // Legacy compatibility: optional extension fields may not exist in older tenant tables.
+    const legacy = await supabase
+      .from(tableName)
+      .select("year,month,revenue,expenses,net_profit")
+      .order("year", { ascending: true })
+      .order("month", { ascending: true });
+
+    if (legacy.error) {
+      throw new Error(legacy.error.message || "Failed to load legacy financial period totals.");
+    }
+
+    return normalizeFinancialCorePeriodsWithIssues((legacy.data || []) as Array<Record<string, unknown>>, "legacy_missing_optional_columns");
+  }
+
+  throw new Error(primary.error.message || "Failed to load financial period totals.");
+}
+
+function normalizeLineItemAmountsWithIssues(rows: Array<Record<string, unknown>>): FinancialLineItemsValidationResult {
+  const lineItems: FinancialLineItemAmount[] = [];
+  const invalidPeriods: FinancialValidationDataIssue[] = [];
+
+  for (const row of rows) {
+    const year = Number(row.year);
+    const month = Number(row.month);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+      invalidPeriods.push({
+        year: Number.isInteger(year) ? year : 0,
+        month: Number.isInteger(month) ? month : 0,
+        reasonCode: "invalid_period_coordinates",
+        source: "line_items",
+      });
+      continue;
+    }
+
+    const amount = parseStrictNumericField(row, "amount");
+    if (!amount.ok) {
+      invalidPeriods.push({
+        year,
+        month,
+        reasonCode: "invalid_line_item_amount",
+        field: "amount",
+        source: "line_items",
+      });
+      continue;
+    }
+
+    lineItems.push({ year, month, amount: amount.value });
+  }
+
+  return { lineItems, invalidPeriods };
+}
+
+export async function listLineItemAmountsByYearStrict(slug: string, year: number): Promise<FinancialLineItemsValidationResult> {
+  const { data, error } = await supabase
+    .from(`${slug}_line_items`)
+    .select("year,month,amount")
+    .eq("year", year)
+    .order("month", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message || "Failed to load line items for validation.");
+  }
+
+  return normalizeLineItemAmountsWithIssues((data || []) as Array<Record<string, unknown>>);
+}
+
+function normalizeFinancialValidationSettingsRow(
+  tenantSlug: string,
+  row: Record<string, unknown> | null,
+): FinancialValidationSettingsResolved {
+  const defaultSettings: FinancialValidationSettings = {
+    tenant_slug: sanitizeTenantSlug(tenantSlug),
+    coverage_mode: DEFAULT_FINANCIAL_VALIDATION_COVERAGE_MODE,
+    custom_start_year: null,
+    custom_start_month: null,
+  };
+
+  if (!row) {
+    return { settings: defaultSettings, isDefault: true };
+  }
+
+  const modeRaw = String(row.coverage_mode ?? "").trim();
+  const allowedModes = new Set<FinancialValidationCoverageMode>([
+    "current_year_only",
+    "include_previous_years",
+    "custom_start_month",
+  ]);
+
+  const coverage_mode: FinancialValidationCoverageMode = allowedModes.has(modeRaw as FinancialValidationCoverageMode)
+    ? (modeRaw as FinancialValidationCoverageMode)
+    : DEFAULT_FINANCIAL_VALIDATION_COVERAGE_MODE;
+
+  const custom_start_year = row.custom_start_year == null ? null : Number(row.custom_start_year);
+  const custom_start_month = row.custom_start_month == null ? null : Number(row.custom_start_month);
+
+  return {
+    settings: {
+      tenant_slug: sanitizeTenantSlug(String(row.tenant_slug ?? tenantSlug)),
+      coverage_mode,
+      custom_start_year: Number.isInteger(custom_start_year) ? custom_start_year : null,
+      custom_start_month: Number.isInteger(custom_start_month) ? custom_start_month : null,
+      created_at: row.created_at == null ? undefined : String(row.created_at),
+      updated_at: row.updated_at == null ? undefined : String(row.updated_at),
+    },
+    isDefault: false,
+  };
+}
+
+export async function getFinancialValidationSettings(tenantSlug: string): Promise<FinancialValidationSettingsResolved> {
+  const sanitizedSlug = sanitizeTenantSlug(tenantSlug);
+  const { data, error } = await supabase
+    .from("financial_validation_settings")
+    .select("tenant_slug, coverage_mode, custom_start_year, custom_start_month, created_at, updated_at")
+    .eq("tenant_slug", sanitizedSlug)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Failed to retrieve financial validation settings.");
+  }
+
+  return normalizeFinancialValidationSettingsRow(sanitizedSlug, (data as Record<string, unknown> | null));
+}
+
+export async function upsertFinancialValidationSettings(
+  input: {
+    tenant_slug: string;
+    coverage_mode: FinancialValidationCoverageMode;
+    custom_start_year?: number | null;
+    custom_start_month?: number | null;
+  },
+): Promise<FinancialValidationSettings> {
+  const tenant_slug = sanitizeTenantSlug(input.tenant_slug);
+  const coverage_mode = input.coverage_mode;
+
+  const custom_start_year = coverage_mode === "custom_start_month"
+    ? (input.custom_start_year ?? null)
+    : null;
+  const custom_start_month = coverage_mode === "custom_start_month"
+    ? (input.custom_start_month ?? null)
+    : null;
+
+  const payload = {
+    tenant_slug,
+    coverage_mode,
+    custom_start_year,
+    custom_start_month,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from("financial_validation_settings")
+    .upsert(payload, { onConflict: "tenant_slug" })
+    .select("tenant_slug, coverage_mode, custom_start_year, custom_start_month, created_at, updated_at")
+    .single();
+
+  if (error) {
+    throw new Error(error.message || "Failed to save financial validation settings.");
+  }
+
+  const normalized = normalizeFinancialValidationSettingsRow(tenant_slug, (data as Record<string, unknown> | null));
+  return normalized.settings;
 }
 
 export async function upsertFinancial(slug: string, data: Omit<Financial, "id">): Promise<void> {
@@ -1609,7 +2031,11 @@ export async function insertActivityLog(input: {
       error: error.message,
       code: (error as any)?.code,
       details: (error as any)?.details,
-      payload,
+      action_type: payload.action_type,
+      entity_type: payload.entity_type,
+      tenant_slug: payload.tenant_slug,
+      actor_user_id: payload.actor_user_id,
+      status: payload.status,
     });
     return null;
   }
@@ -1621,15 +2047,14 @@ export async function listActivityLogs(input?: {
   search?: string;
   actionType?: string;
   tenantSlug?: string;
+  tenantSlugs?: string[];
   from?: string;
   to?: string;
   limit?: number;
 }): Promise<ActivityLog[]> {
   let query = supabase
     .from("activity_logs")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(Math.min(Math.max(input?.limit ?? 200, 1), 1000));
+    .select("*");
 
   if (input?.search && input.search.trim()) {
     const q = input.search.trim();
@@ -1640,14 +2065,22 @@ export async function listActivityLogs(input?: {
     query = query.eq("action_type", input.actionType);
   }
 
-  if (input?.tenantSlug && input.tenantSlug !== "all") {
+  const normalizedTenantSlugs = (input?.tenantSlugs ?? [])
+    .map((slug) => sanitizeTenantSlug(slug))
+    .filter(Boolean);
+
+  if (normalizedTenantSlugs.length > 0) {
+    query = query.in("tenant_slug", normalizedTenantSlugs);
+  } else if (input?.tenantSlug && input.tenantSlug !== "all") {
     query = query.eq("tenant_slug", sanitizeTenantSlug(input.tenantSlug));
   }
 
   if (input?.from) query = query.gte("created_at", input.from);
   if (input?.to) query = query.lte("created_at", input.to);
 
-  const { data, error } = await query;
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(input?.limit ?? 200, 1), 1000));
   if (error) {
     console.error("[listActivityLogs] failed", error.message);
     return [];
@@ -3351,7 +3784,7 @@ export async function provisionTenant(slug: string): Promise<ProvisionResult> {
           expenses             NUMERIC(15,2) NOT NULL DEFAULT 0,
           budget_expenses      NUMERIC(15,2) NOT NULL DEFAULT 0,
           net_profit           NUMERIC(15,2) NOT NULL DEFAULT 0,
-          net_profit_margin    NUMERIC(8,4) NOT NULL DEFAULT 0,
+          net_profit_margin    NUMERIC NOT NULL DEFAULT 0,
           cogs_actual          NUMERIC(15,2) NOT NULL DEFAULT 0,
           cogs_budget          NUMERIC(15,2),
           other_income_actual  NUMERIC(15,2) NOT NULL DEFAULT 0,

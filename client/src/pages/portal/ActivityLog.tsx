@@ -1,4 +1,7 @@
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { usePortal } from "@/contexts/PortalContext";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -66,6 +69,9 @@ const ACTION_LABELS: Record<string, string> = {
   internal_note_comment_created: "Created an internal note comment",
   internal_note_comment_updated: "Updated an internal note comment",
   internal_note_comment_deleted: "Deleted an internal note comment",
+  financial_reviewed_period_saved: "Financial Period Saved",
+  financial_published_period_updated: "Financial Figures Updated",
+  financial_published_period_deleted: "Financial Period Deleted",
 };
 
 function getActionLabel(actionType?: string | null): string {
@@ -80,7 +86,61 @@ function fmtDate(value?: string | null): string {
   return d.toLocaleString();
 }
 
+const FINANCIAL_PERIOD_ACTIONS = new Set<string>([
+  "financial_reviewed_period_saved",
+  "financial_published_period_updated",
+  "financial_published_period_deleted",
+]);
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+function toSafeInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n) && Number.isInteger(n)) return n;
+  }
+  return null;
+}
+
+function getFinancialPeriodDisplay(row: any): string | null {
+  if (!row || !FINANCIAL_PERIOD_ACTIONS.has(String(row.action_type ?? ""))) return null;
+
+  const metadata = (row?.metadata && typeof row.metadata === "object") ? row.metadata as Record<string, unknown> : null;
+  if (!metadata) return null;
+
+  const month = toSafeInteger(metadata.month);
+  const year = toSafeInteger(metadata.year);
+
+  if (month == null || year == null) return null;
+  if (month < 1 || month > 12) return null;
+  if (year < 1900 || year > 3000) return null;
+
+  return `${MONTH_NAMES[month - 1]} ${year} Financials`;
+}
+
 export default function ActivityLogPage() {
+  const [location] = useLocation();
+  const { user } = useAuth();
+  const { impersonatingTenantSlug } = usePortal();
+
+  const isAdminRoute = location.startsWith("/admin/");
+  const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+  const isClientScopedPortalView = !isAdminRoute && isStaffOrAdmin;
+
   const [search, setSearch] = useState("");
   const [actionType, setActionType] = useState<string>("all");
   const [tenantSlug, setTenantSlug] = useState<string>("all");
@@ -88,14 +148,26 @@ export default function ActivityLogPage() {
   const [toDate, setToDate] = useState<string>("");
 
   const { data: tenants = [] } = trpc.tenant.list.useQuery();
+  const activeTenantSlug = isClientScopedPortalView ? (impersonatingTenantSlug?.trim() || null) : null;
+  const activeTenant = useMemo(
+    () => tenants.find((t: any) => String(t?.slug ?? "").trim().toLowerCase() === String(activeTenantSlug ?? "").trim().toLowerCase()) ?? null,
+    [tenants, activeTenantSlug],
+  );
+
+  const effectiveTenantSlug = isClientScopedPortalView
+    ? (activeTenantSlug ?? undefined)
+    : (tenantSlug !== "all" ? tenantSlug : undefined);
 
   const { data: rows = [], isLoading, error, refetch, isFetching } = trpc.activity.list.useQuery({
     search: search.trim() || undefined,
     actionType: actionType !== "all" ? actionType : undefined,
-    tenantSlug: tenantSlug !== "all" ? tenantSlug : undefined,
+    tenantSlug: effectiveTenantSlug,
     from: fromDate ? new Date(`${fromDate}T00:00:00.000Z`).toISOString() : undefined,
     to: toDate ? new Date(`${toDate}T23:59:59.999Z`).toISOString() : undefined,
     limit: 500,
+    workspaceScoped: isClientScopedPortalView,
+  }, {
+    enabled: !isClientScopedPortalView || !!activeTenantSlug,
   });
 
   const actionOptions = useMemo(() => {
@@ -111,10 +183,12 @@ export default function ActivityLogPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Activity className="w-6 h-6 text-emerald-700 dark:text-emerald-400" />
-          Activity Log
+          {isClientScopedPortalView ? "Client Activity Log" : "Activity Log"}
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Audit trail of key portal actions across documents, users, and access changes.
+          {isClientScopedPortalView
+            ? `Audit trail for ${activeTenant?.company_name ?? activeTenantSlug ?? "the active client"}.`
+            : "Audit trail of key portal actions across documents, users, and access changes."}
         </p>
       </div>
 
@@ -141,15 +215,21 @@ export default function ActivityLogPage() {
             </SelectContent>
           </Select>
 
-          <Select value={tenantSlug} onValueChange={setTenantSlug}>
-            <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue placeholder="Business" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All businesses</SelectItem>
-              {tenants.map((t: any) => (
-                <SelectItem key={t.slug} value={t.slug}>{t.company_name ?? t.slug}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {isClientScopedPortalView ? (
+            <div className="h-10 px-3 rounded-md border border-border dark:border-zinc-700 bg-background dark:bg-zinc-900 flex items-center text-sm text-muted-foreground dark:text-zinc-400">
+              Client: {activeTenant?.company_name ?? activeTenantSlug ?? "—"}
+            </div>
+          ) : (
+            <Select value={tenantSlug} onValueChange={setTenantSlug}>
+              <SelectTrigger className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700"><SelectValue placeholder="Business" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All businesses</SelectItem>
+                {tenants.map((t: any) => (
+                  <SelectItem key={t.slug} value={t.slug}>{t.company_name ?? t.slug}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700" />
           <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="bg-background dark:bg-zinc-900 border-border dark:border-zinc-700" />
@@ -174,6 +254,11 @@ export default function ActivityLogPage() {
         </div>
       </div>
 
+      {isClientScopedPortalView && !activeTenantSlug ? (
+        <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/30 p-4 text-sm text-muted-foreground dark:text-zinc-400">
+          Active client workspace is required to view Activity Log.
+        </div>
+      ) : (
       <div className="rounded-xl border border-border dark:border-zinc-800 bg-muted/20 dark:bg-zinc-900/30 overflow-hidden">
         <div className="overflow-auto">
           <table className="w-full min-w-[1100px] text-sm">
@@ -209,7 +294,12 @@ export default function ActivityLogPage() {
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">{row.actor_role ?? "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap">{getActionLabel(row.action_type)}</td>
-                    <td className="px-3 py-2 max-w-[260px] truncate" title={row.file_name ?? row.entity_id ?? ""}>{row.file_name ?? row.entity_id ?? "—"}</td>
+                    <td
+                      className="px-3 py-2 max-w-[260px] truncate"
+                      title={getFinancialPeriodDisplay(row) ?? row.file_name ?? row.entity_id ?? ""}
+                    >
+                      {getFinancialPeriodDisplay(row) ?? row.file_name ?? row.entity_id ?? "—"}
+                    </td>
                     <td className="px-3 py-2 max-w-[180px] truncate" title={row.previous_value ?? ""}>{row.previous_value ?? "—"}</td>
                     <td className="px-3 py-2 max-w-[180px] truncate" title={row.new_value ?? ""}>{row.new_value ?? "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap">{row.tenant_slug ?? "—"}</td>
@@ -225,6 +315,7 @@ export default function ActivityLogPage() {
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }

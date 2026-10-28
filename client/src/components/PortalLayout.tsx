@@ -76,6 +76,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: "admin_chat",        label: "Chat",             icon: <MessageSquare size={16} />,   href: "/admin/chat" },
   { id: "admin_data_entry",  label: "Data Entry",       icon: <FolderOpen size={16} />,      href: "/admin/data-entry" },
   { id: "admin_activity_log",label: "Activity Log",     icon: <Activity size={16} />,        href: "/admin/activity-log" },
+  { id: "admin_financial_oversight", label: "Financial Oversight", icon: <BarChart3 size={16} />, href: "/admin/financial-oversight" },
   { id: "admin_profile",     label: "Settings",         icon: <Bell size={16} />,            href: "/admin/profile" },
 ];
 
@@ -341,8 +342,8 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
   const navItems = baseNav.filter(item => {
         if (item.id === "activity_log") {
-          // Admin-only, and hidden during View-as-Client impersonation.
-          return !!user && user.role === "admin" && !impersonatingTenantSlug;
+          // Global admin log remains in /admin. In client workspace, show Activity Log to internal staff/admin only.
+          return isStaffOrAdmin && !!impersonatingTenantSlug;
         }
         if (item.id === "notes") {
           // Internal notes are available only in View-as-Client for staff/admin users.
@@ -731,7 +732,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                 title={disabledLabel || undefined}
               >
                 <span className="shrink-0">{item.icon}</span>
-                <span className="truncate">{item.label}</span>
+                <span className={item.id === "admin_financial_oversight" ? "text-xs leading-tight" : "truncate"}>{item.label}</span>
                 {disabledLabel ? (
                   <span className={cn("ml-auto text-[10px] uppercase tracking-wide", isDark ? "text-zinc-500" : "text-muted-foreground")}>{disabledLabel}</span>
                 ) : isActive ? (

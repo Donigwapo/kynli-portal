@@ -85,6 +85,14 @@ export default function RouteGuard({ children, requireAdmin = false }: RouteGuar
       }
     }
 
+    if (location === "/portal/activity-log") {
+      const canAccessActivityLog = isStaffOrAdmin && !!impersonatingTenantSlug;
+      if (!canAccessActivityLog) {
+        navigate("/portal");
+        return;
+      }
+    }
+
   }, [loading, isAuthenticated, user, requireAdmin, location, navigate, impersonatingTenantSlug]);
 
   if (loading) {

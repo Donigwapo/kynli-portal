@@ -45,6 +45,8 @@ import {
 } from "./db";
 import {
   getAllPortalTenants,
+  listActivePortalTenantsForValidationStrict,
+  countActivePortalTenantsForValidationStrict,
   getClientRoster,
   listClientRosterServicesByTenantSlugs,
   replaceClientRosterServices,
@@ -64,11 +66,16 @@ import {
   createDocumentFolder,
   getFinancials,
   listFinancialPeriods,
+  listFinancialPeriodsStrict,
+  listFinancialCorePeriodsStrict,
+  listLineItemAmountsByYearStrict,
   getKpiMetrics,
   getLineItems,
   getSalesTracker,
   getSalesTrackerByYear,
   getTenantBySlug,
+  getFinancialValidationSettings,
+  upsertFinancialValidationSettings,
   getTimeLogs,
   getTimeLogsByYear,
   getTeamMembers,
@@ -873,26 +880,31 @@ async function writeActivityLog(input: {
   new_value?: string | null;
   metadata?: Record<string, unknown>;
   status?: "success" | "failed";
-}): Promise<void> {
-  await insertActivityLog({
-    actor_user_id: Number(input.actor.id),
-    actor_name: input.actor.name ?? null,
-    actor_email: input.actor.email ?? null,
-    actor_role: input.actor.role,
-    actor_type: inferActorType(input.actor.role),
-    action_type: input.action_type,
-    entity_type: input.entity_type,
-    entity_id: input.entity_id ?? null,
-    tenant_slug: input.tenant_slug ?? null,
-    organization_id: input.organization_id ?? null,
-    client_id: input.client_id ?? null,
-    file_name: input.file_name ?? null,
-    previous_value: input.previous_value ?? null,
-    new_value: input.new_value ?? null,
-    metadata: input.metadata ?? {},
-    ip_address: extractRequestIp(input.req),
-    status: input.status ?? "success",
-  });
+}): Promise<boolean> {
+  try {
+    const inserted = await insertActivityLog({
+      actor_user_id: Number(input.actor.id),
+      actor_name: input.actor.name ?? null,
+      actor_email: input.actor.email ?? null,
+      actor_role: input.actor.role,
+      actor_type: inferActorType(input.actor.role),
+      action_type: input.action_type,
+      entity_type: input.entity_type,
+      entity_id: input.entity_id ?? null,
+      tenant_slug: input.tenant_slug ?? null,
+      organization_id: input.organization_id ?? null,
+      client_id: input.client_id ?? null,
+      file_name: input.file_name ?? null,
+      previous_value: input.previous_value ?? null,
+      new_value: input.new_value ?? null,
+      metadata: input.metadata ?? {},
+      ip_address: extractRequestIp(input.req),
+      status: input.status ?? "success",
+    });
+    return !!inserted;
+  } catch {
+    return false;
+  }
 }
 
 const isInternalChatSlug = (slug?: string | null): boolean =>
@@ -1002,6 +1014,11 @@ const INTERNAL_NOTES_ALLOWED_ROLES = new Set<PortalUser["role"]>([
 
 const MEETING_MODE_VALUES = ["client_meeting"] as const;
 const meetingModeSchema = z.enum(MEETING_MODE_VALUES);
+const FinancialValidationCoverageModeSchema = z.enum([
+  "current_year_only",
+  "include_previous_years",
+  "custom_start_month",
+]);
 
 function resolveMeetingMode(_mode?: string | null): ClientMeetingMode {
   return "client_meeting";
@@ -1009,6 +1026,381 @@ function resolveMeetingMode(_mode?: string | null): ClientMeetingMode {
 
 function isStaffActor(user: PortalUser): boolean {
   return user.role !== "client";
+}
+
+type FinancialValidationFinding = {
+  tenantSlug: string;
+  year: number;
+  month: number;
+  ruleId: "skipped_financial_month";
+  severity: "needs_review";
+  description: string;
+  detectedAt: string;
+};
+
+type FinancialValidationRuleId =
+  | "skipped_financial_month"
+  | "all_zero_financial_period"
+  | "invalid_financial_data";
+
+type FinancialValidationUnifiedFinding = {
+  tenantSlug: string;
+  companyName: string;
+  year: number;
+  month: number;
+  ruleId: FinancialValidationRuleId;
+  severity: "needs_review";
+  description: string;
+  detectedAt: string;
+  reasonCode?:
+    | "missing_required_field"
+    | "invalid_required_field"
+    | "invalid_period_coordinates"
+    | "invalid_line_item_amount";
+  source?: "financials" | "line_items";
+  field?: "revenue" | "expenses" | "net_profit" | "amount";
+};
+
+type FinancialValidationRuleFailure = {
+  ruleId: FinancialValidationRuleId;
+  reason: string;
+};
+
+type FinancialValidationTenantIssue = FinancialValidationFinding & {
+  companyName: string;
+};
+
+type FinancialValidationTenantFailure = {
+  tenantSlug: string;
+  companyName: string;
+  reason: string;
+  ruleFailures?: FinancialValidationRuleFailure[];
+};
+
+type AllZeroFinancialPeriodFinding = {
+  tenantSlug: string;
+  year: number;
+  month: number;
+  ruleId: "all_zero_financial_period";
+  severity: "needs_review";
+  description: string;
+  detectedAt: string;
+};
+
+type InvalidFinancialDataFinding = {
+  tenantSlug: string;
+  year: number;
+  month: number;
+  ruleId: "invalid_financial_data";
+  severity: "needs_review";
+  description: string;
+  detectedAt: string;
+  reasonCode:
+    | "missing_required_field"
+    | "invalid_required_field"
+    | "invalid_period_coordinates"
+    | "invalid_line_item_amount";
+  field?: "revenue" | "expenses" | "net_profit" | "amount";
+  source: "financials" | "line_items";
+};
+
+const FINANCIAL_VALIDATION_REPORTING_TIMEZONE = "UTC" as const;
+const FINANCIAL_VALIDATION_MAX_TENANTS_PER_SCAN = 200;
+const FINANCIAL_VALIDATION_CONCURRENCY = 5;
+
+function monthIndex(year: number, month: number): number {
+  return (year * 12) + (month - 1);
+}
+
+function yearMonthFromIndex(idx: number): { year: number; month: number } {
+  const year = Math.floor(idx / 12);
+  const month = (idx % 12) + 1;
+  return { year, month };
+}
+
+function formatMonthYear(year: number, month: number): string {
+  const d = new Date(Date.UTC(year, month - 1, 1));
+  return d.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function getCurrentReportingYear(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: FINANCIAL_VALIDATION_REPORTING_TIMEZONE,
+    year: "numeric",
+  }).formatToParts(now);
+
+  const yearPart = parts.find((p) => p.type === "year")?.value;
+  const parsed = Number(yearPart);
+  if (!Number.isInteger(parsed)) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to resolve reporting year." });
+  }
+  return parsed;
+}
+
+function applyCoverageWindowToFindings<T extends { year: number; month: number }>(
+  findings: T[],
+  coverage: {
+    coverage_mode: "current_year_only" | "include_previous_years" | "custom_start_month";
+    custom_start_year: number | null;
+    custom_start_month: number | null;
+  },
+  now: Date = new Date(),
+): T[] {
+  if (coverage.coverage_mode === "include_previous_years") return findings;
+
+  if (coverage.coverage_mode === "current_year_only") {
+    const currentYear = getCurrentReportingYear(now);
+    return findings.filter((f) => f.year === currentYear);
+  }
+
+  const startYear = Number(coverage.custom_start_year);
+  const startMonth = Number(coverage.custom_start_month);
+  if (!Number.isInteger(startYear) || !Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Invalid financial validation coverage configuration." });
+  }
+
+  const startIdx = monthIndex(startYear, startMonth);
+  return findings.filter((f) => monthIndex(f.year, f.month) >= startIdx);
+}
+
+function detectSkippedFinancialMonths(tenantSlug: string, periods: Array<{ year: number; month: number }>): FinancialValidationFinding[] {
+  const normalized = periods
+    .map((p) => ({ year: Number(p.year), month: Number(p.month) }))
+    .filter((p) => Number.isInteger(p.year) && Number.isInteger(p.month) && p.month >= 1 && p.month <= 12);
+
+  if (normalized.length < 2) return [];
+
+  const unique = Array.from(new Map(normalized.map((p) => [`${p.year}-${p.month}`, p] as const)).values());
+  unique.sort((a, b) => monthIndex(a.year, a.month) - monthIndex(b.year, b.month));
+
+  if (unique.length < 2) return [];
+
+  const first = unique[0];
+  const last = unique[unique.length - 1];
+  const present = new Set(unique.map((p) => `${p.year}-${p.month}`));
+
+  const findings: FinancialValidationFinding[] = [];
+  const now = new Date().toISOString();
+
+  for (let idx = monthIndex(first.year, first.month) + 1; idx < monthIndex(last.year, last.month); idx += 1) {
+    const candidate = yearMonthFromIndex(idx);
+    const key = `${candidate.year}-${candidate.month}`;
+    if (present.has(key)) continue;
+
+    findings.push({
+      tenantSlug,
+      year: candidate.year,
+      month: candidate.month,
+      ruleId: "skipped_financial_month",
+      severity: "needs_review",
+      description: `${formatMonthYear(candidate.year, candidate.month)} financials are missing between submitted periods.`,
+      detectedAt: now,
+    });
+  }
+
+  return findings;
+}
+
+function dedupeTenantIssues(issues: FinancialValidationTenantIssue[]): FinancialValidationTenantIssue[] {
+  const unique = new Map<string, FinancialValidationTenantIssue>();
+  for (const issue of issues) {
+    const key = `${issue.tenantSlug}::${issue.year}::${issue.month}::${issue.ruleId}`;
+    if (!unique.has(key)) {
+      unique.set(key, issue);
+    }
+  }
+  return Array.from(unique.values());
+}
+
+function isStrictZero(value: number): boolean {
+  return Number.isFinite(value) && (Object.is(value, 0) || Object.is(value, -0));
+}
+
+function buildLineItemNonZeroMap(lineItems: Array<{ year: number; month: number; amount: number }>): Set<string> {
+  const set = new Set<string>();
+  for (const item of lineItems) {
+    if (!Number.isFinite(item.amount)) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Invalid line-item amount encountered during all-zero validation.",
+      });
+    }
+    if (!Object.is(item.amount, 0) && !Object.is(item.amount, -0)) {
+      set.add(`${item.year}-${item.month}`);
+    }
+  }
+  return set;
+}
+
+function detectAllZeroFinancialPeriods(
+  tenantSlug: string,
+  periods: Array<{
+    year: number;
+    month: number;
+    revenue: number;
+    expenses: number;
+    cogs_actual: number;
+    other_income_actual: number;
+    other_expense_actual: number;
+    net_profit: number;
+  }>,
+  lineItemsByMonthNonZero: Set<string>,
+): AllZeroFinancialPeriodFinding[] {
+  const findings: AllZeroFinancialPeriodFinding[] = [];
+  const detectedAt = new Date().toISOString();
+
+  for (const p of periods) {
+    const key = `${p.year}-${p.month}`;
+    const hasNonZeroLineItems = lineItemsByMonthNonZero.has(key);
+
+    const allCoreZero =
+      isStrictZero(p.revenue) &&
+      isStrictZero(p.expenses) &&
+      isStrictZero(p.cogs_actual) &&
+      isStrictZero(p.other_income_actual) &&
+      isStrictZero(p.other_expense_actual) &&
+      isStrictZero(p.net_profit);
+
+    if (!allCoreZero) continue;
+    if (hasNonZeroLineItems) continue;
+
+    findings.push({
+      tenantSlug,
+      year: p.year,
+      month: p.month,
+      ruleId: "all_zero_financial_period",
+      severity: "needs_review",
+      description: `${formatMonthYear(p.year, p.month)} financials contain all zero core totals and should be reviewed for completeness.`,
+      detectedAt,
+    });
+  }
+
+  return findings;
+}
+
+function mapInvalidDataIssuesToFindings(
+  tenantSlug: string,
+  issues: Array<{
+    year: number;
+    month: number;
+    reasonCode: "missing_required_field" | "invalid_required_field" | "invalid_period_coordinates" | "invalid_line_item_amount";
+    field?: "revenue" | "expenses" | "net_profit" | "amount";
+    source: "financials" | "line_items";
+  }>,
+): InvalidFinancialDataFinding[] {
+  const detectedAt = new Date().toISOString();
+  return issues
+    .filter((i) => Number.isInteger(i.year) && Number.isInteger(i.month) && i.month >= 1 && i.month <= 12)
+    .map((i) => ({
+      tenantSlug,
+      year: i.year,
+      month: i.month,
+      ruleId: "invalid_financial_data" as const,
+      severity: "needs_review" as const,
+      description: `${formatMonthYear(i.year, i.month)} financial data could not be fully validated due to a data quality issue (${i.reasonCode}${i.field ? `:${i.field}` : ""}).`,
+      detectedAt,
+      reasonCode: i.reasonCode,
+      field: i.field,
+      source: i.source,
+    }));
+}
+
+function dedupeInvalidFinancialDataFindings(findings: InvalidFinancialDataFinding[]): InvalidFinancialDataFinding[] {
+  const unique = new Map<string, InvalidFinancialDataFinding>();
+  for (const f of findings) {
+    const key = `${f.tenantSlug}::${f.year}::${f.month}::${f.reasonCode}::${f.field ?? ""}::${f.source}`;
+    if (!unique.has(key)) {
+      unique.set(key, f);
+    }
+  }
+  return Array.from(unique.values());
+}
+
+function dedupeUnifiedFindings(findings: FinancialValidationUnifiedFinding[]): FinancialValidationUnifiedFinding[] {
+  const unique = new Map<string, FinancialValidationUnifiedFinding>();
+  for (const f of findings) {
+    const key = `${f.tenantSlug}::${f.year}::${f.month}::${f.ruleId}::${f.reasonCode ?? ""}::${f.field ?? ""}::${f.source ?? ""}`;
+    if (!unique.has(key)) {
+      unique.set(key, f);
+    }
+  }
+  return Array.from(unique.values());
+}
+
+async function evaluateAllZeroValidationForTenant(tenantSlug: string): Promise<{
+  findings: AllZeroFinancialPeriodFinding[];
+  invalidDataFindings: InvalidFinancialDataFinding[];
+  excludedProcessingPeriods: string[];
+  optionalFieldsCompatMode: "standard" | "legacy_missing_optional_columns";
+}> {
+  const coreResult = await listFinancialCorePeriodsStrict(tenantSlug);
+  const corePeriods = coreResult.periods;
+  let invalidDataFindings = mapInvalidDataIssuesToFindings(tenantSlug, coreResult.invalidPeriods);
+
+  const processingKeys = new Set<string>();
+  const { data: processingJobs, error: processingJobsError } = await supabase
+    .from("financial_import_jobs")
+    .select("year, month, status")
+    .eq("tenant_slug", tenantSlug)
+    .eq("status", "processing");
+
+  if (processingJobsError) {
+    throw new Error(processingJobsError.message || "Failed to evaluate financial import processing state for validation.");
+  }
+
+  for (const row of (processingJobs || []) as Array<Record<string, unknown>>) {
+    const y = Number(row.year);
+    const m = Number(row.month);
+    if (Number.isInteger(y) && Number.isInteger(m) && m >= 1 && m <= 12) {
+      processingKeys.add(`${y}-${m}`);
+    }
+  }
+
+  const periodsForValidation = corePeriods.filter((p) => !processingKeys.has(`${p.year}-${p.month}`));
+  const years = Array.from(new Set(periodsForValidation.map((p) => p.year)));
+  const byYear = await Promise.all(years.map((year) => listLineItemAmountsByYearStrict(tenantSlug, year)));
+
+  const allLineItems = byYear.flatMap((r) => r.lineItems);
+  const lineItemInvalids = byYear.flatMap((r) => r.invalidPeriods);
+  invalidDataFindings = invalidDataFindings.concat(mapInvalidDataIssuesToFindings(tenantSlug, lineItemInvalids));
+  invalidDataFindings = dedupeInvalidFinancialDataFindings(invalidDataFindings);
+
+  const uncertainPeriods = new Set(invalidDataFindings.map((f) => `${f.year}-${f.month}`));
+  const periodsCertain = periodsForValidation.filter((p) => !uncertainPeriods.has(`${p.year}-${p.month}`));
+
+  const nonZeroLineItemPeriods = buildLineItemNonZeroMap(allLineItems);
+  const findings = detectAllZeroFinancialPeriods(tenantSlug, periodsCertain, nonZeroLineItemPeriods);
+
+  return {
+    findings,
+    invalidDataFindings,
+    excludedProcessingPeriods: Array.from(processingKeys.values()).sort(),
+    optionalFieldsCompatMode: coreResult.optionalFieldsCompatMode,
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!items.length) return [];
+
+  const result: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const idx = nextIndex;
+      nextIndex += 1;
+      if (idx >= items.length) return;
+      result[idx] = await worker(items[idx], idx);
+    }
+  };
+
+  const poolSize = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: poolSize }, () => runWorker()));
+  return result;
 }
 
 async function assertUserBelongsToTenantWorkspaceMember(tenantSlug: string, userId: number): Promise<void> {
@@ -1359,6 +1751,11 @@ function isFinancialImportDocType(value: string | null | undefined): boolean {
     normalized === "financials (internal)" ||
     normalized.startsWith("financials (internal)/")
   );
+}
+
+function isNumericOverflowError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /numeric field overflow/i.test(message);
 }
 
 function extractMentionedUserIds(body: string, candidates: MentionRecipient[]): number[] {
@@ -2381,17 +2778,89 @@ export const appRouter = router({
         from: z.string().optional(),
         to: z.string().optional(),
         limit: z.number().optional(),
+        workspaceScoped: z.boolean().optional(),
       }).optional())
       .query(async ({ ctx, input }) => {
-        const isStaffOrAdmin = STAFF_PORTAL_ROLES.has(ctx.user.role) || ctx.user.role === "admin";
-        if (!isStaffOrAdmin) {
+        const isAdmin = ctx.user.role === "admin";
+        const isStaff = STAFF_PORTAL_ROLES.has(ctx.user.role);
+
+        if (!isAdmin && !isStaff) {
           throw new TRPCError({ code: "FORBIDDEN", message: "Activity log is restricted to staff/admin." });
+        }
+
+        const requestedTenant = input?.tenantSlug?.trim();
+        const hasRequestedTenant = !!requestedTenant && requestedTenant !== "all";
+        const workspaceScoped = input?.workspaceScoped === true;
+
+        if (workspaceScoped) {
+          const activeWorkspaceTenantRaw = String(ctx.viewAsClientTenantSlug || ctx.clientWorkspaceTenantSlug || "").trim();
+          if (!activeWorkspaceTenantRaw) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Active client workspace is required." });
+          }
+
+          const activeWorkspaceTenant = sanitizeTenantSlug(activeWorkspaceTenantRaw);
+          if (activeWorkspaceTenant === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Active client workspace is required." });
+          }
+
+          const normalizedRequested = hasRequestedTenant ? sanitizeTenantSlug(requestedTenant) : null;
+          if (normalizedRequested && normalizedRequested !== activeWorkspaceTenant) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Requested tenant does not match active client workspace." });
+          }
+
+          if (!isAdmin) {
+            const assignedSlugs = await getAssignedTenantSlugsForUser(ctx.user);
+            if (!assignedSlugs.includes(activeWorkspaceTenant)) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+            }
+          }
+
+          return listActivityLogs({
+            search: input?.search,
+            actionType: input?.actionType,
+            tenantSlug: activeWorkspaceTenant,
+            from: input?.from,
+            to: input?.to,
+            limit: input?.limit ?? 300,
+          });
+        }
+
+        if (isAdmin) {
+          return listActivityLogs({
+            search: input?.search,
+            actionType: input?.actionType,
+            tenantSlug: hasRequestedTenant ? requestedTenant : undefined,
+            from: input?.from,
+            to: input?.to,
+            limit: input?.limit ?? 300,
+          });
+        }
+
+        const assignedSlugs = await getAssignedTenantSlugsForUser(ctx.user);
+        if (!assignedSlugs.length) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No assigned tenants found for this staff member." });
+        }
+
+        if (hasRequestedTenant) {
+          const normalizedRequested = sanitizeTenantSlug(requestedTenant);
+          if (!normalizedRequested || !assignedSlugs.includes(normalizedRequested)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Tenant is not assigned to this staff member." });
+          }
+
+          return listActivityLogs({
+            search: input?.search,
+            actionType: input?.actionType,
+            tenantSlug: normalizedRequested,
+            from: input?.from,
+            to: input?.to,
+            limit: input?.limit ?? 300,
+          });
         }
 
         return listActivityLogs({
           search: input?.search,
           actionType: input?.actionType,
-          tenantSlug: input?.tenantSlug,
+          tenantSlugs: assignedSlugs,
           from: input?.from,
           to: input?.to,
           limit: input?.limit ?? 300,
@@ -2903,13 +3372,23 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const canUseCameronSummary = await tenantHasFeatureAccess(input.tenantSlug, "cameron_summary");
-        await upsertFinancial(input.tenantSlug, {
-          year: input.year, month: input.month,
-          revenue: input.revenue, budget_revenue: input.budgetRevenue,
-          expenses: input.expenses, budget_expenses: input.budgetExpenses,
-          net_profit: input.netProfit, net_profit_margin: input.netProfitMargin,
-          summary: canUseCameronSummary ? (input.summary ?? null) : null,
-        });
+        try {
+          await upsertFinancial(input.tenantSlug, {
+            year: input.year, month: input.month,
+            revenue: input.revenue, budget_revenue: input.budgetRevenue,
+            expenses: input.expenses, budget_expenses: input.budgetExpenses,
+            net_profit: input.netProfit, net_profit_margin: input.netProfitMargin,
+            summary: canUseCameronSummary ? (input.summary ?? null) : null,
+          });
+        } catch (error) {
+          if (isNumericOverflowError(error)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "One or more financial values are outside the supported numeric range for this period. Please review imported amounts and try again.",
+            });
+          }
+          throw error;
+        }
         return { success: true };
       }),
     updateSummary: adminProcedure
@@ -2937,6 +3416,524 @@ export const appRouter = router({
           type: input.type, label: input.label, amount: input.amount,
         });
         return { success: true };
+      }),
+    getValidationSettings: adminProcedure
+      .input(z.object({ tenantSlug: z.string().min(1) }))
+      .query(async ({ input }) => {
+        const tenantSlug = sanitizeTenantSlug(String(input.tenantSlug || ""));
+        if (!tenantSlug) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required." });
+        }
+
+        const tenant = await getTenantBySlug(tenantSlug);
+        if (!tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+        }
+
+        try {
+          const settingsResult = await getFinancialValidationSettings(tenantSlug);
+          return {
+            tenantSlug,
+            coverageMode: settingsResult.settings.coverage_mode,
+            customStartYear: settingsResult.settings.custom_start_year,
+            customStartMonth: settingsResult.settings.custom_start_month,
+            isDefault: settingsResult.isDefault,
+            updatedAt: settingsResult.settings.updated_at ?? null,
+          };
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial validation settings.",
+            cause: error,
+          });
+        }
+      }),
+    updateValidationSettings: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string().min(1),
+        coverageMode: FinancialValidationCoverageModeSchema,
+        customStartYear: z.number().int().min(2000).max(2100).nullable().optional(),
+        customStartMonth: z.number().int().min(1).max(12).nullable().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const tenantSlug = sanitizeTenantSlug(String(input.tenantSlug || ""));
+        if (!tenantSlug) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required." });
+        }
+
+        const tenant = await getTenantBySlug(tenantSlug);
+        if (!tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found." });
+        }
+
+        if (input.coverageMode === "custom_start_month") {
+          if (!Number.isInteger(input.customStartYear) || !Number.isInteger(input.customStartMonth)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Custom start year and month are required for custom coverage mode.",
+            });
+          }
+        }
+
+        const saved = await upsertFinancialValidationSettings({
+          tenant_slug: tenantSlug,
+          coverage_mode: input.coverageMode,
+          custom_start_year: input.coverageMode === "custom_start_month"
+            ? (input.customStartYear ?? null)
+            : null,
+          custom_start_month: input.coverageMode === "custom_start_month"
+            ? (input.customStartMonth ?? null)
+            : null,
+        });
+
+        return {
+          tenantSlug: saved.tenant_slug,
+          coverageMode: saved.coverage_mode,
+          customStartYear: saved.custom_start_year,
+          customStartMonth: saved.custom_start_month,
+          updatedAt: saved.updated_at ?? null,
+        };
+      }),
+    validationSkippedMonthsSummary: adminProcedure
+      .input(z.object({
+        tenantSlug: z.string().min(1).optional(),
+        year: z.number().int().min(2000).max(2100).optional(),
+        limitTenants: z.number().int().min(1).max(FINANCIAL_VALIDATION_MAX_TENANTS_PER_SCAN).optional(),
+      }).optional())
+      .query(async ({ input }) => {
+        const requestedTenantRaw = typeof input?.tenantSlug === "string" ? input.tenantSlug.trim() : "";
+        const requestedTenant = requestedTenantRaw ? sanitizeTenantSlug(requestedTenantRaw) : "";
+        const requestedYear = input?.year;
+        const limitTenants = Math.max(1, Math.min(Number(input?.limitTenants) || FINANCIAL_VALIDATION_MAX_TENANTS_PER_SCAN, FINANCIAL_VALIDATION_MAX_TENANTS_PER_SCAN));
+
+        let tenants: Array<{ slug: string; company_name: string }> = [];
+        let totalEligibleClients = 0;
+
+        try {
+          if (requestedTenant) {
+            const t = await getTenantBySlug(requestedTenant);
+            if (!t || !t.is_active || sanitizeTenantSlug(t.slug) === sanitizeTenantSlug(INTERNAL_CHAT_TENANT_SLUG)) {
+              tenants = [];
+              totalEligibleClients = 0;
+            } else {
+              tenants = [{ slug: sanitizeTenantSlug(t.slug), company_name: t.company_name || t.slug }];
+              totalEligibleClients = 1;
+            }
+          } else {
+            const [listed, count] = await Promise.all([
+              listActivePortalTenantsForValidationStrict(limitTenants),
+              countActivePortalTenantsForValidationStrict(),
+            ]);
+            tenants = listed;
+            totalEligibleClients = count;
+          }
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve clients for financial validation.",
+            cause: error,
+          });
+        }
+
+        if (!tenants.length) {
+          return {
+            reportingTimezone: FINANCIAL_VALIDATION_REPORTING_TIMEZONE,
+            summary: {
+              totalDetectedGaps: 0,
+              totalDetectedFindings: 0,
+              skippedFinancialMonthFindings: 0,
+              allZeroFinancialPeriodFindings: 0,
+              invalidFinancialDataFindings: 0,
+              affectedClients: 0,
+              scannedClients: 0,
+              clientsWithNoIssues: 0,
+              clientsFailedValidation: 0,
+              clientsFullyValidated: 0,
+              clientsPartiallyValidated: 0,
+              successfulTenantCount: 0,
+            },
+            scan: {
+              requestedTenant: requestedTenant || null,
+              totalEligibleClients,
+              scanLimit: limitTenants,
+              scannedClients: 0,
+              unscannedClients: Math.max(0, totalEligibleClients),
+              complete: totalEligibleClients <= 0,
+            },
+            issues: [] as FinancialValidationUnifiedFinding[],
+            failures: [] as FinancialValidationTenantFailure[],
+          };
+        }
+
+        const outcomes = await mapWithConcurrency(
+          tenants,
+          FINANCIAL_VALIDATION_CONCURRENCY,
+          async (tenant) => {
+            const companyName = tenant.company_name || tenant.slug;
+            const ruleFindings: FinancialValidationUnifiedFinding[] = [];
+            const ruleFailures: FinancialValidationRuleFailure[] = [];
+
+            let coverage: {
+              coverage_mode: "current_year_only" | "include_previous_years" | "custom_start_month";
+              custom_start_year: number | null;
+              custom_start_month: number | null;
+            };
+
+            try {
+              const settingsResult = await getFinancialValidationSettings(tenant.slug);
+              coverage = settingsResult.settings;
+            } catch (error: any) {
+              return {
+                tenantSlug: tenant.slug,
+                companyName,
+                issues: [] as FinancialValidationUnifiedFinding[],
+                failure: {
+                  tenantSlug: tenant.slug,
+                  companyName,
+                  reason: "Failed to retrieve validation settings.",
+                  ruleFailures: [
+                    { ruleId: "skipped_financial_month", reason: "settings_unavailable" },
+                    { ruleId: "all_zero_financial_period", reason: "settings_unavailable" },
+                    { ruleId: "invalid_financial_data", reason: "settings_unavailable" },
+                  ],
+                } as FinancialValidationTenantFailure,
+                fullyValidated: false,
+              };
+            }
+
+            // Rule 1: skipped_financial_month
+            try {
+              const periods = await listFinancialPeriodsStrict(tenant.slug);
+              const skippedAll = detectSkippedFinancialMonths(tenant.slug, periods);
+              const skippedCovered = applyCoverageWindowToFindings(skippedAll, coverage);
+              const skippedYear = Number.isInteger(requestedYear)
+                ? skippedCovered.filter((f) => f.year === requestedYear)
+                : skippedCovered;
+
+              ruleFindings.push(...skippedYear.map((f) => ({
+                ...f,
+                companyName,
+              })));
+            } catch (error: any) {
+              ruleFailures.push({
+                ruleId: "skipped_financial_month",
+                reason: String(error?.message || "skipped_month_rule_failed"),
+              });
+            }
+
+            // Rule 2 + 3: all_zero_financial_period + invalid_financial_data
+            try {
+              const zeroResult = await evaluateAllZeroValidationForTenant(tenant.slug);
+              const zeroCovered = applyCoverageWindowToFindings(zeroResult.findings, coverage);
+              const invalidCovered = applyCoverageWindowToFindings(zeroResult.invalidDataFindings, coverage);
+
+              const zeroYear = Number.isInteger(requestedYear)
+                ? zeroCovered.filter((f) => f.year === requestedYear)
+                : zeroCovered;
+              const invalidYear = Number.isInteger(requestedYear)
+                ? invalidCovered.filter((f) => f.year === requestedYear)
+                : invalidCovered;
+
+              ruleFindings.push(...zeroYear.map((f) => ({
+                ...f,
+                companyName,
+              })));
+
+              ruleFindings.push(...invalidYear.map((f) => ({
+                ...f,
+                companyName,
+                reasonCode: f.reasonCode,
+                source: f.source,
+                field: f.field,
+              })));
+            } catch (error: any) {
+              const reason = String(error?.message || "all_zero_rule_failed");
+              ruleFailures.push({ ruleId: "all_zero_financial_period", reason });
+              ruleFailures.push({ ruleId: "invalid_financial_data", reason });
+            }
+
+            const issues = dedupeUnifiedFindings(ruleFindings);
+            const failedRules = new Set(ruleFailures.map((r) => r.ruleId));
+            const fullyValidated = failedRules.size === 0;
+
+            if (ruleFailures.length > 0) {
+              return {
+                tenantSlug: tenant.slug,
+                companyName,
+                issues,
+                failure: {
+                  tenantSlug: tenant.slug,
+                  companyName,
+                  reason: fullyValidated ? "" : "One or more validation rules failed.",
+                  ruleFailures,
+                } as FinancialValidationTenantFailure,
+                fullyValidated,
+              };
+            }
+
+            return {
+              tenantSlug: tenant.slug,
+              companyName,
+              issues,
+              failure: null as FinancialValidationTenantFailure | null,
+              fullyValidated,
+            };
+          },
+        );
+
+        const issues = dedupeUnifiedFindings(outcomes.flatMap((o) => o.issues));
+        const failures = outcomes.map((o) => o.failure).filter(Boolean) as FinancialValidationTenantFailure[];
+
+        const affectedClients = new Set(issues.map((i) => i.tenantSlug)).size;
+        const clientsFullyValidated = outcomes.filter((o) => o.fullyValidated).length;
+        const clientsPartiallyValidated = outcomes.filter((o) => !o.fullyValidated && o.issues.length > 0).length;
+        const clientsFailedValidation = outcomes.filter((o) => !o.fullyValidated && o.issues.length === 0).length;
+        const clientsWithNoIssues = outcomes.filter((o) => o.issues.length === 0 && o.fullyValidated).length;
+        const successfulTenantCount = clientsFullyValidated;
+
+        const skippedFinancialMonthFindings = issues.filter((i) => i.ruleId === "skipped_financial_month").length;
+        const allZeroFinancialPeriodFindings = issues.filter((i) => i.ruleId === "all_zero_financial_period").length;
+        const invalidFinancialDataFindings = issues.filter((i) => i.ruleId === "invalid_financial_data").length;
+
+        const scannedClients = outcomes.length;
+        const unscannedClients = Math.max(0, totalEligibleClients - scannedClients);
+        const complete = requestedTenant ? true : unscannedClients === 0;
+
+        return {
+          reportingTimezone: FINANCIAL_VALIDATION_REPORTING_TIMEZONE,
+          summary: {
+            // backward-compatible legacy fields
+            totalDetectedGaps: issues.length,
+            affectedClients,
+            scannedClients,
+            clientsWithNoIssues,
+            clientsFailedValidation,
+            successfulTenantCount,
+
+            // extended summary
+            totalDetectedFindings: issues.length,
+            skippedFinancialMonthFindings,
+            allZeroFinancialPeriodFindings,
+            invalidFinancialDataFindings,
+            clientsFullyValidated,
+            clientsPartiallyValidated,
+          },
+          scan: {
+            requestedTenant: requestedTenant || null,
+            totalEligibleClients,
+            scanLimit: limitTenants,
+            scannedClients,
+            unscannedClients,
+            complete,
+          },
+          issues,
+          failures,
+        };
+      }),
+    validationAllZeroPeriods: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view financial validation findings." });
+        }
+
+        const resolved = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const tenantSlug = sanitizeTenantSlug(resolved[0]);
+        if (!tenantSlug) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required." });
+        }
+
+        let corePeriods: Array<{
+          year: number;
+          month: number;
+          revenue: number;
+          expenses: number;
+          cogs_actual: number;
+          other_income_actual: number;
+          other_expense_actual: number;
+          net_profit: number;
+        }> = [];
+        let invalidDataFindings: InvalidFinancialDataFinding[] = [];
+        let optionalFieldsCompatMode: "standard" | "legacy_missing_optional_columns" = "standard";
+
+        try {
+          const coreResult = await listFinancialCorePeriodsStrict(tenantSlug);
+          corePeriods = coreResult.periods;
+          optionalFieldsCompatMode = coreResult.optionalFieldsCompatMode;
+          invalidDataFindings = mapInvalidDataIssuesToFindings(tenantSlug, coreResult.invalidPeriods);
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial period totals for validation.",
+            cause: error,
+          });
+        }
+
+        let coverage: {
+          coverage_mode: "current_year_only" | "include_previous_years" | "custom_start_month";
+          custom_start_year: number | null;
+          custom_start_month: number | null;
+        };
+        let settingsDefaulted = false;
+        try {
+          const settingsResult = await getFinancialValidationSettings(tenantSlug);
+          coverage = {
+            coverage_mode: settingsResult.settings.coverage_mode,
+            custom_start_year: settingsResult.settings.custom_start_year,
+            custom_start_month: settingsResult.settings.custom_start_month,
+          };
+          settingsDefaulted = settingsResult.isDefault;
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial validation settings.",
+            cause: error,
+          });
+        }
+
+        // Conservative workflow-state guard:
+        // periods with an active processing import job are excluded from this rule to avoid transient false positives.
+        const processingKeys = new Set<string>();
+        try {
+          const { data: processingJobs, error: processingJobsError } = await supabase
+            .from("financial_import_jobs")
+            .select("year, month, status")
+            .eq("tenant_slug", tenantSlug)
+            .eq("status", "processing");
+
+          if (processingJobsError) {
+            throw processingJobsError;
+          }
+
+          for (const row of (processingJobs || []) as Array<Record<string, unknown>>) {
+            const y = Number(row.year);
+            const m = Number(row.month);
+            if (Number.isInteger(y) && Number.isInteger(m) && m >= 1 && m <= 12) {
+              processingKeys.add(`${y}-${m}`);
+            }
+          }
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to evaluate financial import processing state for validation.",
+            cause: error,
+          });
+        }
+
+        const periodsForValidation = corePeriods.filter((p) => !processingKeys.has(`${p.year}-${p.month}`));
+
+        const years = Array.from(new Set(periodsForValidation.map((p) => p.year)));
+        let allLineItems: Array<{ year: number; month: number; amount: number }> = [];
+        try {
+          const byYear = await Promise.all(
+            years.map((year) => listLineItemAmountsByYearStrict(tenantSlug, year)),
+          );
+          allLineItems = byYear.flatMap((r) => r.lineItems);
+          const lineItemInvalids = byYear.flatMap((r) => r.invalidPeriods);
+          invalidDataFindings = invalidDataFindings.concat(mapInvalidDataIssuesToFindings(tenantSlug, lineItemInvalids));
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial line items for validation.",
+            cause: error,
+          });
+        }
+
+        invalidDataFindings = dedupeInvalidFinancialDataFindings(invalidDataFindings);
+
+        const uncertainPeriods = new Set(invalidDataFindings.map((f) => `${f.year}-${f.month}`));
+        const periodsCertain = periodsForValidation.filter((p) => !uncertainPeriods.has(`${p.year}-${p.month}`));
+
+        const nonZeroLineItemPeriods = buildLineItemNonZeroMap(allLineItems);
+
+        const allFindings = detectAllZeroFinancialPeriods(
+          tenantSlug,
+          periodsCertain,
+          nonZeroLineItemPeriods,
+        );
+
+        const findings = applyCoverageWindowToFindings(allFindings, coverage);
+        const invalidDataFindingsCovered = applyCoverageWindowToFindings(invalidDataFindings, coverage);
+
+        return {
+          tenantSlug,
+          ruleId: "all_zero_financial_period" as const,
+          reportingTimezone: FINANCIAL_VALIDATION_REPORTING_TIMEZONE,
+          coverageMode: coverage.coverage_mode,
+          coverage: {
+            customStartYear: coverage.custom_start_year,
+            customStartMonth: coverage.custom_start_month,
+          },
+          settingsDefaulted,
+          optionalFieldsCompatMode,
+          excludedProcessingPeriods: Array.from(processingKeys.values()).sort(),
+          findings,
+          invalidDataFindings: invalidDataFindingsCovered,
+        };
+      }),
+    validationSkippedMonths: protectedProcedure
+      .input(z.object({ tenantSlug: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const allowedRoles = new Set<PortalUser["role"]>(["admin", "accounting_manager", "tax_manager", "accountant"]);
+        if (!allowedRoles.has(ctx.user.role)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view financial validation findings." });
+        }
+
+        const resolved = await resolveTenantSlugsForUser(ctx.user, input.tenantSlug, ctx.clientWorkspaceTenantSlug);
+        const tenantSlug = sanitizeTenantSlug(resolved[0]);
+        if (!tenantSlug) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required." });
+        }
+
+        let periods: Array<{ year: number; month: number }> = [];
+        try {
+          periods = await listFinancialPeriodsStrict(tenantSlug);
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial reporting periods for validation.",
+            cause: error,
+          });
+        }
+
+        let coverage: {
+          coverage_mode: "current_year_only" | "include_previous_years" | "custom_start_month";
+          custom_start_year: number | null;
+          custom_start_month: number | null;
+        };
+        let settingsDefaulted = false;
+        try {
+          const settingsResult = await getFinancialValidationSettings(tenantSlug);
+          coverage = {
+            coverage_mode: settingsResult.settings.coverage_mode,
+            custom_start_year: settingsResult.settings.custom_start_year,
+            custom_start_month: settingsResult.settings.custom_start_month,
+          };
+          settingsDefaulted = settingsResult.isDefault;
+        } catch (error: any) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to retrieve financial validation settings.",
+            cause: error,
+          });
+        }
+
+        const allFindings = detectSkippedFinancialMonths(tenantSlug, periods);
+        const findings = applyCoverageWindowToFindings(allFindings, coverage);
+
+        return {
+          tenantSlug,
+          ruleId: "skipped_financial_month" as const,
+          reportingTimezone: FINANCIAL_VALIDATION_REPORTING_TIMEZONE,
+          coverageMode: coverage.coverage_mode,
+          coverage: {
+            customStartYear: coverage.custom_start_year,
+            customStartMonth: coverage.custom_start_month,
+          },
+          settingsDefaulted,
+          findings,
+        };
       }),
     updatePublishedPeriod: protectedProcedure
       .input(z.object({
@@ -3035,25 +4032,35 @@ export const appRouter = router({
         const canUseCameronSummary = await tenantHasFeatureAccess(requestedTenant, "cameron_summary");
         const financialSummary = canUseCameronSummary ? String(input.financialSummary ?? "").trim() : "";
 
-        await upsertFinancial(requestedTenant, {
-          year: input.year,
-          month: input.month,
-          revenue,
-          budget_revenue: budgetRevenue,
-          expenses: operatingExpenses,
-          budget_expenses: budgetOperatingExpenses,
-          net_profit: netProfit,
-          net_profit_margin: margin,
-          cogs_actual: cogsActual,
-          cogs_budget: cogsBudget,
-          other_income_actual: otherIncomeActual,
-          other_income_budget: otherIncomeBudget,
-          other_expense_actual: otherExpenseActual,
-          other_expense_budget: otherExpenseBudget,
-          source_import_id: (existing[0] as any)?.source_import_id == null ? null : String((existing[0] as any).source_import_id),
-          source_document_id: (existing[0] as any)?.source_document_id == null ? null : String((existing[0] as any).source_document_id),
-          summary: financialSummary || null,
-        });
+        try {
+          await upsertFinancial(requestedTenant, {
+            year: input.year,
+            month: input.month,
+            revenue,
+            budget_revenue: budgetRevenue,
+            expenses: operatingExpenses,
+            budget_expenses: budgetOperatingExpenses,
+            net_profit: netProfit,
+            net_profit_margin: margin,
+            cogs_actual: cogsActual,
+            cogs_budget: cogsBudget,
+            other_income_actual: otherIncomeActual,
+            other_income_budget: otherIncomeBudget,
+            other_expense_actual: otherExpenseActual,
+            other_expense_budget: otherExpenseBudget,
+            source_import_id: (existing[0] as any)?.source_import_id == null ? null : String((existing[0] as any).source_import_id),
+            source_document_id: (existing[0] as any)?.source_document_id == null ? null : String((existing[0] as any).source_document_id),
+            summary: financialSummary || null,
+          });
+        } catch (error) {
+          if (isNumericOverflowError(error)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "One or more financial values are outside the supported numeric range for this period. Please review imported amounts and try again.",
+            });
+          }
+          throw error;
+        }
 
         const replacementRows = [
           ...cleanIncome.map((row) => ({ type: "income" as const, label: row.category, amount: row.actual, budget_amount: row.budget })),
@@ -3061,6 +4068,39 @@ export const appRouter = router({
         ];
 
         await replaceLineItemsForPeriod(requestedTenant, input.year, input.month, replacementRows);
+
+        const auditLogged = await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "financial_published_period_updated",
+          entity_type: "financial_period",
+          entity_id: `${requestedTenant}:${input.year}:${input.month}`,
+          tenant_slug: requestedTenant,
+          status: "success",
+          metadata: {
+            year: input.year,
+            month: input.month,
+            line_items_replaced: true,
+            totals: {
+              revenue,
+              expenses: operatingExpenses,
+              net_profit: netProfit,
+              margin,
+            },
+            source: "financials.updatePublishedPeriod",
+            saved_at: new Date().toISOString(),
+          },
+        });
+
+        if (!auditLogged) {
+          console.warn("[activity_log.write.failed]", {
+            action_type: "financial_published_period_updated",
+            tenant_slug: requestedTenant,
+            year: input.year,
+            month: input.month,
+            actor_user_id: String(ctx.user.id),
+          });
+        }
 
         return {
           success: true,
@@ -3119,6 +4159,36 @@ export const appRouter = router({
 
         await deleteLineItemsForPeriod(requestedTenant, input.year, input.month);
         await deleteFinancialPeriod(requestedTenant, input.year, input.month);
+
+        const deletedPeriodId = existing[0]?.id == null
+          ? `${requestedTenant}:${input.year}:${input.month}`
+          : String(existing[0].id);
+
+        const auditLogged = await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "financial_published_period_deleted",
+          entity_type: "financial_period",
+          entity_id: deletedPeriodId,
+          tenant_slug: requestedTenant,
+          status: "success",
+          metadata: {
+            year: input.year,
+            month: input.month,
+            source: "financials.deletePublishedPeriod",
+            deleted_at: new Date().toISOString(),
+          },
+        });
+
+        if (!auditLogged) {
+          console.warn("[activity_log.write.failed]", {
+            action_type: "financial_published_period_deleted",
+            tenant_slug: requestedTenant,
+            year: input.year,
+            month: input.month,
+            actor_user_id: String(ctx.user.id),
+          });
+        }
 
         return {
           success: true,
@@ -3248,25 +4318,35 @@ export const appRouter = router({
         const financialSummary = canUseCameronSummary ? String(input.financialSummary ?? "").trim() : "";
         const notes = String(input.notes ?? "").trim();
 
-        await upsertFinancial(requestedTenant, {
-          year: input.year,
-          month: input.month,
-          revenue,
-          budget_revenue: budgetRevenue,
-          expenses: operatingExpenses,
-          budget_expenses: budgetOperatingExpenses,
-          net_profit: netProfit,
-          net_profit_margin: margin,
-          cogs_actual: cogsActual,
-          cogs_budget: cogsBudget,
-          other_income_actual: otherIncomeActual,
-          other_income_budget: otherIncomeBudget,
-          other_expense_actual: otherExpenseActual,
-          other_expense_budget: otherExpenseBudget,
-          source_import_id: String(job.import_id),
-          source_document_id: (job as any)?.document_id == null ? null : String((job as any).document_id),
-          summary: financialSummary || null,
-        });
+        try {
+          await upsertFinancial(requestedTenant, {
+            year: input.year,
+            month: input.month,
+            revenue,
+            budget_revenue: budgetRevenue,
+            expenses: operatingExpenses,
+            budget_expenses: budgetOperatingExpenses,
+            net_profit: netProfit,
+            net_profit_margin: margin,
+            cogs_actual: cogsActual,
+            cogs_budget: cogsBudget,
+            other_income_actual: otherIncomeActual,
+            other_income_budget: otherIncomeBudget,
+            other_expense_actual: otherExpenseActual,
+            other_expense_budget: otherExpenseBudget,
+            source_import_id: String(job.import_id),
+            source_document_id: (job as any)?.document_id == null ? null : String((job as any).document_id),
+            summary: financialSummary || null,
+          });
+        } catch (error) {
+          if (isNumericOverflowError(error)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "One or more financial values are outside the supported numeric range for this period. Please review imported amounts and try again.",
+            });
+          }
+          throw error;
+        }
 
         const replacementRows = [
           ...cleanIncome.map((row) => ({ type: "income" as const, label: row.category, amount: row.actual, budget_amount: row.budget })),
@@ -3287,14 +4367,40 @@ export const appRouter = router({
           notes,
         };
 
-        await supabase
+        const { data: updatedImportJob, error: importJobUpdateError } = await supabase
           .from("financial_import_jobs")
           .update({
             extracted_data: mergedExtracted,
             saved_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
-          .eq("import_id", input.importId);
+          .eq("import_id", input.importId)
+          .select("import_id, tenant_slug")
+          .single();
+
+        if (importJobUpdateError) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to save reviewed financial import state.",
+          });
+        }
+
+        const updatedImportId = (updatedImportJob as any)?.import_id == null ? null : String((updatedImportJob as any).import_id);
+        const updatedImportTenant = sanitizeTenantSlug(String((updatedImportJob as any)?.tenant_slug ?? ""));
+
+        if (!updatedImportId || updatedImportId !== String(input.importId)) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to verify reviewed financial import update.",
+          });
+        }
+
+        if (!updatedImportTenant || updatedImportTenant !== requestedTenant) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Reviewed financial import tenant verification failed.",
+          });
+        }
 
         const periodRows = await getFinancials(requestedTenant, input.year, input.month);
         const period = periodRows[0];
@@ -3323,8 +4429,9 @@ export const appRouter = router({
 
         chatHistoryCleanup = await triggerDeleteChatHistoryCleanup(cleanupPayload);
 
+        let finalApprovedSummaryVersionInserted: boolean | null = null;
         try {
-          await createSummaryVersionRecord({
+          const summaryHistory = await createSummaryVersionRecord({
             importId: input.importId,
             tenantSlug: requestedTenant,
             summary: financialSummary,
@@ -3334,6 +4441,7 @@ export const appRouter = router({
             financialPeriodId: period ? String(period.id) : null,
             forceInsert: true,
           });
+          finalApprovedSummaryVersionInserted = summaryHistory.inserted;
         } catch (historyError) {
           console.warn("[financials.saveReviewedPeriod] summary history final_approved failed", {
             importId: input.importId,
@@ -3344,9 +4452,44 @@ export const appRouter = router({
           });
         }
 
+        const periodId = period ? String(period.id) : `${requestedTenant}:${input.year}:${input.month}`;
+
+        const auditLogged = await writeActivityLog({
+          req: ctx.req,
+          actor: ctx.user,
+          action_type: "financial_reviewed_period_saved",
+          entity_type: "financial_period",
+          entity_id: periodId,
+          tenant_slug: requestedTenant,
+          status: "success",
+          metadata: {
+            year: input.year,
+            month: input.month,
+            import_id: input.importId,
+            source_document_id: (job as any)?.document_id == null ? null : String((job as any).document_id),
+            source_import_id: String(job.import_id),
+            source: "financials.saveReviewedPeriod",
+            saved_at: new Date().toISOString(),
+            line_items_replaced: true,
+            summary_history_final_approved_inserted: finalApprovedSummaryVersionInserted,
+            chat_history_cleanup_attempted: chatHistoryCleanup.attempted,
+            chat_history_cleanup_succeeded: chatHistoryCleanup.succeeded,
+          },
+        });
+
+        if (!auditLogged) {
+          console.warn("[activity_log.write.failed]", {
+            action_type: "financial_reviewed_period_saved",
+            tenant_slug: requestedTenant,
+            year: input.year,
+            month: input.month,
+            actor_user_id: String(ctx.user.id),
+          });
+        }
+
         return {
           success: true,
-          periodId: period ? String(period.id) : `${requestedTenant}:${input.year}:${input.month}`,
+          periodId,
           tenantSlug: requestedTenant,
           month: input.month,
           year: input.year,
