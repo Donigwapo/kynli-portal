@@ -94,6 +94,21 @@ function normalizeEmail(value?: string | null): string {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function isEmailLike(value?: string | null): boolean {
+  const normalized = normalizeEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+}
+
+function resolveDesignatedOwnerEmail(tenant?: { email?: string | null; contact_name?: string | null } | null): string | null {
+  const direct = normalizeEmail(tenant?.email);
+  if (direct && isEmailLike(direct)) return direct;
+
+  const contact = normalizeEmail(tenant?.contact_name);
+  if (contact && isEmailLike(contact)) return contact;
+
+  return null;
+}
+
 export default function AdminClientDetail() {
   const { slug } = useParams<{ slug: string }>();
   const [, navigate] = useLocation();
@@ -120,6 +135,8 @@ export default function AdminClientDetail() {
 
   const utils = trpc.useUtils();
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  const [ownerProtectionDialogOpen, setOwnerProtectionDialogOpen] = useState(false);
 
   const [memberDialogOpen, setMemberDialogOpen] = useState(false);
   const [memberForm, setMemberForm] = useState({
@@ -175,7 +192,15 @@ export default function AdminClientDetail() {
 
   const addMember = trpc.tenant.addMember.useMutation({
     onSuccess: (res) => {
-      toast.success("Member invited successfully");
+      if ((res as any).granted) {
+        if ((res as any).notificationSent === false) {
+          toast.success("Access granted. Notification email could not be delivered.");
+        } else {
+          toast.success("Access granted successfully");
+        }
+      } else {
+        toast.success("Member invited successfully");
+      }
       setMemberDialogOpen(false);
       setMemberForm({
         fullName: "",
@@ -237,9 +262,13 @@ export default function AdminClientDetail() {
   }
 
   const members = membersQuery.data ?? [];
+  const designatedOwnerEmail = useMemo(() => resolveDesignatedOwnerEmail(tenant), [tenant?.email, tenant?.contact_name]);
 
   const activeMemberCount = useMemo(
-    () => members.filter((m) => m.source === "tenant_user" || m.source === "staff_assignment").length,
+    () => members.filter((m) => {
+      if (m.source === "staff_assignment" || m.source === "global_staff") return true;
+      return Boolean((m as any).has_workspace_access) || m.source === "workspace_owner" || m.source === "workspace_member";
+    }).length,
     [members],
   );
 
@@ -600,14 +629,15 @@ export default function AdminClientDetail() {
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Invite Accepted</TableHead>
+                  <TableHead>Access Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {members.map((m) => {
-                  const isPending = !!m.invite_sent_at && !m.invite_accepted;
-                  const canResend = isPending;
+                  const inviteStatus = ((m as any).invite_status ?? (m.invite_accepted ? "accepted" : (m.invite_sent_at ? "pending" : "not_sent"))) as "not_sent" | "pending" | "accepted" | "expired" | "revoked";
+                  const accessStatus = ((m as any).access_status ?? (((m as any).has_workspace_access || m.source === "workspace_owner") ? "granted" : (inviteStatus === "pending" ? "pending_setup" : "not_sent"))) as "not_sent" | "pending_setup" | "accepted" | "granted";
+                  const canResend = accessStatus === "pending_setup" || inviteStatus === "expired" || inviteStatus === "revoked";
 
                   const memberEmailNormalized = normalizeEmail(m.email);
                   const tenantEmailNormalized = normalizeEmail(tenant.email);
@@ -619,6 +649,7 @@ export default function AdminClientDetail() {
                   const displayName = shouldUseTenantContactName
                     ? contactNameTrimmed
                     : (m.name ?? "Unnamed");
+                  const isDesignatedOwner = !!designatedOwnerEmail && memberEmailNormalized === designatedOwnerEmail;
 
                   return (
                     <TableRow key={`${m.id}-${m.email}`}>
@@ -644,19 +675,31 @@ export default function AdminClientDetail() {
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className={`text-xs ${m.source === "staff_assignment" ? "border-cyan-500/40 text-cyan-700 dark:text-cyan-400 bg-cyan-500/10 dark:border-cyan-500/30" : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30"}`}
+                          className={`text-xs ${m.source === "staff_assignment" ? "border-cyan-500/40 text-cyan-700 dark:text-cyan-400 bg-cyan-500/10 dark:border-cyan-500/30" : ((m as any).has_workspace_access ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 dark:border-emerald-500/30" : "border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10 dark:border-amber-500/30")}`}
                         >
-                          {m.source === "staff_assignment" ? "Assigned" : "Active"}
+                          {m.source === "staff_assignment" ? "Assigned" : (((m as any).has_workspace_access || m.source === "workspace_owner") ? "Active" : "Invited")}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {m.invite_accepted ? (
+                        {accessStatus === "granted" ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                            <CheckCircle2 size={11} /> Granted
+                          </span>
+                        ) : accessStatus === "accepted" ? (
                           <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
                             <CheckCircle2 size={11} /> Accepted
                           </span>
-                        ) : m.invite_sent_at ? (
+                        ) : accessStatus === "pending_setup" ? (
                           <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
-                            <Clock size={11} /> Pending
+                            <Clock size={11} /> Pending Setup
+                          </span>
+                        ) : inviteStatus === "expired" ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                            <Clock size={11} /> Expired
+                          </span>
+                        ) : inviteStatus === "revoked" ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-rose-700 dark:text-rose-400">
+                            <Clock size={11} /> Revoked
                           </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">Not sent</span>
@@ -687,6 +730,10 @@ export default function AdminClientDetail() {
                             <DropdownMenuItem
                               className="text-red-700 dark:text-red-400 focus:text-red-800 dark:focus:text-red-300"
                               onClick={() => {
+                                if (isDesignatedOwner) {
+                                  setOwnerProtectionDialogOpen(true);
+                                  return;
+                                }
                                 if (confirm(`Remove ${m.name ?? m.email} from ${tenant.company_name}?`)) {
                                   removeMember.mutate({ slug: tenant.slug, memberId: m.id });
                                 }
@@ -705,6 +752,20 @@ export default function AdminClientDetail() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={ownerProtectionDialogOpen} onOpenChange={setOwnerProtectionDialogOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle>Business Owner Access Protected</DialogTitle>
+            <DialogDescription>
+              You cannot remove the primary business owner through Business Members. If the business is no longer a Kynli client, use Archive (Churn) instead.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setOwnerProtectionDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>

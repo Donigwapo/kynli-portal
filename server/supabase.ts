@@ -112,6 +112,66 @@ export type PortalUser = {
   updated_at: string;
 };
 
+export type TenantInviteStatus = "not_sent" | "pending" | "accepted" | "expired" | "revoked";
+export type TenantAccessStatus = "not_sent" | "pending_setup" | "accepted" | "granted";
+export type TenantAccessGrantSource = "legacy" | "admin_granted" | "invite_accepted";
+
+export function isEligibleExistingClientForImmediateGrant(user: PortalUser | null | undefined): boolean {
+  return Boolean(
+    user &&
+      user.role === "client" &&
+      (user.status ?? "active") === "active" &&
+      user.supabase_uid,
+  );
+}
+
+
+async function isSupabaseAuthUserVerified(supabaseUid: string): Promise<boolean> {
+  const uid = String(supabaseUid || "").trim();
+  if (!uid) return false;
+
+  const { data, error } = await supabase.auth.admin.getUserById(uid);
+  if (error || !data?.user) return false;
+
+  const user = data.user as any;
+  const emailConfirmedAt = user.email_confirmed_at || user.confirmed_at || null;
+  const isBanned = Boolean(user.banned_until);
+  return Boolean(emailConfirmedAt) && !isBanned;
+}
+
+export function isValidPendingTenantInvite(invite: PortalInviteRow | null | undefined, nowMs = Date.now()): boolean {
+  if (!invite) return false;
+  const status = String(invite.status || "").trim().toLowerCase();
+  if (status !== "pending") return false;
+  if (invite.revoked_at) return false;
+  const expiresMs = invite.expires_at ? new Date(invite.expires_at).getTime() : NaN;
+  return !Number.isFinite(expiresMs) || expiresMs > nowMs;
+}
+
+export function resolveTenantMemberInviteStatus(input: {
+  latestInvite: PortalInviteRow | null;
+  hasWorkspaceAccess: boolean;
+  source: TenantMember["source"];
+  nowMs?: number;
+}): TenantInviteStatus {
+  const { latestInvite, hasWorkspaceAccess, source } = input;
+  const nowMs = input.nowMs ?? Date.now();
+
+  if (source === "staff_assignment" || source === "global_staff") return "not_sent";
+  if (!latestInvite) return "not_sent";
+
+  const status = String(latestInvite.status || "").trim().toLowerCase();
+  const isRevoked = !!latestInvite.revoked_at || status === "revoked";
+  const expiresMs = latestInvite.expires_at ? new Date(latestInvite.expires_at).getTime() : NaN;
+  const isExpired = status === "expired" || (status === "pending" && Number.isFinite(expiresMs) && expiresMs <= nowMs);
+
+  if (isRevoked) return "revoked";
+  if (isExpired) return "expired";
+  if (status === "accepted" || status === "used") return "accepted";
+  if (status === "pending") return "pending";
+  return "not_sent";
+}
+
 export type TenantMember = {
   id: number;
   email: string;
@@ -120,8 +180,34 @@ export type TenantMember = {
   tenant_slug: string | null;
   invite_sent_at?: string | null;
   invite_accepted?: boolean;
-  source: "tenant_user" | "workspace_owner" | "staff_assignment" | "global_staff";
+  invite_status?: TenantInviteStatus;
+  access_status?: TenantAccessStatus;
+  access_grant_source?: TenantAccessGrantSource | null;
+  has_workspace_access?: boolean;
+  source: "tenant_user" | "workspace_owner" | "workspace_member" | "staff_assignment" | "global_staff";
 };
+
+export function resolveTenantMemberAccessStatus(input: {
+  source: TenantMember["source"];
+  hasWorkspaceAccess: boolean;
+  accessGrantSource?: TenantAccessGrantSource | null;
+  inviteStatus?: TenantInviteStatus;
+}): TenantAccessStatus {
+  const source = input.source;
+  const hasWorkspaceAccess = Boolean(input.hasWorkspaceAccess);
+  const grantSource = input.accessGrantSource ?? null;
+  const inviteStatus = input.inviteStatus ?? "not_sent";
+
+  if (source === "staff_assignment" || source === "global_staff") return "not_sent";
+
+  if (hasWorkspaceAccess || source === "workspace_owner" || source === "workspace_member") {
+    if (grantSource === "invite_accepted") return "accepted";
+    return "granted";
+  }
+
+  if (inviteStatus === "pending") return "pending_setup";
+  return "not_sent";
+}
 
 export type StaffAssignment = {
   id: number;
@@ -392,6 +478,43 @@ export async function getPortalUserByUid(uid: string): Promise<PortalUser | null
   return data as PortalUser;
 }
 
+export async function getPortalUserById(id: number): Promise<PortalUser | null> {
+  const { data, error } = await supabase
+    .from("portal_users")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data as PortalUser;
+}
+
+function normalizeEmailLike(value?: string | null): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isValidEmailLike(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function resolveDesignatedOwnerEmailFromTenantRow(tenant: Pick<PortalTenant, "email" | "contact_name">): string | null {
+  const direct = normalizeEmailLike(tenant.email);
+  if (direct && isValidEmailLike(direct)) return direct;
+
+  const contact = normalizeEmailLike(tenant.contact_name);
+  if (contact && isValidEmailLike(contact)) return contact;
+
+  return null;
+}
+
+export function isDesignatedPrimaryBusinessOwnerForTenant(input: {
+  tenant: Pick<PortalTenant, "email" | "contact_name">;
+  memberEmail?: string | null;
+}): boolean {
+  const designatedEmail = resolveDesignatedOwnerEmailFromTenantRow(input.tenant);
+  if (!designatedEmail) return false;
+  return normalizeEmailLike(input.memberEmail) === designatedEmail;
+}
+
 export async function getPortalUserByEmail(email: string): Promise<PortalUser | null> {
   const normalized = (email || "").trim().toLowerCase();
   const { data, error } = await supabase
@@ -551,6 +674,30 @@ function getResendConfig() {
 
 type InviteEmailVariant = "invite" | "access";
 
+export async function sendWorkspaceAccessNotificationEmail(params: {
+  email: string;
+  workspaceName: string;
+  portalOrigin?: string;
+}): Promise<{ sent: boolean; error?: string }> {
+  const email = String(params.email || "").trim().toLowerCase();
+  if (!email) return { sent: false, error: "Missing recipient email" };
+
+  const accessLink = `${resolvePortalOrigin(params.portalOrigin)}/login`;
+
+  try {
+    await sendKynliInviteEmail({
+      to: email,
+      companyName: params.workspaceName,
+      inviteLink: accessLink,
+      variant: "access",
+    });
+    return { sent: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Notification send failed";
+    return { sent: false, error: message };
+  }
+}
+
 async function createPortalInviteRecord(params: {
   email: string;
   tenantSlug: string;
@@ -674,7 +821,8 @@ export async function inviteClientByEmail(
   redirectTo: string,
   inviteeName?: string,
   portalOrigin?: string,
-): Promise<{ sent: boolean; error?: string }> {
+  options?: { returnInviteToken?: boolean },
+): Promise<{ sent: boolean; error?: string; inviteToken?: string }> {
   const recipientName = inviteeName?.trim() || workspaceName;
   type GeneratedLinkResult = {
     user?: { id?: string | null } | null;
@@ -761,6 +909,7 @@ export async function inviteClientByEmail(
   }
 
   let brandedInviteUrl = "";
+  let createdInviteToken = "";
 
   // 3) Save branded invite record and derive branded URL for email
   try {
@@ -770,6 +919,7 @@ export async function inviteClientByEmail(
       supabaseLink: inviteLink,
       inviteType: "client",
     });
+    createdInviteToken = inviteToken;
     brandedInviteUrl = getBrandedInviteUrl(inviteToken, portalOrigin);
     console.info("[inviteClientByEmail] portal_invites record created", {
       recipientEmail: email,
@@ -859,7 +1009,10 @@ export async function inviteClientByEmail(
     return { sent: false, error: tenantUpdateError.message };
   }
 
-  return { sent: true };
+  return {
+    sent: true,
+    inviteToken: options?.returnInviteToken ? (createdInviteToken || undefined) : undefined,
+  };
 }
 
 export async function markInviteAccepted(email: string): Promise<void> {
@@ -4306,46 +4459,137 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
     throw new Error(`listTenantMembers.portal_users: ${usersResult.error.message}`);
   }
 
-  // 2) Workspace owners from client_workspace_access (supports multi-owner future)
-  const ownerAccess = await supabase
+  // 2) Workspace access memberships from client_workspace_access (owners + members)
+  const workspaceAccess = await supabase
     .from("client_workspace_access")
-    .select("portal_user_id, access_type")
+    .select("portal_user_id, access_type, access_grant_source")
     .eq("tenant_slug", safeSlug)
-    .is("deleted_at", null)
-    .eq("access_type", "owner");
+    .is("deleted_at", null);
 
-  if (ownerAccess.error) {
-    throw new Error(`listTenantMembers.client_workspace_access: ${ownerAccess.error.message}`);
+  if (workspaceAccess.error) {
+    throw new Error(`listTenantMembers.client_workspace_access: ${workspaceAccess.error.message}`);
   }
 
-  const ownerIds = Array.from(
-    new Set(
-      ((ownerAccess.data ?? []) as Array<{ portal_user_id: number | null }>).map((r) => Number(r.portal_user_id ?? 0)).filter((id) => id > 0)
-    )
+  // Historical soft-deleted memberships for this tenant.
+  // Used only to suppress explicitly removed client rows that would otherwise linger via legacy tenant_slug linkage.
+  const removedWorkspaceAccess = await supabase
+    .from("client_workspace_access")
+    .select("portal_user_id")
+    .eq("tenant_slug", safeSlug)
+    .not("deleted_at", "is", null);
+
+  if (removedWorkspaceAccess.error) {
+    throw new Error(`listTenantMembers.client_workspace_access_removed: ${removedWorkspaceAccess.error.message}`);
+  }
+
+  const workspaceAccessRows = (workspaceAccess.data ?? []) as Array<{ portal_user_id: number | null; access_type: "owner" | "member" | null; access_grant_source?: TenantAccessGrantSource | null }>;
+  const removedWorkspaceAccessRows = (removedWorkspaceAccess.data ?? []) as Array<{ portal_user_id: number | null }>;
+  const removedWorkspaceUserIds = new Set<number>(
+    removedWorkspaceAccessRows.map((row) => Number(row.portal_user_id ?? 0)).filter((id) => id > 0),
   );
 
-  let ownerUsers: TenantUserSelectRow[] = [];
-  if (ownerIds.length > 0) {
-    const withInviteOwners = await supabase
+  const workspaceAccessByUserId = new Map<number, "owner" | "member">();
+  const workspaceGrantSourceByUserId = new Map<number, TenantAccessGrantSource | null>();
+  for (const row of workspaceAccessRows) {
+    const uid = Number(row.portal_user_id ?? 0);
+    if (!uid) continue;
+    const accessType = row.access_type === "owner" ? "owner" : "member";
+    const grantSource = (row.access_grant_source ?? null) as TenantAccessGrantSource | null;
+    const existing = workspaceAccessByUserId.get(uid);
+    if (!existing || accessType === "owner") {
+      workspaceAccessByUserId.set(uid, accessType);
+      workspaceGrantSourceByUserId.set(uid, grantSource);
+      continue;
+    }
+    if (!workspaceGrantSourceByUserId.has(uid)) {
+      workspaceGrantSourceByUserId.set(uid, grantSource);
+    }
+  }
+
+  const workspaceUserIds = Array.from(workspaceAccessByUserId.keys());
+
+  let workspaceUsers: TenantUserSelectRow[] = [];
+  if (workspaceUserIds.length > 0) {
+    const withInviteWorkspaceUsers = await supabase
       .from("portal_users")
       .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
-      .in("id", ownerIds);
+      .in("id", workspaceUserIds);
 
-    const ownersResult =
-      withInviteOwners.error &&
-      (isMissingColumnError(withInviteOwners.error, "invite_sent_at") ||
-        isMissingColumnError(withInviteOwners.error, "invite_accepted"))
+    const workspaceUsersResult =
+      withInviteWorkspaceUsers.error &&
+      (isMissingColumnError(withInviteWorkspaceUsers.error, "invite_sent_at") ||
+        isMissingColumnError(withInviteWorkspaceUsers.error, "invite_accepted"))
         ? await supabase
             .from("portal_users")
             .select("id,email,name,role,tenant_slug")
-            .in("id", ownerIds)
-        : withInviteOwners;
+            .in("id", workspaceUserIds)
+        : withInviteWorkspaceUsers;
 
-    if (ownersResult.error) {
-      throw new Error(`listTenantMembers.workspace_owners: ${ownersResult.error.message}`);
+    if (workspaceUsersResult.error) {
+      throw new Error(`listTenantMembers.workspace_users: ${workspaceUsersResult.error.message}`);
     }
 
-    ownerUsers = (ownersResult.data ?? []) as unknown as TenantUserSelectRow[];
+    workspaceUsers = (workspaceUsersResult.data ?? []) as unknown as TenantUserSelectRow[];
+  }
+
+  // 2b) Latest invite-by-email rows for this tenant (used for accurate pending/accepted lifecycle display)
+  const latestInviteByEmail = new Map<string, PortalInviteRow>();
+  const { data: inviteRows, error: inviteRowsError } = await supabase
+    .from("portal_invites")
+    .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,used_at,created_at,updated_at,accepted_at")
+    .eq("tenant_slug", safeSlug)
+    .order("created_at", { ascending: false });
+
+  if (inviteRowsError) {
+    const fallback = await supabase
+      .from("portal_invites")
+      .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,created_at,updated_at")
+      .eq("tenant_slug", safeSlug)
+      .order("created_at", { ascending: false });
+
+    if (fallback.error) {
+      throw new Error(`listTenantMembers.portal_invites: ${fallback.error.message}`);
+    }
+
+    for (const row of ((fallback.data ?? []) as PortalInviteRow[])) {
+      const email = String(row.email || "").trim().toLowerCase();
+      if (!email || latestInviteByEmail.has(email)) continue;
+      latestInviteByEmail.set(email, row);
+    }
+  } else {
+    for (const row of ((inviteRows ?? []) as PortalInviteRow[])) {
+      const email = String(row.email || "").trim().toLowerCase();
+      if (!email || latestInviteByEmail.has(email)) continue;
+      latestInviteByEmail.set(email, row);
+    }
+  }
+
+  const inviteEmails = Array.from(latestInviteByEmail.entries())
+    .filter(([, invite]) => isValidPendingTenantInvite(invite))
+    .map(([email]) => email);
+
+  let inviteUsers: TenantUserSelectRow[] = [];
+  if (inviteEmails.length > 0) {
+    const withInviteInviteUsers = await supabase
+      .from("portal_users")
+      .select("id,email,name,role,tenant_slug,invite_sent_at,invite_accepted")
+      .in("email", inviteEmails);
+
+    const inviteUsersResult =
+      withInviteInviteUsers.error &&
+      (isMissingColumnError(withInviteInviteUsers.error, "invite_sent_at") ||
+        isMissingColumnError(withInviteInviteUsers.error, "invite_accepted"))
+        ? await supabase
+            .from("portal_users")
+            .select("id,email,name,role,tenant_slug")
+            .in("email", inviteEmails)
+        : withInviteInviteUsers;
+
+    if (inviteUsersResult.error) {
+      throw new Error(`listTenantMembers.invite_users: ${inviteUsersResult.error.message}`);
+    }
+
+    inviteUsers = (inviteUsersResult.data ?? []) as unknown as TenantUserSelectRow[];
   }
 
   // 3) Staff assignments for this tenant (query IDs first to avoid FK-join dependency issues)
@@ -4418,6 +4662,24 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
   for (const u of tenantUsers) {
     const id = Number(u.id ?? 0);
     if (!id) continue;
+
+    const email = String(u.email ?? "").trim().toLowerCase();
+    const latestInvite = email ? latestInviteByEmail.get(email) ?? null : null;
+    const hasValidPendingInvite = isValidPendingTenantInvite(latestInvite);
+    const hasWorkspaceAccess = workspaceAccessByUserId.has(id);
+    const hasExplicitRemovedHistory = removedWorkspaceUserIds.has(id);
+
+    // Preserve legacy client visibility by default, but let explicit tenant-specific removal win.
+    // A removed client may still appear if they currently have active access or a valid pending invite.
+    if (
+      (u.role ?? "client") === "client" &&
+      hasExplicitRemovedHistory &&
+      !hasWorkspaceAccess &&
+      !hasValidPendingInvite
+    ) {
+      continue;
+    }
+
     map.set(id, {
       id,
       email: String(u.email ?? ""),
@@ -4426,11 +4688,34 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       tenant_slug: u.tenant_slug ?? null,
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
+      has_workspace_access: hasWorkspaceAccess,
+      access_grant_source: workspaceGrantSourceByUserId.get(id) ?? null,
       source: "tenant_user",
     });
   }
 
-  for (const u of ownerUsers) {
+  for (const u of workspaceUsers) {
+    const id = Number(u.id ?? 0);
+    if (!id) continue;
+    if (map.has(id)) continue;
+
+    const accessType = workspaceAccessByUserId.get(id) ?? "member";
+
+    map.set(id, {
+      id,
+      email: String(u.email ?? ""),
+      name: u.name ?? null,
+      role: (u.role ?? "client") as UserRole,
+      tenant_slug: safeSlug,
+      invite_sent_at: u.invite_sent_at ?? null,
+      invite_accepted: Boolean(u.invite_accepted),
+      has_workspace_access: true,
+      access_grant_source: workspaceGrantSourceByUserId.get(id) ?? null,
+      source: accessType === "owner" ? "workspace_owner" : "workspace_member",
+    });
+  }
+
+  for (const u of inviteUsers) {
     const id = Number(u.id ?? 0);
     if (!id) continue;
     if (map.has(id)) continue;
@@ -4443,7 +4728,9 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       tenant_slug: safeSlug,
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
-      source: "workspace_owner",
+      has_workspace_access: false,
+      access_grant_source: null,
+      source: "tenant_user",
     });
   }
 
@@ -4460,6 +4747,7 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       tenant_slug: safeSlug,
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
+      access_grant_source: null,
       source: "staff_assignment",
     });
   }
@@ -4477,11 +4765,35 @@ export async function listTenantMembers(tenantSlug: string): Promise<TenantMembe
       tenant_slug: safeSlug,
       invite_sent_at: u.invite_sent_at ?? null,
       invite_accepted: Boolean(u.invite_accepted),
+      access_grant_source: null,
       source: "global_staff",
     });
   }
 
-  return Array.from(map.values());
+  const members = Array.from(map.values());
+  const nowMs = Date.now();
+
+  for (const member of members) {
+    const latestInvite = member.email
+      ? latestInviteByEmail.get(String(member.email || "").trim().toLowerCase()) ?? null
+      : null;
+
+    member.invite_status = resolveTenantMemberInviteStatus({
+      latestInvite,
+      hasWorkspaceAccess: Boolean(member.has_workspace_access),
+      source: member.source,
+      nowMs,
+    });
+
+    member.access_status = resolveTenantMemberAccessStatus({
+      source: member.source,
+      hasWorkspaceAccess: Boolean(member.has_workspace_access),
+      accessGrantSource: member.access_grant_source ?? null,
+      inviteStatus: member.invite_status,
+    });
+  }
+
+  return members;
 }
 
 export async function upsertTenantMember(params: {
@@ -4490,24 +4802,84 @@ export async function upsertTenantMember(params: {
   email: string;
   title?: string;
   portalOrigin?: string;
-}): Promise<{ member: PortalUser; invited: boolean; inviteError?: string }> {
+}): Promise<{
+  member: PortalUser;
+  invited: boolean;
+  inviteError?: string;
+  granted?: boolean;
+  grantError?: string;
+  notificationSent?: boolean;
+  notificationError?: string;
+}> {
   const safeSlug = sanitizeTenantSlug(params.tenantSlug);
   const normalizedEmail = params.email.trim().toLowerCase();
 
   const existing = await getPortalUserByEmail(normalizedEmail);
 
-  // Business member invites are always client-scoped members.
+  // Authoritative "existing verified/established client" criteria:
+  // - existing portal user row
+  // - client role
+  // - active status
+  // - linked Supabase auth identity (supabase_uid)
+  // - verified Supabase auth user
+  // This avoids granting solely from email existence or local portal row presence.
+  const isExistingVerifiedClient = isEligibleExistingClientForImmediateGrant(existing) &&
+    await isSupabaseAuthUserVerified(String(existing?.supabase_uid ?? ""));
+
+  // Preserve existing global profile fields for existing users.
+  // Do not overwrite role/default tenant just because they were invited to another business.
   const member = await upsertPortalUser({
     email: normalizedEmail,
-    name: params.fullName,
-    role: "client",
-    tenant_slug: safeSlug,
+    name: existing?.name ?? params.fullName,
+    role: existing?.role ?? "client",
+    tenant_slug: existing?.tenant_slug ?? null,
     must_reset_password: existing?.must_reset_password ?? true,
+    invite_accepted: existing?.invite_accepted ?? false,
   });
 
   if (!member) throw new Error("Failed to upsert member");
 
-  // Invite is always sent on submit for this UX flow.
+  // Existing verified clients: immediate tenant-specific grant (idempotent).
+  // New/unverified clients: preserve invite + onboarding.
+  if (isExistingVerifiedClient) {
+    try {
+      const grant = await grantClientWorkspaceAccessAdminAtomic({
+        portalUserId: member.id,
+        tenantSlug: safeSlug,
+      });
+
+      if (!grant.applied) {
+        throw new Error(`grant_atomic: ${grant.reason ?? "not_applied"}`);
+      }
+
+      await ensureClientPrimaryWorkspace(member.id);
+
+      // Informational notification only. Do not create setup invitation records.
+      const tenant = await getTenantBySlug(safeSlug);
+      const workspaceName = tenant?.company_name ?? safeSlug;
+      const notification = await sendWorkspaceAccessNotificationEmail({
+        email: normalizedEmail,
+        workspaceName,
+        portalOrigin: params.portalOrigin,
+      });
+
+      return {
+        member,
+        invited: false,
+        granted: true,
+        notificationSent: notification.sent,
+        notificationError: notification.sent ? undefined : notification.error ?? "Notification failed",
+      };
+    } catch (error) {
+      return {
+        member,
+        invited: false,
+        granted: false,
+        grantError: error instanceof Error ? error.message : "Grant failed",
+      };
+    }
+  }
+
   const redirectTo = getInviteRedirectTo(params.portalOrigin);
   const tenant = await getTenantBySlug(safeSlug);
   const workspaceName = tenant?.company_name ?? safeSlug;
@@ -4517,6 +4889,7 @@ export async function upsertTenantMember(params: {
     member,
     invited: invite.sent,
     inviteError: invite.sent ? undefined : invite.error ?? "Invite failed",
+    granted: false,
   };
 }
 
@@ -4530,14 +4903,82 @@ export async function resendTenantMemberInvite(params: {
   const redirectTo = getInviteRedirectTo(params.portalOrigin);
   const tenant = await getTenantBySlug(safeSlug);
   const workspaceName = tenant?.company_name ?? safeSlug;
-  return inviteClientByEmail(
-    params.email.trim().toLowerCase(),
+  const normalizedEmail = params.email.trim().toLowerCase();
+
+  const result = await inviteClientByEmail(
+    normalizedEmail,
     workspaceName,
     safeSlug,
     redirectTo,
     params.fullName ?? params.email,
     params.portalOrigin,
+    { returnInviteToken: true },
   );
+
+  if (!result.sent) {
+    return result;
+  }
+
+  if (result.inviteToken) {
+    try {
+      await revokeOtherPendingInvitesForEmailAndTenant({
+        email: normalizedEmail,
+        tenantSlug: safeSlug,
+        keepInviteToken: result.inviteToken,
+      });
+    } catch (error) {
+      // Compensating rollback: if older-token revocation fails, revoke the newly-created pending invite too.
+      // This avoids leaving multiple simultaneously usable pending tokens.
+      const rollbackErr = await revokeInviteByToken(result.inviteToken)
+        .then(() => null)
+        .catch((e) => e as Error);
+
+      const base = error instanceof Error ? error.message : "Failed to revoke older pending invites";
+      if (rollbackErr) {
+        return {
+          sent: false,
+          error: `${base}; rollback_failed=${rollbackErr.message}`,
+        };
+      }
+
+      return {
+        sent: false,
+        error: `${base}; replacement_invite_revoked=true`,
+      };
+    }
+  }
+
+  return { sent: true };
+}
+
+export async function revokePendingInvitesForEmailAndTenant(email: string, tenantSlug: string): Promise<void> {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  if (!normalizedEmail || !safeSlug) return;
+
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase
+    .from("portal_invites")
+    .update({ status: "revoked", revoked_at: nowIso, updated_at: nowIso })
+    .eq("email", normalizedEmail)
+    .eq("tenant_slug", safeSlug)
+    .eq("status", "pending")
+    .is("revoked_at", null);
+
+  if (error) {
+    // Backward-compatible fallback if updated_at column is unavailable.
+    const fallback = await supabase
+      .from("portal_invites")
+      .update({ status: "revoked", revoked_at: nowIso })
+      .eq("email", normalizedEmail)
+      .eq("tenant_slug", safeSlug)
+      .eq("status", "pending")
+      .is("revoked_at", null);
+
+    if (fallback.error) {
+      throw new Error(`revokePendingInvitesForEmailAndTenant: ${fallback.error.message}`);
+    }
+  }
 }
 
 export async function removeTenantMember(params: {
@@ -4545,21 +4986,38 @@ export async function removeTenantMember(params: {
   memberId: number;
 }): Promise<void> {
   const safeSlug = sanitizeTenantSlug(params.tenantSlug);
+  const tenant = await getTenantBySlug(safeSlug);
+  if (!tenant) throw new Error("removeTenantMember: tenant not found");
+
   const { data: member, error } = await supabase
     .from("portal_users")
-    .select("id, role, tenant_slug")
+    .select("id, role, email")
     .eq("id", params.memberId)
     .single();
 
   if (error || !member) throw new Error(`removeTenantMember: member not found`);
 
+  if (isDesignatedPrimaryBusinessOwnerForTenant({ tenant, memberEmail: String((member as any).email ?? "") })) {
+    throw new Error("removeTenantMember: designated_owner_protected");
+  }
+
   if ((member.role as UserRole) === "client") {
-    // Safe MVP behavior: detach client account from this tenant so they no longer appear/access it.
-    const { error: detachErr } = await supabase
-      .from("portal_users")
-      .update({ tenant_slug: null })
-      .eq("id", params.memberId);
-    if (detachErr) throw new Error(`removeTenantMember.detachClient: ${detachErr.message}`);
+    const { data: rpcData, error: rpcError } = await supabase.rpc("remove_client_workspace_membership_atomic", {
+      p_portal_user_id: params.memberId,
+      p_tenant_slug: safeSlug,
+    });
+
+    if (rpcError) {
+      throw new Error(`removeTenantMember.rpc: ${rpcError.message}`);
+    }
+
+    const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    const applied = row && typeof row === "object" ? Boolean((row as Record<string, unknown>).applied) : false;
+    const reason = row && typeof row === "object" ? String((row as Record<string, unknown>).reason ?? "") : "";
+    if (!applied && reason && reason !== "null") {
+      throw new Error(`removeTenantMember.rpc: ${reason}`);
+    }
+
     return;
   }
 
@@ -5424,9 +5882,23 @@ export type ClientWorkspaceAccess = {
   tenant_slug: string;
   access_type: "owner" | "member";
   is_primary: boolean;
+  access_grant_source?: TenantAccessGrantSource | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+};
+
+export type PortalInviteRow = {
+  invite_token: string;
+  email: string;
+  tenant_slug: string;
+  status: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  used_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  accepted_at?: string | null;
 };
 
 export async function listWorkspaceNoteComments(input: {
@@ -5555,6 +6027,39 @@ export async function listClientWorkspaceAccessByUserId(portalUserId: number): P
   return (data ?? []) as ClientWorkspaceAccess[];
 }
 
+export async function hasRevokedClientWorkspaceAccessByUserAndTenant(
+  portalUserId: number,
+  tenantSlug: string,
+): Promise<boolean> {
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  if (!safeSlug) return false;
+
+  const { data, error } = await supabase
+    .from("client_workspace_access")
+    .select("id")
+    .eq("portal_user_id", portalUserId)
+    .eq("tenant_slug", safeSlug)
+    .not("deleted_at", "is", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`hasRevokedClientWorkspaceAccessByUserAndTenant: ${error.message}`);
+  return Boolean(data);
+}
+
+export async function listPortalTenantsBySlugs(slugs: string[]): Promise<PortalTenant[]> {
+  const cleaned = Array.from(new Set(slugs.map((s) => sanitizeTenantSlug(s)).filter(Boolean)));
+  if (!cleaned.length) return [];
+
+  const { data, error } = await supabase
+    .from("portal_tenants")
+    .select("*")
+    .in("slug", cleaned);
+
+  if (error) throw new Error(`listPortalTenantsBySlugs: ${error.message}`);
+  return (data ?? []) as PortalTenant[];
+}
+
 export async function getClientWorkspaceAccessByUserAndTenant(
   portalUserId: number,
   tenantSlug: string,
@@ -5576,18 +6081,40 @@ export async function upsertClientWorkspaceAccess(input: {
   tenant_slug: string;
   access_type?: "owner" | "member";
   is_primary?: boolean;
+  access_grant_source?: TenantAccessGrantSource;
 }): Promise<ClientWorkspaceAccess> {
-  const existing = await getClientWorkspaceAccessByUserAndTenant(input.portal_user_id, input.tenant_slug);
-  if (existing) {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+
+  const { data: existingAny, error: existingAnyErr } = await supabase
+    .from("client_workspace_access")
+    .select("*")
+    .eq("portal_user_id", input.portal_user_id)
+    .eq("tenant_slug", safeSlug)
+    .maybeSingle();
+
+  if (existingAnyErr) throw new Error(`upsertClientWorkspaceAccess(existing): ${existingAnyErr.message}`);
+
+  if (existingAny) {
     const patch: Record<string, unknown> = {
-      access_type: input.access_type ?? existing.access_type,
+      access_type: input.access_type ?? (existingAny as any).access_type,
+      deleted_at: null,
+      updated_at: new Date().toISOString(),
     };
+
+    if (input.access_grant_source) {
+      const existingSource = (existingAny as any).access_grant_source as TenantAccessGrantSource | null | undefined;
+      const existingType = (existingAny as any).access_type as "owner" | "member" | undefined;
+      if (existingType !== "owner" && existingSource !== "invite_accepted") {
+        patch.access_grant_source = input.access_grant_source;
+      }
+    }
+
     if (input.is_primary === true) patch.is_primary = true;
 
     const { data, error } = await supabase
       .from("client_workspace_access")
       .update(patch)
-      .eq("id", existing.id)
+      .eq("id", (existingAny as any).id)
       .select("*")
       .single();
     if (error) throw new Error(`upsertClientWorkspaceAccess(update): ${error.message}`);
@@ -5596,9 +6123,10 @@ export async function upsertClientWorkspaceAccess(input: {
 
   const payload = {
     portal_user_id: input.portal_user_id,
-    tenant_slug: input.tenant_slug,
+    tenant_slug: safeSlug,
     access_type: input.access_type ?? "owner",
     is_primary: input.is_primary ?? false,
+    access_grant_source: input.access_grant_source ?? "legacy",
   };
 
   const { data, error } = await supabase
@@ -5609,4 +6137,254 @@ export async function upsertClientWorkspaceAccess(input: {
 
   if (error) throw new Error(`upsertClientWorkspaceAccess(insert): ${error.message}`);
   return data as ClientWorkspaceAccess;
+}
+
+export async function revokeClientWorkspaceAccess(input: {
+  portal_user_id: number;
+  tenant_slug: string;
+}): Promise<void> {
+  const safeSlug = sanitizeTenantSlug(input.tenant_slug);
+
+  const { error } = await supabase
+    .from("client_workspace_access")
+    .update({
+      deleted_at: new Date().toISOString(),
+      is_primary: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("portal_user_id", input.portal_user_id)
+    .eq("tenant_slug", safeSlug)
+    .is("deleted_at", null);
+
+  if (error) throw new Error(`revokeClientWorkspaceAccess: ${error.message}`);
+}
+
+export async function ensureClientPrimaryWorkspace(portalUserId: number): Promise<void> {
+  const rows = await listClientWorkspaceAccessByUserId(portalUserId);
+  if (!rows.length) return;
+
+  const hasPrimary = rows.some((r) => r.is_primary);
+  if (hasPrimary) return;
+
+  const fallback = rows[0];
+  const { error } = await supabase
+    .from("client_workspace_access")
+    .update({ is_primary: true, updated_at: new Date().toISOString() })
+    .eq("id", fallback.id)
+    .is("deleted_at", null);
+
+  if (error) throw new Error(`ensureClientPrimaryWorkspace: ${error.message}`);
+}
+
+export async function getLatestInviteForEmailAndTenant(email: string, tenantSlug: string): Promise<PortalInviteRow | null> {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const safeSlug = sanitizeTenantSlug(tenantSlug);
+  if (!normalizedEmail || !safeSlug) return null;
+
+  const { data, error } = await supabase
+    .from("portal_invites")
+    .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,used_at,created_at,updated_at,accepted_at")
+    .eq("email", normalizedEmail)
+    .eq("tenant_slug", safeSlug)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    const fallback = await supabase
+      .from("portal_invites")
+      .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,created_at,updated_at")
+      .eq("email", normalizedEmail)
+      .eq("tenant_slug", safeSlug)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (fallback.error) throw new Error(`getLatestInviteForEmailAndTenant: ${fallback.error.message}`);
+    return (fallback.data ?? null) as PortalInviteRow | null;
+  }
+
+  return (data ?? null) as PortalInviteRow | null;
+}
+
+export async function getInviteByToken(inviteToken: string): Promise<PortalInviteRow | null> {
+  const token = String(inviteToken || "").trim();
+  if (!token) return null;
+
+  const { data, error } = await supabase
+    .from("portal_invites")
+    .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,used_at,created_at,updated_at,accepted_at")
+    .eq("invite_token", token)
+    .maybeSingle();
+
+  if (error) {
+    const fallback = await supabase
+      .from("portal_invites")
+      .select("invite_token,email,tenant_slug,status,expires_at,revoked_at,created_at,updated_at")
+      .eq("invite_token", token)
+      .maybeSingle();
+
+    if (fallback.error) throw new Error(`getInviteByToken: ${fallback.error.message}`);
+    return (fallback.data ?? null) as PortalInviteRow | null;
+  }
+
+  return (data ?? null) as PortalInviteRow | null;
+}
+
+export async function markInviteAcceptedByToken(inviteToken: string): Promise<void> {
+  const token = String(inviteToken || "").trim();
+  if (!token) return;
+
+  const nowIso = new Date().toISOString();
+
+  // Preferred status for accepted invites in current DB constraint is "used".
+  const primary = await supabase
+    .from("portal_invites")
+    .update({ status: "used", used_at: nowIso, accepted_at: nowIso, updated_at: nowIso })
+    .eq("invite_token", token)
+    .eq("status", "pending")
+    .is("revoked_at", null);
+
+  if (!primary.error) return;
+
+  const msg = String(primary.error.message || "").toLowerCase();
+
+  // Backward compatibility for schemas without used_at / accepted_at columns.
+  if (msg.includes("used_at") || msg.includes("accepted_at")) {
+    const fallback = await supabase
+      .from("portal_invites")
+      .update({ status: "used", updated_at: nowIso })
+      .eq("invite_token", token)
+      .eq("status", "pending")
+      .is("revoked_at", null);
+
+    if (!fallback.error) return;
+  }
+
+  throw new Error(`markInviteAcceptedByToken: ${primary.error.message}`);
+}
+
+export type AcceptInviteAtomicResult = {
+  applied: boolean;
+  tenant_slug: string | null;
+  reason: string | null;
+};
+
+export type GrantWorkspaceAccessAdminAtomicResult = {
+  applied: boolean;
+  reason: string | null;
+};
+
+export async function acceptInviteForPortalUserAtomic(input: {
+  inviteToken: string;
+  portalUserId: number;
+  userEmail: string;
+}): Promise<{ applied: boolean; tenantSlug: string | null; reason: string | null }> {
+  const inviteToken = String(input.inviteToken || "").trim();
+  const userEmail = String(input.userEmail || "").trim().toLowerCase();
+
+  if (!inviteToken || !userEmail || !Number.isFinite(input.portalUserId)) {
+    return { applied: false, tenantSlug: null, reason: "invalid_input" };
+  }
+
+  const { data, error } = await supabase.rpc("accept_portal_invite_atomic", {
+    p_invite_token: inviteToken,
+    p_portal_user_id: input.portalUserId,
+    p_user_email: userEmail,
+  });
+
+  if (error) {
+    throw new Error(`acceptInviteForPortalUserAtomic.rpc: ${error.message}`);
+  }
+
+  const row = Array.isArray(data) ? (data[0] as AcceptInviteAtomicResult | undefined) : (data as AcceptInviteAtomicResult | null);
+  if (!row) {
+    return { applied: false, tenantSlug: null, reason: "empty_result" };
+  }
+
+  return {
+    applied: Boolean(row.applied),
+    tenantSlug: row.tenant_slug ? String(row.tenant_slug) : null,
+    reason: row.reason ? String(row.reason) : null,
+  };
+}
+
+export async function grantClientWorkspaceAccessAdminAtomic(input: {
+  portalUserId: number;
+  tenantSlug: string;
+}): Promise<{ applied: boolean; reason: string | null }> {
+  const portalUserId = Number(input.portalUserId ?? 0);
+  const tenantSlug = sanitizeTenantSlug(input.tenantSlug);
+
+  if (!portalUserId || !tenantSlug) {
+    return { applied: false, reason: "invalid_input" };
+  }
+
+  const { data, error } = await supabase.rpc("grant_client_workspace_access_admin_atomic", {
+    p_portal_user_id: portalUserId,
+    p_tenant_slug: tenantSlug,
+  });
+
+  if (error) {
+    throw new Error(`grantClientWorkspaceAccessAdminAtomic.rpc: ${error.message}`);
+  }
+
+  const row = Array.isArray(data)
+    ? (data[0] as GrantWorkspaceAccessAdminAtomicResult | undefined)
+    : (data as GrantWorkspaceAccessAdminAtomicResult | null);
+
+  if (!row) {
+    return { applied: false, reason: "empty_result" };
+  }
+
+  return {
+    applied: Boolean(row.applied),
+    reason: row.reason ? String(row.reason) : null,
+  };
+}
+
+export async function revokeOtherPendingInvitesForEmailAndTenant(input: {
+  email: string;
+  tenantSlug: string;
+  keepInviteToken: string;
+}): Promise<void> {
+  const email = String(input.email || "").trim().toLowerCase();
+  const tenantSlug = sanitizeTenantSlug(input.tenantSlug);
+  const keepInviteToken = String(input.keepInviteToken || "").trim();
+  if (!email || !tenantSlug || !keepInviteToken) return;
+
+  const { error } = await supabase.rpc("revoke_pending_portal_invites_except", {
+    p_email: email,
+    p_tenant_slug: tenantSlug,
+    p_keep_invite_token: keepInviteToken,
+  });
+
+  if (error) {
+    throw new Error(`revokeOtherPendingInvitesForEmailAndTenant.rpc: ${error.message}`);
+  }
+}
+
+export async function revokeInviteByToken(inviteToken: string): Promise<void> {
+  const token = String(inviteToken || "").trim();
+  if (!token) return;
+
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase
+    .from("portal_invites")
+    .update({ status: "revoked", revoked_at: nowIso, updated_at: nowIso })
+    .eq("invite_token", token)
+    .eq("status", "pending")
+    .is("revoked_at", null);
+
+  if (error) {
+    const fallback = await supabase
+      .from("portal_invites")
+      .update({ status: "revoked", revoked_at: nowIso })
+      .eq("invite_token", token)
+      .eq("status", "pending")
+      .is("revoked_at", null);
+    if (fallback.error) {
+      throw new Error(`revokeInviteByToken: ${fallback.error.message}`);
+    }
+  }
 }

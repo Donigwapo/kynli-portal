@@ -258,10 +258,12 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
   const workspaceOptions = useMemo(() => {
     if (isClientUser) {
-      return (clientWorkspaces ?? []).map((w: any) => ({
-        slug: String(w.slug),
-        companyName: String(w.companyName || w.slug),
-      }));
+      return (clientWorkspaces ?? [])
+        .filter((w: any) => w?.isActive !== false)
+        .map((w: any) => ({
+          slug: String(w.slug),
+          companyName: String(w.companyName || w.slug),
+        }));
     }
     if (isStaffOrAdmin && impersonatingTenantSlug) {
       return (staffWorkspaces ?? []).map((w: any) => ({

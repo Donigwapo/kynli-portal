@@ -51,6 +51,8 @@ import {
   listClientRosterServicesByTenantSlugs,
   replaceClientRosterServices,
   getPortalUserByEmail,
+  getPortalUserById,
+  isDesignatedPrimaryBusinessOwnerForTenant,
   upsertPortalUser,
   getCoachingItems,
   getDocuments,
@@ -191,6 +193,8 @@ import {
   countWorkspaceNoteCommentsByNoteIds,
   listClientWorkspaceAccessByUserId,
   getClientWorkspaceAccessByUserAndTenant,
+  hasRevokedClientWorkspaceAccessByUserAndTenant,
+  listPortalTenantsBySlugs,
   upsertClientWorkspaceAccess,
   type ClientMeetingMode,
 } from "./supabase";
@@ -930,6 +934,42 @@ async function getAssignedTenantSlugsForUser(user: PortalUser): Promise<string[]
   return Array.from(new Set(assignments.map((a) => sanitizeTenantSlug(a.tenant_slug)).filter(Boolean)));
 }
 
+type ResolvedClientWorkspaceAuthorization = {
+  activeTenantBySlug: Map<string, Awaited<ReturnType<typeof getTenantBySlug>> extends infer T ? Exclude<T, null> : never>;
+  activeAuthorizedSlugs: string[];
+  orderedWorkspaceRows: Awaited<ReturnType<typeof listClientWorkspaceAccessByUserId>>;
+  ownSlug: string | null;
+};
+
+async function resolveClientWorkspaceAuthorization(user: PortalUser): Promise<ResolvedClientWorkspaceAuthorization> {
+  const workspaceRows = await listClientWorkspaceAccessByUserId(user.id);
+  const uniqueMembershipSlugs = Array.from(new Set(workspaceRows.map((r) => sanitizeTenantSlug(r.tenant_slug)).filter(Boolean)));
+
+  const tenantRows = uniqueMembershipSlugs.length ? await listPortalTenantsBySlugs(uniqueMembershipSlugs) : [];
+  const tenantBySlug = new Map(tenantRows.map((t) => [sanitizeTenantSlug(t.slug), t] as const));
+
+  const activeTenantBySlug = new Map<string, (typeof tenantRows)[number]>();
+  tenantBySlug.forEach((tenant, slug) => {
+    if (tenant?.is_active) activeTenantBySlug.set(slug, tenant);
+  });
+
+  const activeAuthorizedSlugs = Array.from(
+    new Set(
+      workspaceRows
+        .map((r) => sanitizeTenantSlug(r.tenant_slug))
+        .filter((slug) => !!slug && activeTenantBySlug.has(slug)),
+    ),
+  );
+
+  const ownSlug = user.tenant_slug ? sanitizeTenantSlug(user.tenant_slug) : null;
+  return {
+    activeTenantBySlug,
+    activeAuthorizedSlugs,
+    orderedWorkspaceRows: workspaceRows,
+    ownSlug,
+  };
+}
+
 async function resolveTenantSlugsForUser(
   user: PortalUser,
   requestedTenantSlug?: string,
@@ -960,37 +1000,54 @@ async function resolveTenantSlugsForUser(
     return assignedSlugs;
   }
 
-  if (user.tenant_slug) {
-    const own = sanitizeTenantSlug(user.tenant_slug);
+  if (user.role === "client") {
+    const authz = await resolveClientWorkspaceAuthorization(user);
+    const effectiveActive = activeClientWorkspaceSlug ? sanitizeTenantSlug(activeClientWorkspaceSlug) : null;
 
-    if (user.role === "client") {
-      const workspaceRows = await listClientWorkspaceAccessByUserId(user.id);
-      const accessible = workspaceRows.map((r) => sanitizeTenantSlug(r.tenant_slug)).filter(Boolean);
-
-      const effectiveActive = activeClientWorkspaceSlug ? sanitizeTenantSlug(activeClientWorkspaceSlug) : null;
-
-      if (requested) {
-        if (!accessible.length) {
-          if (requested !== own) {
-            throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own tenant." });
-          }
-          return [own];
-        }
-        if (!accessible.includes(requested)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
-        }
+    if (requested) {
+      if (authz.activeAuthorizedSlugs.includes(requested)) {
         return [requested];
       }
 
-      if (accessible.length) {
-        if (effectiveActive && accessible.includes(effectiveActive)) return [effectiveActive];
-        const primary = workspaceRows.find((r) => r.is_primary) ?? workspaceRows[0];
-        if (primary?.tenant_slug) return [sanitizeTenantSlug(primary.tenant_slug)];
+      const requestedRevoked = await hasRevokedClientWorkspaceAccessByUserAndTenant(user.id, requested);
+      if (requestedRevoked) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
       }
 
-      return [own];
+      if (authz.ownSlug && requested === authz.ownSlug) {
+        const ownTenant = await getTenantBySlug(authz.ownSlug);
+        if (ownTenant?.is_active) return [authz.ownSlug];
+      }
+
+      throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this workspace." });
     }
 
+    if (authz.activeAuthorizedSlugs.length) {
+      if (effectiveActive && authz.activeAuthorizedSlugs.includes(effectiveActive)) return [effectiveActive];
+
+      const activePrimary = authz.orderedWorkspaceRows.find((r) => {
+        const slug = sanitizeTenantSlug(r.tenant_slug);
+        return r.is_primary && authz.activeAuthorizedSlugs.includes(slug);
+      });
+      if (activePrimary?.tenant_slug) return [sanitizeTenantSlug(activePrimary.tenant_slug)];
+
+      const firstActive = authz.orderedWorkspaceRows.find((r) => authz.activeAuthorizedSlugs.includes(sanitizeTenantSlug(r.tenant_slug)));
+      if (firstActive?.tenant_slug) return [sanitizeTenantSlug(firstActive.tenant_slug)];
+    }
+
+    if (authz.ownSlug) {
+      const ownRevoked = await hasRevokedClientWorkspaceAccessByUserAndTenant(user.id, authz.ownSlug);
+      if (!ownRevoked) {
+        const ownTenant = await getTenantBySlug(authz.ownSlug);
+        if (ownTenant?.is_active) return [authz.ownSlug];
+      }
+    }
+
+    throw new TRPCError({ code: "NOT_FOUND", message: "No active workspaces available for this user." });
+  }
+
+  if (user.tenant_slug) {
+    const own = sanitizeTenantSlug(user.tenant_slug);
     if (requested && requested !== own) {
       throw new TRPCError({ code: "FORBIDDEN", message: "You can only access your own tenant." });
     }
@@ -2882,14 +2939,13 @@ export const appRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
       }
 
-      const accessRows = await listClientWorkspaceAccessByUserId(ctx.user.id);
-      const slugs = accessRows.map((r) => r.tenant_slug);
-      const allTenants = await getAllPortalTenants();
-      const tenantBySlug = new Map(allTenants.map((t) => [t.slug, t]));
+      const authz = await resolveClientWorkspaceAuthorization(ctx.user);
+      const activeBySlug = authz.activeTenantBySlug;
 
-      const items = accessRows
+      const items = authz.orderedWorkspaceRows
         .map((a) => {
-          const tenant = tenantBySlug.get(a.tenant_slug);
+          const slug = sanitizeTenantSlug(a.tenant_slug);
+          const tenant = activeBySlug.get(slug);
           if (!tenant) return null;
           return {
             slug: tenant.slug,
@@ -2910,24 +2966,51 @@ export const appRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Client workspace switching is available to client users only." });
       }
 
-      const accessRows = await listClientWorkspaceAccessByUserId(ctx.user.id);
-      const slugs = accessRows.map((r) => sanitizeTenantSlug(r.tenant_slug));
+      const authz = await resolveClientWorkspaceAuthorization(ctx.user);
+      const cookieOptions = getSessionCookieOptions(ctx.req);
       const activeFromCookie = ctx.clientWorkspaceTenantSlug ? sanitizeTenantSlug(ctx.clientWorkspaceTenantSlug) : null;
 
       let activeSlug: string | null = null;
-      if (activeFromCookie && slugs.includes(activeFromCookie)) {
+      if (activeFromCookie && authz.activeAuthorizedSlugs.includes(activeFromCookie)) {
         activeSlug = activeFromCookie;
-      } else if (accessRows.length) {
-        const primary = accessRows.find((r) => r.is_primary) ?? accessRows[0];
-        activeSlug = sanitizeTenantSlug(primary.tenant_slug);
-      } else if (ctx.user.tenant_slug) {
-        activeSlug = sanitizeTenantSlug(ctx.user.tenant_slug);
+      } else {
+        const activePrimary = authz.orderedWorkspaceRows.find((r) => {
+          const slug = sanitizeTenantSlug(r.tenant_slug);
+          return r.is_primary && authz.activeAuthorizedSlugs.includes(slug);
+        });
+
+        if (activePrimary?.tenant_slug) {
+          activeSlug = sanitizeTenantSlug(activePrimary.tenant_slug);
+        } else {
+          const firstActive = authz.orderedWorkspaceRows.find((r) => authz.activeAuthorizedSlugs.includes(sanitizeTenantSlug(r.tenant_slug)));
+          activeSlug = firstActive?.tenant_slug ? sanitizeTenantSlug(firstActive.tenant_slug) : null;
+        }
       }
 
-      if (!activeSlug) return { tenantSlug: null, workspace: null };
+      if (!activeSlug && authz.ownSlug) {
+        const ownRevoked = await hasRevokedClientWorkspaceAccessByUserAndTenant(ctx.user.id, authz.ownSlug);
+        if (!ownRevoked) {
+          const ownTenant = await getTenantBySlug(authz.ownSlug);
+          if (ownTenant?.is_active) activeSlug = authz.ownSlug;
+        }
+      }
+
+      if (!activeSlug) {
+        if (activeFromCookie) {
+          ctx.res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        }
+        return { tenantSlug: null, workspace: null };
+      }
+
+      if (activeFromCookie !== activeSlug) {
+        ctx.res.cookie(CLIENT_WORKSPACE_COOKIE, activeSlug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      }
 
       const tenant = await getTenantBySlug(activeSlug);
-      if (!tenant) return { tenantSlug: null, workspace: null };
+      if (!tenant || !tenant.is_active) {
+        ctx.res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        return { tenantSlug: null, workspace: null };
+      }
 
       return {
         tenantSlug: tenant.slug,
@@ -3011,8 +3094,13 @@ export const appRouter = router({
           portalOrigin: input.portalOrigin,
         });
 
-        if (!result.invited) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: result.inviteError ?? "Invite failed" });
+        const memberAddSucceeded = result.granted === true || result.invited === true;
+
+        if (!memberAddSucceeded) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: result.grantError ?? result.inviteError ?? "Failed to add member",
+          });
         }
 
         await writeActivityLog({
@@ -3027,11 +3115,20 @@ export const appRouter = router({
             full_name: input.fullName,
             title: input.title ?? null,
             source: "tenant.members.add",
+            grant_mode: result.granted ? "admin_granted" : "invite_pending_setup",
+            notification_sent: result.notificationSent ?? null,
+            notification_error: result.notificationError ?? null,
           },
           status: "success",
         });
 
-        return { success: true, invited: result.invited };
+        return {
+          success: true,
+          invited: Boolean(result.invited),
+          granted: Boolean(result.granted),
+          notificationSent: result.notificationSent ?? null,
+          notificationError: result.notificationError ?? null,
+        };
       }),
     resendMemberInvite: adminProcedure
       .input(z.object({
@@ -3058,6 +3155,23 @@ export const appRouter = router({
         memberId: z.number(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const tenant = await getTenantBySlug(input.slug);
+        if (!tenant) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Tenant not found" });
+        }
+
+        const member = await getPortalUserById(input.memberId);
+        if (!member) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Member not found" });
+        }
+
+        if (isDesignatedPrimaryBusinessOwnerForTenant({ tenant, memberEmail: member.email })) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Business owner access is protected. If this business is no longer a client, use Archive (Churn).",
+          });
+        }
+
         await removeTenantMember({ tenantSlug: input.slug, memberId: input.memberId });
 
         await writeActivityLog({

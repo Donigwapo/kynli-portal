@@ -16,6 +16,8 @@ import {
   getPortalUserByEmail,
   markInviteAccepted,
   getStaffAssignments,
+  getInviteByToken,
+  acceptInviteForPortalUserAtomic,
   type PortalUser,
   type PortalTenant,
 } from "./supabase";
@@ -26,6 +28,7 @@ const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback-
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 export const VIEW_AS_CLIENT_COOKIE = "portal_view_as_tenant";
 export const CLIENT_WORKSPACE_COOKIE = "portal_client_workspace_tenant";
+const INVITE_CONTEXT_COOKIE = "portal_invite_context";
 
 // ─── Session token helpers ────────────────────────────────────────────────────
 
@@ -83,6 +86,91 @@ export async function getPortalUserFromRequest(req: Request): Promise<PortalUser
 // ─── Register auth routes ─────────────────────────────────────────────────────
 
 export function registerAuthRoutes(app: Express) {
+  function readInviteContext(req: Request): { inviteToken: string; tenantSlug: string } | null {
+    const raw = String(req.cookies?.[INVITE_CONTEXT_COOKIE] || "").trim();
+    if (!raw) return null;
+    const [inviteToken, tenantSlug] = raw.split("|");
+    if (!inviteToken || !tenantSlug) return null;
+    return {
+      inviteToken: inviteToken.trim(),
+      tenantSlug: tenantSlug.trim(),
+    };
+  }
+
+  function writeInviteContext(req: Request, res: Response, inviteToken: string, tenantSlug: string): void {
+    const cookieOptions = getSessionCookieOptions(req);
+    res.cookie(INVITE_CONTEXT_COOKIE, `${inviteToken}|${tenantSlug}`, {
+      ...cookieOptions,
+      maxAge: 1000 * 60 * 30,
+      sameSite: "lax",
+      path: "/",
+    });
+  }
+
+  function clearInviteContext(req: Request, res: Response): void {
+    const cookieOptions = getSessionCookieOptions(req);
+    res.clearCookie(INVITE_CONTEXT_COOKIE, { ...cookieOptions, path: "/" });
+  }
+
+  async function acceptInviteContextForClientSession(
+    req: Request,
+    res: Response,
+    portalUser: PortalUser,
+    contextOverride?: { inviteToken: string; tenantSlug: string } | null,
+  ): Promise<{
+    applied: boolean;
+    tenantSlug?: string;
+    reason?: string;
+  }> {
+    if (portalUser.role !== "client") {
+      return { applied: false, reason: "non_client_role" };
+    }
+
+    const context = contextOverride ?? readInviteContext(req);
+    if (!context) {
+      return { applied: false, reason: "missing_context" };
+    }
+
+    const invite = await getInviteByToken(context.inviteToken);
+    if (!invite) {
+      clearInviteContext(req, res);
+      return { applied: false, reason: "invite_not_found" };
+    }
+
+    const inviteEmail = String(invite.email || "").trim().toLowerCase();
+    const sessionEmail = String(portalUser.email || "").trim().toLowerCase();
+    if (!inviteEmail || !sessionEmail || inviteEmail !== sessionEmail) {
+      clearInviteContext(req, res);
+      return { applied: false, reason: "email_mismatch" };
+    }
+
+    try {
+      const acceptance = await acceptInviteForPortalUserAtomic({
+        inviteToken: context.inviteToken,
+        portalUserId: portalUser.id,
+        userEmail: portalUser.email,
+      });
+
+      if (!acceptance.applied || !acceptance.tenantSlug) {
+        clearInviteContext(req, res);
+        return { applied: false, reason: acceptance.reason ?? "invite_not_accepted" };
+      }
+
+      await markInviteAccepted(portalUser.email).catch(() => undefined);
+
+      const cookieOptions = getSessionCookieOptions(req);
+      res.cookie(CLIENT_WORKSPACE_COOKIE, acceptance.tenantSlug, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+
+      clearInviteContext(req, res);
+
+      return { applied: true, tenantSlug: acceptance.tenantSlug };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      clearInviteContext(req, res);
+      return { applied: false, reason: msg || "invite_accept_failed" };
+    }
+  }
+
   app.get("/invite/:inviteToken", async (req: Request, res: Response) => {
     const rawToken = String(req.params.inviteToken || "").trim();
     if (!rawToken) {
@@ -97,35 +185,19 @@ export function registerAuthRoutes(app: Express) {
       .maybeSingle();
 
     if (error || !invite) {
-      console.warn("[invite.redirect] invite not found", {
-        inviteTokenPreview: rawToken.slice(0, 8),
-      });
       res.status(404).send("Invite not found");
       return;
     }
 
     const now = Date.now();
     const expiresAtMs = invite.expires_at ? new Date(invite.expires_at).getTime() : NaN;
-    const emailDomain = typeof invite.email === "string" && invite.email.includes("@") ? invite.email.split("@")[1] : undefined;
 
     if (invite.revoked_at) {
-      console.info("[invite.redirect] invite revoked", {
-        inviteTokenPreview: rawToken.slice(0, 8),
-        status: invite.status,
-        tenantSlug: invite.tenant_slug,
-        emailDomain,
-      });
       res.status(410).send("Invite no longer valid");
       return;
     }
 
     if (invite.status !== "pending") {
-      console.info("[invite.redirect] invite status invalid", {
-        inviteTokenPreview: rawToken.slice(0, 8),
-        status: invite.status,
-        tenantSlug: invite.tenant_slug,
-        emailDomain,
-      });
       if (invite.status === "expired") {
         res.status(410).send("Invite expired");
       } else if (invite.status === "revoked") {
@@ -137,33 +209,34 @@ export function registerAuthRoutes(app: Express) {
     }
 
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
-      console.info("[invite.redirect] invite expired by timestamp", {
-        inviteTokenPreview: rawToken.slice(0, 8),
-        status: invite.status,
-        tenantSlug: invite.tenant_slug,
-        emailDomain,
-      });
       res.status(410).send("Invite expired");
       return;
     }
 
     if (!invite.supabase_link) {
-      console.warn("[invite.redirect] invite missing supabase link", {
-        inviteTokenPreview: rawToken.slice(0, 8),
-        status: invite.status,
-        tenantSlug: invite.tenant_slug,
-        emailDomain,
-      });
       res.status(404).send("Invite not found");
       return;
     }
 
-    console.info("[invite.redirect] redirecting invite", {
-      inviteTokenPreview: rawToken.slice(0, 8),
-      status: invite.status,
-      tenantSlug: invite.tenant_slug,
-      emailDomain,
-    });
+    writeInviteContext(req, res, rawToken, String(invite.tenant_slug || ""));
+
+    const existingUser = await getPortalUserFromRequest(req);
+    if (existingUser) {
+      const accepted = await acceptInviteContextForClientSession(
+        req,
+        res,
+        existingUser,
+        { inviteToken: rawToken, tenantSlug: String(invite.tenant_slug || "") },
+      );
+
+      if (accepted.applied) {
+        res.redirect(302, "/portal/profile");
+        return;
+      }
+
+      res.status(403).send("Invitation could not be accepted for this account.");
+      return;
+    }
 
     res.redirect(302, invite.supabase_link);
   });
@@ -312,10 +385,6 @@ export function registerAuthRoutes(app: Express) {
 
       const portalUser = await resolvePortalUserFromAuthUser(authData.user);
 
-      await markInviteAccepted(email).catch((err) => {
-        console.warn("[Auth] Failed to mark invite accepted during login:", err);
-      });
-
       if (!portalUser) {
         res.status(403).json({ error: "No portal account found for this email. Contact your KynLi advisor." });
         return;
@@ -327,6 +396,15 @@ export function registerAuthRoutes(app: Express) {
       }
 
       await issueSessionCookie(req, res, portalUser);
+
+      const hadInviteContext = Boolean(readInviteContext(req));
+
+      const inviteAcceptance = await acceptInviteContextForClientSession(req, res, portalUser, undefined);
+
+      if (hadInviteContext && !inviteAcceptance.applied) {
+        res.status(403).json({ error: "Invitation could not be accepted for this account." });
+        return;
+      }
 
       res.json({
         success: true,
@@ -348,9 +426,10 @@ export function registerAuthRoutes(app: Express) {
   // POST /api/auth/logout
   app.post("/api/auth/logout", (req: Request, res: Response) => {
     const cookieOptions = getSessionCookieOptions(req);
-    res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-    res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
-      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+    res.clearCookie(COOKIE_NAME, cookieOptions);
+    res.clearCookie(VIEW_AS_CLIENT_COOKIE, cookieOptions);
+    res.clearCookie(CLIENT_WORKSPACE_COOKIE, cookieOptions);
+    res.clearCookie(INVITE_CONTEXT_COOKIE, { ...cookieOptions, path: "/" });
     res.json({ success: true });
   });
 
@@ -359,7 +438,6 @@ export function registerAuthRoutes(app: Express) {
   app.post("/api/auth/callback-session", async (req: Request, res: Response) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
-
     if (!token) {
       res.status(400).json({ error: "Missing Supabase access token" });
       return;
@@ -378,13 +456,6 @@ export function registerAuthRoutes(app: Express) {
 
       const portalUser = await resolvePortalUserFromAuthUser(authUser);
 
-      const email = authUser.email ?? "";
-      if (email) {
-        await markInviteAccepted(email).catch((err) => {
-          console.warn("[Auth] Failed to mark invite accepted during callback:", err);
-        });
-      }
-
       if (!portalUser) {
         res.status(403).json({ error: "No portal account found for this email." });
         return;
@@ -396,6 +467,15 @@ export function registerAuthRoutes(app: Express) {
       }
 
       await issueSessionCookie(req, res, portalUser);
+
+      const hadInviteContext = Boolean(readInviteContext(req));
+
+      const inviteAcceptance = await acceptInviteContextForClientSession(req, res, portalUser, undefined);
+
+      if (hadInviteContext && !inviteAcceptance.applied) {
+        res.status(403).json({ error: "Invitation could not be accepted for this account." });
+        return;
+      }
 
       res.json({
         success: true,
@@ -503,8 +583,8 @@ export function registerAuthRoutes(app: Express) {
     }
 
     const cookieOptions = getSessionCookieOptions(req);
-    res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
-      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+    res.clearCookie(VIEW_AS_CLIENT_COOKIE, cookieOptions);
+    res.clearCookie(CLIENT_WORKSPACE_COOKIE, cookieOptions);
     res.json({ success: true });
   });
 
@@ -532,8 +612,8 @@ export function registerAuthRoutes(app: Express) {
 
     if (error || !tenant || !tenant.is_active) {
       const cookieOptions = getSessionCookieOptions(req);
-      res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
-      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+      res.clearCookie(VIEW_AS_CLIENT_COOKIE, cookieOptions);
+      res.clearCookie(CLIENT_WORKSPACE_COOKIE, cookieOptions);
       res.json({ tenantSlug: null, workspace: null });
       return;
     }
@@ -541,8 +621,8 @@ export function registerAuthRoutes(app: Express) {
     if (user.role !== "admin") {
       if (!(user.role === "accounting_manager" || user.role === "tax_manager" || user.role === "accountant")) {
         const cookieOptions = getSessionCookieOptions(req);
-        res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
-      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        res.clearCookie(VIEW_AS_CLIENT_COOKIE, cookieOptions);
+        res.clearCookie(CLIENT_WORKSPACE_COOKIE, cookieOptions);
         res.status(403).json({ error: "View as Client is restricted to staff.", tenantSlug: null, workspace: null });
         return;
       }
@@ -551,8 +631,8 @@ export function registerAuthRoutes(app: Express) {
       const assigned = assignments.some((a) => a.tenant_slug === tenant.slug);
       if (!assigned) {
         const cookieOptions = getSessionCookieOptions(req);
-        res.clearCookie(VIEW_AS_CLIENT_COOKIE, { ...cookieOptions, maxAge: -1 });
-      res.clearCookie(CLIENT_WORKSPACE_COOKIE, { ...cookieOptions, maxAge: -1 });
+        res.clearCookie(VIEW_AS_CLIENT_COOKIE, cookieOptions);
+        res.clearCookie(CLIENT_WORKSPACE_COOKIE, cookieOptions);
         res.status(403).json({ error: "Tenant is not assigned to this staff member.", tenantSlug: null, workspace: null });
         return;
       }
