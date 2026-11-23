@@ -279,7 +279,9 @@ export default function Overview() {
   const latestCogs = (latestPeriod as any)?.cogs_actual ?? 0;
   const latestOtherIncome = (latestPeriod as any)?.other_income_actual ?? 0;
   const latestOtherExpense = (latestPeriod as any)?.other_expense_actual ?? 0;
-  const latestCogsBudget = (latestPeriod as any)?.cogs_budget ?? 0;
+  const latestCogsBudgetRaw = (latestPeriod as any)?.cogs_budget;
+  const hasLatestCogsBudget = latestCogsBudgetRaw !== null && latestCogsBudgetRaw !== undefined;
+  const latestCogsBudget = hasLatestCogsBudget ? Number(latestCogsBudgetRaw) : 0;
   const latestOtherIncomeBudget = (latestPeriod as any)?.other_income_budget ?? 0;
   const latestOtherExpenseBudget = (latestPeriod as any)?.other_expense_budget ?? 0;
 
@@ -355,6 +357,7 @@ export default function Overview() {
   const periodLabel = latestPeriod ? `${MONTHS[latestPeriod.month - 1]} ${latestPeriod.year}` : `${MONTHS[now.getMonth()]} ${year}`;
 
   const revVariancePct = latestBudgetRevenue > 0 ? (latestRevenue / latestBudgetRevenue) * 100 - 100 : 0;
+  const cogsVariancePct = latestCogsBudget > 0 ? (latestCogs / latestCogsBudget) * 100 - 100 : 0;
   const expVariancePct = latestBudgetExpenses > 0 ? (latestExpenses / latestBudgetExpenses) * 100 - 100 : 0;
   const profitVariancePct = latestBudgetNetProfit > 0 ? (latestNetProfit / latestBudgetNetProfit) * 100 - 100 : 0;
   const marginVariancePct = latestNetMarginPct - latestBudgetNetMarginPct;
@@ -377,7 +380,7 @@ export default function Overview() {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <KpiCard
           label="Revenue"
           sublabel={periodLabel}
@@ -386,6 +389,16 @@ export default function Overview() {
           variance={latestRevenue - latestBudgetRevenue}
           variancePct={revVariancePct}
           icon={<DollarSign size={16} />}
+        />
+        <KpiCard
+          label="COGS"
+          sublabel={periodLabel}
+          value={fmtD(latestCogs)}
+          budget={hasLatestCogsBudget ? fmtD(latestCogsBudget) : undefined}
+          variance={hasLatestCogsBudget ? latestCogs - latestCogsBudget : undefined}
+          variancePct={hasLatestCogsBudget ? cogsVariancePct : undefined}
+          icon={<TrendingDown size={16} />}
+          invertGood
         />
         <KpiCard
           label="Expenses"
@@ -464,12 +477,12 @@ export default function Overview() {
                     <div className="flex items-center justify-between text-xs mb-1.5">
                       <span className="text-foreground truncate max-w-[55%]">{item.label}</span>
                       <span>
-                        <span className="font-semibold" style={{ color: RED }}>{fmtD(amt)}</span>
+                        <span className="font-semibold" style={{ color: TEAL }}>{fmtD(amt)}</span>
                         <span className="text-muted-foreground ml-1.5">{fmtPct(pct)}</span>
                       </span>
                     </div>
                     <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, backgroundColor: RED }} />
+                      <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, backgroundColor: TEAL }} />
                     </div>
                   </div>
                 );

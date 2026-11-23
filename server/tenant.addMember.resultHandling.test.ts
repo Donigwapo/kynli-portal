@@ -41,6 +41,7 @@ describe("tenant.addMember result handling", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(supabaseModule, "insertActivityLog").mockResolvedValue({ id: 999 } as any);
   });
 
   it("new/unverified invite succeeds even when granted=false", async () => {

@@ -94,23 +94,33 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
   const isStaffPortfolioUser = !!user && ["accounting_manager", "tax_manager", "accountant"].includes(user.role);
   const isStaffOrAdmin = !!user && ["admin", "accounting_manager", "tax_manager", "accountant"].includes(user.role);
+  const isClientUser = user?.role === "client";
 
   const utils = trpc.useUtils();
-  const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
-    enabled: !isAdmin && !impersonatingTenantSlug && !isStaffPortfolioUser,
-  });
 
-  const isClientUser = user?.role === "client";
   const isClientFacingExperience = isClientUser || !!impersonatingTenantSlug;
   const canShowPortalAi = !!user && !isClientFacingExperience;
 
-  const { data: clientWorkspaces = [] } = trpc.clientWorkspaces.list.useQuery(undefined, {
+  const {
+    data: clientWorkspaces = [],
+    isLoading: clientWorkspacesLoading,
+  } = trpc.clientWorkspaces.list.useQuery(undefined, {
     enabled: !!isClientUser,
-    staleTime: 30_000,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
-  const { data: currentClientWorkspace } = trpc.clientWorkspaces.current.useQuery(undefined, {
+
+  const {
+    data: currentClientWorkspace,
+    isLoading: currentClientWorkspaceLoading,
+  } = trpc.clientWorkspaces.current.useQuery(undefined, {
     enabled: !!isClientUser,
-    staleTime: 10_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
+
+  const { data: tenant } = trpc.tenant.me.useQuery(undefined, {
+    enabled: !isAdmin && !impersonatingTenantSlug && !isStaffPortfolioUser && (!isClientUser || !!currentClientWorkspace?.tenantSlug),
   });
 
   const switchClientWorkspace = trpc.clientWorkspaces.switch.useMutation({
@@ -274,8 +284,15 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
     return [] as Array<{ slug: string; companyName: string }>;
   }, [isClientUser, clientWorkspaces, isStaffOrAdmin, impersonatingTenantSlug, staffWorkspaces]);
 
+  const hasNoActiveClientWorkspace = Boolean(
+    isClientUser &&
+    !clientWorkspacesLoading &&
+    !currentClientWorkspaceLoading &&
+    !currentClientWorkspace?.tenantSlug,
+  );
+
   const activeWorkspaceSlug = isClientUser
-    ? (currentClientWorkspace?.tenantSlug ?? user?.tenant_slug ?? null)
+    ? (currentClientWorkspace?.tenantSlug ?? null)
     : (impersonatingTenantSlug ?? null);
 
   // UX-only AI persistence scope. This does NOT authorize data access.
@@ -379,7 +396,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
 
   const sidebarDisplayName = user?.role === "client"
-    ? (activeWorkspaceName ?? displayLabel ?? user?.name ?? "—")
+    ? (activeWorkspaceName ?? (hasNoActiveClientWorkspace ? "No Active Workspaces" : (displayLabel ?? user?.name ?? "—")))
     : (user?.name ?? "—");
 
   const initials = sidebarDisplayName
@@ -611,7 +628,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
                   </div>
                   {!impersonatingTenantSlug && (
                     <span className="text-xs truncate w-full text-center" style={{ color: sidebarCaptionColor }}>
-                      {isClientUser ? (activeWorkspaceName ?? displayLabel) : displayLabel}
+                      {isClientUser ? sidebarDisplayName : displayLabel}
                     </span>
                   )}
                 </button>
@@ -666,7 +683,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
               </div>
               {!impersonatingTenantSlug && (
                 <span className="text-xs truncate w-full text-center" style={{ color: sidebarCaptionColor }}>
-                  {isClientUser ? (activeWorkspaceName ?? displayLabel) : displayLabel}
+                  {isClientUser ? sidebarDisplayName : displayLabel}
                 </span>
               )}
             </div>
@@ -952,9 +969,52 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
 
       {/* Main content */}
       <main className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: shellBackgroundColor }}>
-        <div className="flex-1 overflow-y-auto">
-          {children}
-        </div>
+        {hasNoActiveClientWorkspace ? (
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="mx-auto w-full max-w-2xl">
+              <div className={cn("rounded-xl border p-8 md:p-10", isDark ? "border-zinc-800 bg-zinc-900/50" : "border-border bg-card")}>
+                <h1 className={cn("text-2xl font-semibold", isDark ? "text-zinc-100" : "text-foreground")}>
+                  No Active Workspaces
+                </h1>
+                <p className={cn("mt-3 text-sm", isDark ? "text-zinc-300" : "text-muted-foreground")}>
+                  You currently don't have access to any active businesses in Kynli Portal.
+                </p>
+                <p className={cn("mt-2 text-sm", isDark ? "text-zinc-400" : "text-muted-foreground")}>
+                  If you believe this is a mistake, please contact the Kynli team.
+                </p>
+                <div className="mt-6">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await fetch("/api/auth/view-as-client/stop", {
+                          method: "POST",
+                          credentials: "include",
+                        });
+                      } catch {
+                        // ignore; logout still proceeds
+                      }
+                      setImpersonatingTenantSlug(null);
+                      await logout();
+                    }}
+                    className={cn(
+                      "inline-flex h-9 items-center justify-center rounded-md px-4 text-sm font-medium",
+                      isDark
+                        ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                        : "bg-primary text-primary-foreground hover:bg-primary/90"
+                    )}
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto">
+            {children}
+          </div>
+        )}
 
         {canShowPortalAi && (
           <>
@@ -979,7 +1039,7 @@ export default function PortalLayout({ children, isAdmin = false }: PortalLayout
           </>
         )}
 
-        <FloatingTimerWidget />
+        {!hasNoActiveClientWorkspace && <FloatingTimerWidget />}
       </main>
     </div>
   );
